@@ -83,7 +83,7 @@ const SQL_SORT_MAP: Record<string, string> = {
   oldSellPrice: "old_sell_price",
 }
 
-function hasComplexFilter(filters: Record<string, string>) {
+function hasComplexFilter(filters: Record<string, string | boolean>) {
   return filters.expiry !== "all" || filters.price !== "all" || filters.stock !== "all" || filters.subUnit !== "all"
 }
 
@@ -288,7 +288,7 @@ export async function GET(request: Request) {
     ])
 
     const page = asPositiveInt(url.searchParams.get("page"), 1, 100000)
-    const pageSize = asPositiveInt(url.searchParams.get("page_size"), 25, 1000)
+    const pageSize = asPositiveInt(url.searchParams.get("page_size"), 25, 100000)
     const sortKey = paramValue(url, "sort_key", "name")
     const sortDir = paramValue(url, "sort_dir", "asc")
     const search = clean(url.searchParams.get("search"))

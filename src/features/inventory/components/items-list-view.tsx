@@ -144,7 +144,7 @@ const DEFAULT_VISIBLE: ColumnKey[] = [
   "sku",
 ]
 
-const pageSizeOptions = [25, 50, 100, 200, 500, 1000]
+const pageSizeOptions = [25, 50, 100, 200, 500, 1000, 100000]
 
 const itemTypeOptions = [
   { value: "all", label: "كل الأنواع" },
@@ -779,10 +779,10 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
                 </DropdownMenu>
                 <div className="flex h-9 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700">
                   <span>عرض</span>
-                  <Select value={String(pageSize)} onValueChange={(value: string | null) => setPageSize(Number(value))}>
+                  <Select value={String(pageSize)} onValueChange={(value: string | null) => { setPageSize(Number(value)); if (Number(value) === 100000) setPage(1) }}>
                     <SelectTrigger className="h-7 w-20 rounded-lg border-slate-200 bg-white px-2 text-xs font-bold text-slate-700 shadow-none"><SelectValue /></SelectTrigger>
                     <SelectContent className={dropdownClass("min-w-24")} align="center" side="bottom" sideOffset={12}>
-                      {pageSizeOptions.map((size) => <SelectItem key={size} value={String(size)}>{size.toLocaleString("en-US")}</SelectItem>)}
+                      {pageSizeOptions.map((size) => <SelectItem key={size} value={String(size)}>{size === 100000 ? "الكل" : size.toLocaleString("en-US")}</SelectItem>)}
                     </SelectContent>
                   </Select>
                   <span>إدخالات</span>
@@ -880,23 +880,29 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
           </Table>
         </div>
 
-        <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-          <div className="text-sm font-bold text-slate-500">
-            عرض {itemsTotal === 0 ? 0 : ((currentPage - 1) * pageSize + 1).toLocaleString("ar-EG")} إلى {Math.min(currentPage * pageSize, itemsTotal).toLocaleString("ar-EG")} من {itemsTotal.toLocaleString("ar-EG")} إدخالات — صفحة {currentPage.toLocaleString("ar-EG")} / {totalPages.toLocaleString("ar-EG")}
-            {selectedIds.size ? <span className="me-2 text-brand">— {selectedIds.size.toLocaleString("ar-EG")} محدد</span> : null}
+          <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+            <div className="text-sm font-bold text-slate-500">
+              {pageSize === 100000 ? (
+                <>عرض كل {itemsTotal.toLocaleString("ar-EG")} إدخالات</>
+              ) : (
+                <>عرض {itemsTotal === 0 ? 0 : ((currentPage - 1) * pageSize + 1).toLocaleString("ar-EG")} إلى {Math.min(currentPage * pageSize, itemsTotal).toLocaleString("ar-EG")} من {itemsTotal.toLocaleString("ar-EG")} إدخالات — صفحة {currentPage.toLocaleString("ar-EG")} / {totalPages.toLocaleString("ar-EG")}</>
+              )}
+              {selectedIds.size ? <span className="me-2 text-brand">— {selectedIds.size.toLocaleString("ar-EG")} محدد</span> : null}
+            </div>
+            {pageSize !== 100000 ? (
+            <div className="flex items-center overflow-hidden rounded-xl border border-slate-200 bg-white">
+              <Button type="button" variant="ghost" className="h-9 rounded-none border-l border-slate-200 px-4 text-xs font-bold" disabled={currentPage <= 1} onClick={() => setPage((prev) => Math.max(1, prev - 1))}>
+                <ChevronRight className="size-3.5" />
+                السابق
+              </Button>
+              <span className="flex h-9 min-w-11 items-center justify-center bg-sky-600 px-3 text-sm font-bold text-white">{currentPage.toLocaleString("ar-EG")}</span>
+              <Button type="button" variant="ghost" className="h-9 rounded-none px-4 text-xs font-bold" disabled={currentPage >= totalPages} onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}>
+                التالي
+                <ChevronLeft className="size-3.5" />
+              </Button>
+            </div>
+            ) : null}
           </div>
-          <div className="flex items-center overflow-hidden rounded-xl border border-slate-200 bg-white">
-            <Button type="button" variant="ghost" className="h-9 rounded-none border-l border-slate-200 px-4 text-xs font-bold" disabled={currentPage <= 1} onClick={() => setPage((prev) => Math.max(1, prev - 1))}>
-              <ChevronRight className="size-3.5" />
-              السابق
-            </Button>
-            <span className="flex h-9 min-w-11 items-center justify-center bg-sky-600 px-3 text-sm font-bold text-white">{currentPage.toLocaleString("ar-EG")}</span>
-            <Button type="button" variant="ghost" className="h-9 rounded-none px-4 text-xs font-bold" disabled={currentPage >= totalPages} onClick={() => setPage((prev) => Math.min(totalPages, prev + 1))}>
-              التالي
-              <ChevronLeft className="size-3.5" />
-            </Button>
-          </div>
-        </div>
       </Card>
     </section>
   )
