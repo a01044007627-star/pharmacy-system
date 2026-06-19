@@ -70,14 +70,14 @@ export const DashboardHero = memo(function DashboardHero({
   const currentDateLabel = dateOptions.find((option) => option.value === dateFilter)?.label ?? "اليوم"
 
   return (
-    <section className="relative overflow-visible rounded-[28px] bg-gradient-to-br from-[#221148] via-[#31167a] to-[#4231a4] px-5 py-6 text-white shadow-[0_18px_45px_rgba(49,22,122,0.22)] sm:px-7 lg:px-9">
+    <section className="relative overflow-visible rounded-[28px] bg-brand px-5 py-6 text-white shadow-[0_18px_45px_rgba(37,99,235,0.22)] sm:px-7 lg:px-9">
       <div className="flex flex-col gap-6 xl:flex-row xl:items-center xl:justify-between">
         <div className="flex min-w-0 flex-1 items-center justify-end gap-4 text-right">
           <div className="min-w-0">
             <h1 className="max-w-full break-words text-3xl font-black leading-[1.15] tracking-tight sm:text-4xl lg:text-[44px] 2xl:text-5xl">
               أهلاً وسهلاً، <span dir="ltr" className="inline-block max-w-full align-baseline">{displayName}</span>
             </h1>
-            <p className="mt-3 flex flex-wrap items-center justify-end gap-2 text-sm font-black text-white/75">
+            <p className="mt-3 flex flex-wrap items-center justify-end gap-2 text-sm font-black text-slate-100">
               {loading ? <RefreshCw className="size-4 animate-spin" /> : null}
               <span>{isDeveloper ? "وضع مراجعة المطور" : activeBranch?.name ?? activePharmacy?.name ?? "لوحة متابعة الصيدلية"}</span>
             </p>
@@ -87,7 +87,7 @@ export const DashboardHero = memo(function DashboardHero({
 
         <div className="grid w-full shrink-0 gap-3 sm:grid-cols-2 xl:w-[600px]">
           <Select value={safeBranchFilter} onValueChange={(value: string | null) => value && onBranchFilterChange(value)}>
-            <SelectTrigger dir="rtl" className="h-11 w-full rounded-2xl border-white/15 bg-white/95 px-4 text-sm font-black text-slate-800 shadow-none [&_svg]:text-slate-500">
+            <SelectTrigger dir="rtl" className="h-11 w-full rounded-2xl border-slate-100 bg-white px-4 text-sm font-black text-slate-800 shadow-none [&_svg]:text-slate-500">
               <MapPin className="size-4 shrink-0" />
               <SelectValue placeholder="اختر الموقع">{currentBranchLabel}</SelectValue>
             </SelectTrigger>
@@ -101,7 +101,7 @@ export const DashboardHero = memo(function DashboardHero({
           </Select>
 
           <Select value={dateFilter} onValueChange={(value: string | null) => value && onDateFilterChange(value as DashboardDateFilter)}>
-            <SelectTrigger dir="rtl" className="h-11 w-full rounded-2xl border-white/15 bg-white/95 px-4 text-sm font-black text-slate-800 shadow-none [&_svg]:text-slate-600">
+            <SelectTrigger dir="rtl" className="h-11 w-full rounded-2xl border-slate-100 bg-white px-4 text-sm font-black text-slate-800 shadow-none [&_svg]:text-slate-600">
               <CalendarDays className="size-4 shrink-0" />
               <SelectValue placeholder="تصفية حسب التاريخ">{currentDateLabel}</SelectValue>
             </SelectTrigger>

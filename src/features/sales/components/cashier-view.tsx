@@ -870,7 +870,7 @@ export function CashierView() {
       <PageAccess permission="sales:read">
         <section dir="rtl" className="page-container flex min-h-[calc(100dvh-90px)] items-center justify-center py-5 text-right sm:py-8">
           <Card className="w-full max-w-3xl overflow-hidden rounded-[2rem] border-slate-200 bg-white shadow-xl shadow-slate-200/60">
-            <div className="bg-gradient-to-l from-brand via-sky-700 to-slate-900 px-6 py-6 text-white sm:px-8">
+            <div className="bg-brand px-6 py-6 text-white sm:px-8 shadow-[inset_0_-1px_0_rgba(255,255,255,0.1)]">
               <div className="flex items-center gap-4">
                 <span className="flex size-14 shrink-0 items-center justify-center rounded-2xl bg-white/15 ring-1 ring-white/20">
                   <Monitor className="size-7" />
@@ -878,7 +878,7 @@ export function CashierView() {
                 <div>
                   <p className="text-xs font-black text-white/70">جلسة بيع جديدة</p>
                   <h1 className="mt-1 text-2xl font-black">ابدأ الكاشير</h1>
-                  <p className="mt-1 text-sm font-bold text-white/75">حدد موقع التشغيل وسجّل النقدية الموجودة في الدرج.</p>
+                  <p className="mt-1 text-sm font-bold text-slate-100">حدد موقع التشغيل وسجّل النقدية الموجودة في الدرج.</p>
                 </div>
               </div>
             </div>
@@ -888,13 +888,27 @@ export function CashierView() {
                   <h2 className="text-lg font-black text-slate-950">بيانات افتتاح الوردية</h2>
                   <p className="mt-1 text-sm font-bold leading-7 text-slate-500">اختيار الفرع هنا يحدد المخزون والفواتير وحركات التشغيل الخاصة بالجلسة.</p>
                 </div>
-                <Badge className="w-fit rounded-full bg-emerald-100 px-3 py-1 text-emerald-700">{auth.activePharmacy?.name ?? "الصيدلية الحالية"}</Badge>
+                <Badge className="w-fit rounded-full bg-brand-muted px-3 py-1 text-brand ring-1 ring-brand-subtle/50">{auth.activePharmacy?.name ?? "الصيدلية الحالية"}</Badge>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="space-y-2">
                   <span className="flex items-center gap-2 text-sm font-black text-slate-700"><DollarSign className="size-4 text-brand" /> النقدية في الدرج*</span>
-                  <Input dir="ltr" inputMode="decimal" value={openingCash} onChange={(e) => setOpeningCash(e.target.value)} className="h-12 rounded-2xl border-slate-300 text-center text-xl font-black" placeholder="0.00" autoFocus />
+                  <Input
+                    dir="ltr"
+                    inputMode="decimal"
+                    value={openingCash}
+                    onChange={(e) => setOpeningCash(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault()
+                        void openShift()
+                      }
+                    }}
+                    className="h-12 rounded-2xl border-slate-300 text-center text-xl font-black focus-visible:ring-brand/20"
+                    placeholder="0.00"
+                    autoFocus
+                  />
                 </label>
                 <label className="space-y-2">
                   <span className="flex items-center gap-2 text-sm font-black text-slate-700"><MapPin className="size-4 text-brand" /> موقع التشغيل / الفرع*</span>
@@ -917,11 +931,22 @@ export function CashierView() {
                 </label>
                 <label className="space-y-2 sm:col-span-2">
                   <span className="text-sm font-black text-slate-700">ملاحظة افتتاحية</span>
-                  <Input value={openingNotes} onChange={(e) => setOpeningNotes(e.target.value)} className="h-11 rounded-2xl font-bold" placeholder="اختياري — مثال: استلام وردية مسائية" />
+                  <Input
+                    value={openingNotes}
+                    onChange={(e) => setOpeningNotes(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault()
+                        void openShift()
+                      }
+                    }}
+                    className="h-11 rounded-2xl font-bold focus-visible:ring-brand/20"
+                    placeholder="اختياري — مثال: استلام وردية مسائية"
+                  />
                 </label>
               </div>
 
-              <Alert className="rounded-2xl border-sky-100 bg-sky-50/70 text-slate-700">
+              <Alert className="rounded-2xl border-sky-100 bg-sky-50 text-slate-700">
                 <Info className="size-4 text-brand" />
                 <AlertTitle className="font-black">الجلسة مرتبطة بالفرع</AlertTitle>
                 <AlertDescription className="text-sm font-semibold leading-7">كل فاتورة ومخزون وحركة درج بعد الفتح ستُسجل على فرع «{activeCashierBranch?.name ?? "الفرع المحدد"}».</AlertDescription>
