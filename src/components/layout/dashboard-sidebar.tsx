@@ -61,7 +61,7 @@ const navPermissions: Record<string, Permission | null> = {
   "لوحة المتابعة": null,
   "المبيعات": "sales:read",
   "المشتريات": "purchases:read",
-  "الأصناف": "inventory:read",
+  "الأدوية والأصناف": "inventory:read",
   "الجرد": "inventory:read",
   "المستخدمين": "users:read",
   "المحاسبة": "financials:read",
@@ -246,7 +246,7 @@ function canSeeNavEntry(entry: { href?: string; permission?: Permission | null; 
 
 const sidebarSections: SidebarSectionConfig[] = [
   { title: "الأساسي", items: ["الرئيسية", "لوحة المتابعة"] },
-  { title: "التشغيل اليومي", items: ["المبيعات", "المشتريات", "الأصناف", "الجرد"] },
+  { title: "التشغيل اليومي", items: ["المبيعات", "المشتريات", "الأدوية والأصناف", "الجرد"] },
   { title: "الإدارة", items: ["المستخدمين", "المحاسبة", "التقارير", "الموارد البشرية", "CRM", "المهام"] },
   { title: "خدمات إضافية", items: ["الوصفات الطبية", "التوصيل", "نقاط المكافآت", "الإشعارات"] },
   { title: "النظام", items: ["المزامنة والتسوية", "السجلات المحذوفة", "سجل المراجعة", "الإعدادات", "لوحة المطور"] },
