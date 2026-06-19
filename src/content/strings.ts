@@ -1,0 +1,37 @@
+export const strings = {
+  app: {
+    name: "Logixa Pharmacy",
+    tagline: "نظام إدارة الصيدليات المتكامل",
+  },
+  nav: {
+    dashboard: "لوحة التحكم",
+    sales: "المبيعات",
+    cashier: "الكاشير",
+    purchases: "المشتريات",
+    inventory: "المخزون",
+    accounting: "المحاسبة",
+    crm: "CRM",
+    hr: "الموارد البشرية",
+    reports: "التقارير",
+    settings: "الإعدادات",
+  },
+  auth: {
+    login: "تسجيل الدخول",
+    signup: "إنشاء حساب",
+    forgotPassword: "نسيت كلمة المرور",
+    resetPassword: "إعادة تعيين كلمة المرور",
+    email: "البريد الإلكتروني",
+    password: "كلمة المرور",
+  },
+  actions: {
+    save: "حفظ",
+    cancel: "إلغاء",
+    delete: "حذف",
+    edit: "تعديل",
+    create: "إضافة",
+    search: "بحث",
+    print: "طباعة",
+    export: "تصدير",
+    import: "استيراد",
+  },
+}

@@ -1,0 +1,14 @@
+{
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "node scripts/vercel-install.mjs",
+  "framework": "nextjs",
+  "regions": [
+    "iad1"
+  ],
+  "functions": {
+    "src/app/**/*.ts": {
+      "maxDuration": 30
+    }
+  }
+}

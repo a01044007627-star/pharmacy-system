@@ -1,0 +1,5 @@
+export type PurchaseStatus = "received" | "pending" | "ordered" | "draft" | "cancelled" | "void"
+export type PurchasePaymentStatus = "paid" | "partial" | "unpaid"
+export type PurchasePaymentMethod = "cash" | "card" | "wallet" | "bank-transfer"
+export type PurchaseDiscountType = "fixed" | "percent"
+export type PurchaseExpensePaymentMethod = "cash" | "card" | "wallet" | "bank-transfer"
