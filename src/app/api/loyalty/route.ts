@@ -25,8 +25,19 @@ export async function GET(request: Request) {
     const db = getDbClient(supabase) as SupabaseClient
 
     const [balancesResult, transactionsResult] = await Promise.all([
-      db.from("pharmacy_loyalty_balances").select("*, customer:pharmacy_customers(id,name,phone)").eq("pharmacy_id", pharmacyId).limit(100),
-      db.from("pharmacy_loyalty_points").select("*, customer:pharmacy_customers(id,name,phone)").eq("pharmacy_id", pharmacyId).order("created_at", { ascending: false }).limit(100),
+      db
+        .from("pharmacy_loyalty_balances")
+        .select("*, partner:pharmacy_partners!inner(id,name,phone)")
+        .eq("pharmacy_id", pharmacyId)
+        .in("partner.type", ["customer", "both"])
+        .limit(100),
+      db
+        .from("pharmacy_loyalty_points")
+        .select("*, partner:pharmacy_partners!inner(id,name,phone)")
+        .eq("pharmacy_id", pharmacyId)
+        .in("partner.type", ["customer", "both"])
+        .order("created_at", { ascending: false })
+        .limit(100),
     ])
 
     if (balancesResult.error && balancesResult.error.code === "42P01") {

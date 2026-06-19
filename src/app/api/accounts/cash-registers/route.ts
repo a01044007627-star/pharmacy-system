@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
-import { scopeCan } from "@/lib/auth/server-permissions"
+import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-permissions"
 
 function getDbClient() {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : null
@@ -22,15 +22,24 @@ export async function GET(request: Request) {
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر الصيدلية أولًا" }, { status: 400 })
     if (!scopeCan(scope, "financials:read")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
 
+    let registerBranchId = clean(url.searchParams.get("branch_id"))
+    if (registerBranchId && registerBranchId !== "all") assertBranchScope(scope, registerBranchId)
+    if (!registerBranchId || registerBranchId === "all") {
+      if (isBranchScoped(scope)) {
+        registerBranchId = scope.memberships.find((row) => row.pharmacy_id === scope.activePharmacyId)?.branch_id ?? scope.activeBranchId ?? ""
+      } else { registerBranchId = "" }
+    }
+
     const supabase = await createClient()
     const db = getDbClient() ?? supabase
-    const { data, error } = await db
+    let registerQuery = db
       .from("pharmacy_cash_registers")
       .select("*,branch:pharmacy_branches(id,name,code)")
       .eq("pharmacy_id", scope.activePharmacyId)
-      .order("created_at", { ascending: false })
-      .limit(100)
+    if (registerBranchId) registerQuery = registerQuery.eq("branch_id", registerBranchId)
+    registerQuery = registerQuery.order("created_at", { ascending: false }).limit(100)
 
+    const { data, error } = await registerQuery
     if (error) throw error
     return NextResponse.json({ registers: data ?? [] })
   } catch (error) {
@@ -49,6 +58,9 @@ export async function POST(request: Request) {
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر الصيدلية أولًا" }, { status: 400 })
     if (!scopeCan(scope, "financials:write")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
 
+    const cashRegisterBranchId = clean(body.branch_id) || scope.activeBranchId
+    if (cashRegisterBranchId) assertBranchScope(scope, cashRegisterBranchId)
+
     const name = clean(body.name)
     if (!name) return NextResponse.json({ error: "اسم الخزنة مطلوب" }, { status: 400 })
 
@@ -59,7 +71,7 @@ export async function POST(request: Request) {
 
     const { data, error } = await db.from("pharmacy_cash_registers").insert({
       pharmacy_id: pharmacyId,
-      branch_id: clean(body.branch_id) || scope.activeBranchId,
+      branch_id: cashRegisterBranchId,
       name,
       opening_balance: Number(body.opening_balance) || 0,
       closing_balance: Number(body.opening_balance) || 0,

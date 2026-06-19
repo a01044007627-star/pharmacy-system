@@ -51,29 +51,40 @@ export async function POST(request: Request) {
     const totalExpenses = (expenseBalances ?? []).reduce((sum, r) => sum + Number(r.closing_debit ?? 0), 0)
     const netProfit = totalIncome - totalExpenses
 
+    const { data: equityAccounts } = await db.from("pharmacy_chart_of_accounts").select("id,name,code").eq("pharmacy_id", pharmacyId).eq("type", "equity").eq("is_active", true).limit(1)
+
+    const retainedEarningsId = equityAccounts?.[0]?.id ?? null
+
     const lines = []
 
     if (totalIncome > 0) {
-      lines.push({
-        account_id: incomeAccounts?.[0]?.id ?? null,
-        debit: 0,
-        credit: totalIncome,
-        description: "إقفال إيرادات الفترة",
-      })
+      for (const account of incomeAccounts ?? []) {
+        lines.push({
+          pharmacy_id: pharmacyId,
+          account_id: account.id,
+          debit: 0,
+          credit: Number(incomeBalances?.find((b) => b.account_id === account.id)?.closing_credit ?? 0),
+          description: `إقفال إيراد: ${account.name}`,
+        })
+      }
     }
 
     if (totalExpenses > 0) {
-      lines.push({
-        account_id: expenseAccounts?.[0]?.id ?? null,
-        debit: totalExpenses,
-        credit: 0,
-        description: "إقفال مصروفات الفترة",
-      })
+      for (const account of expenseAccounts ?? []) {
+        lines.push({
+          pharmacy_id: pharmacyId,
+          account_id: account.id,
+          debit: Number(expenseBalances?.find((b) => b.account_id === account.id)?.closing_debit ?? 0),
+          credit: 0,
+          description: `إقفال مصروف: ${account.name}`,
+        })
+      }
     }
 
-    if (netProfit !== 0) {
+    if (netProfit !== 0 && retainedEarningsId) {
       lines.push({
-        account_id: null,
+        pharmacy_id: pharmacyId,
+        account_id: retainedEarningsId,
         debit: netProfit > 0 ? netProfit : 0,
         credit: netProfit < 0 ? Math.abs(netProfit) : 0,
         description: netProfit > 0 ? "صافي الربح" : "صافي الخسارة",

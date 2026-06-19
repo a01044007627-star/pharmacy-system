@@ -18,7 +18,8 @@ type AlternativeRow = {
   id: string
   item_id: string
   alternative_item_id: string
-  reason: string | null
+  priority: number
+  notes: string | null
   created_at: string
   item?: { id: string; name_ar: string; sku: string | null } | null
   alternative?: { id: string; name_ar: string; sku: string | null } | null
@@ -37,7 +38,7 @@ export async function GET(request: Request) {
     const db = getDbClient(supabase) as SupabaseClient
     const { data, error } = await db
       .from("pharmacy_item_alternatives")
-      .select("id,item_id,alternative_item_id,reason,created_at")
+      .select("id,item_id,alternative_item_id,priority,notes,created_at")
       .eq("pharmacy_id", scope.activePharmacyId)
       .order("created_at", { ascending: false })
       .limit(500)
@@ -65,7 +66,7 @@ export async function GET(request: Request) {
       alternative: itemMap.get(row.alternative_item_id) ?? null,
     })).filter((row) => {
       if (!query) return true
-      return [row.item?.name_ar, row.item?.sku, row.alternative?.name_ar, row.alternative?.sku, row.reason]
+      return [row.item?.name_ar, row.item?.sku, row.alternative?.name_ar, row.alternative?.sku, row.notes]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(query))
     })
@@ -93,8 +94,8 @@ export async function POST(request: Request) {
     const db = getDbClient(supabase) as SupabaseClient
     const { data, error } = await db
       .from("pharmacy_item_alternatives")
-      .upsert({ pharmacy_id: scope.activePharmacyId, item_id: itemId, alternative_item_id: alternativeItemId, reason: clean(body.reason) || null }, { onConflict: "pharmacy_id,item_id,alternative_item_id" })
-      .select("id,item_id,alternative_item_id,reason,created_at")
+      .upsert({ pharmacy_id: scope.activePharmacyId, item_id: itemId, alternative_item_id: alternativeItemId, priority: Number(body.priority) || 0, notes: clean(body.notes) || null }, { onConflict: "pharmacy_id,item_id,alternative_item_id" })
+      .select("id,item_id,alternative_item_id,priority,notes,created_at")
       .maybeSingle()
     if (error) throw error
 

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
-import { scopeCan } from "@/lib/auth/server-permissions"
+import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-permissions"
 
 function getDbClient() {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : null
@@ -28,6 +28,14 @@ export async function GET(request: Request) {
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
     if (!scopeCan(scope, "inventory:read")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
 
+    let branchId = clean(url.searchParams.get("branch_id"))
+    if (branchId && branchId !== "all") assertBranchScope(scope, branchId)
+    if (!branchId || branchId === "all") {
+      if (isBranchScoped(scope)) {
+        branchId = scope.memberships.find((row) => row.pharmacy_id === scope.activePharmacyId)?.branch_id ?? scope.activeBranchId ?? ""
+      } else { branchId = "" }
+    }
+
     const page = safeNumber(url.searchParams.get("page"), 1, 1, 100000)
     const pageSize = safeNumber(url.searchParams.get("page_size"), 200, 10, 500)
     const offset = (page - 1) * pageSize
@@ -35,13 +43,14 @@ export async function GET(request: Request) {
     const supabase = await createClient()
     const db = getDbClient() ?? supabase
 
-    const { data, error, count } = await db
+    let query = db
       .from("pharmacy_damaged_stock")
       .select("*,item:pharmacy_items(id,name_ar,sku,unit),branch:pharmacy_branches(id,name,code)", { count: "exact" })
       .eq("pharmacy_id", scope.activePharmacyId)
-      .order("created_at", { ascending: false })
-      .range(offset, offset + pageSize - 1)
+    if (branchId) query = query.eq("branch_id", branchId)
+    query = query.order("created_at", { ascending: false }).range(offset, offset + pageSize - 1)
 
+    const { data, error, count } = await query
     if (error) throw error
 
     const total = count ?? 0
@@ -71,6 +80,7 @@ export async function POST(request: Request) {
     const db = getDbClient() ?? supabase
     const pharmacyId = scope.activePharmacyId
     const branchId = clean(body.branch_id) || scope.activeBranchId
+    if (branchId) assertBranchScope(scope, branchId)
     const now = new Date().toISOString()
 
     const { data, error } = await db.from("pharmacy_damaged_stock").insert({

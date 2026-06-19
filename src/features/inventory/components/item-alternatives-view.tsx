@@ -19,7 +19,8 @@ type Alternative = {
   id: string
   item_id: string
   alternative_item_id: string
-  reason: string | null
+  priority: number
+  notes: string | null
   created_at: string
   item?: { id: string; name_ar: string; sku?: string | null } | null
   alternative?: { id: string; name_ar: string; sku?: string | null } | null
@@ -42,7 +43,8 @@ export function ItemAlternativesView() {
   const [alternativeResults, setAlternativeResults] = useState<SearchItem[]>([])
   const [sourceItem, setSourceItem] = useState<SearchItem | null>(null)
   const [alternativeItem, setAlternativeItem] = useState<SearchItem | null>(null)
-  const [reason, setReason] = useState("")
+  const [priority, setPriority] = useState(0)
+  const [notes, setNotes] = useState("")
 
   const load = useCallback(async () => {
     if (!auth.activePharmacyId) return
@@ -100,12 +102,12 @@ export function ItemAlternativesView() {
       const response = await fetch("/api/items/alternatives", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pharmacy_id: auth.activePharmacyId, item_id: sourceItem.id, alternative_item_id: alternativeItem.id, reason }),
+        body: JSON.stringify({ pharmacy_id: auth.activePharmacyId, item_id: sourceItem.id, alternative_item_id: alternativeItem.id, priority, notes }),
       })
       const data = await response.json().catch(() => ({})) as { error?: string }
       if (!response.ok) throw new Error(data.error ?? "فشل حفظ البديل")
       toast.success("تم حفظ بديل الصنف")
-      setSourceItem(null); setAlternativeItem(null); setSourceSearch(""); setAlternativeSearch(""); setReason("")
+      setSourceItem(null); setAlternativeItem(null); setSourceSearch(""); setAlternativeSearch(""); setPriority(0); setNotes("")
       await load()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "فشل حفظ البديل")
@@ -138,8 +140,9 @@ export function ItemAlternativesView() {
               <ItemSearchBox label="الصنف الأصلي" value={sourceSearch} selected={sourceItem} results={sourceResults} onSearch={(value) => { setSourceSearch(value); setSourceItem(null) }} onSelect={(item) => { setSourceItem(item); setSourceSearch(itemName(item)); setSourceResults([]) }} />
               <ItemSearchBox label="الصنف البديل" value={alternativeSearch} selected={alternativeItem} results={alternativeResults} onSearch={(value) => { setAlternativeSearch(value); setAlternativeItem(null) }} onSelect={(item) => { setAlternativeItem(item); setAlternativeSearch(itemName(item)); setAlternativeResults([]) }} />
             </div>
-            <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-              <div className="space-y-1.5"><Label className="font-black">سبب البديل</Label><Textarea value={reason} onChange={(event) => setReason(event.target.value)} className="min-h-20 rounded-xl" placeholder="مثال: نفس المادة الفعالة أو نفس الاستخدام" /></div>
+            <div className="grid gap-3 md:grid-cols-[1fr_120px_auto]">
+              <div className="space-y-1.5"><Label className="font-black">ملاحظات</Label><Textarea value={notes} onChange={(event) => setNotes(event.target.value)} className="min-h-20 rounded-xl" placeholder="مثال: نفس المادة الفعالة أو نفس الاستخدام" /></div>
+              <div className="space-y-1.5"><Label className="font-black">الأولوية</Label><Input type="number" min={0} value={priority} onChange={(event) => setPriority(Number(event.target.value) || 0)} className="h-11 rounded-2xl font-bold" /></div>
               <Button className="self-end rounded-xl px-8" disabled={!canWrite || saving || !sourceItem || !alternativeItem || Boolean(sameSelected) || alreadyExists} onClick={() => void save()}>{saving ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />} حفظ البديل</Button>
             </div>
           </CardContent>
@@ -159,7 +162,7 @@ export function ItemAlternativesView() {
                       <div className="min-w-0">
                         <p className="truncate text-sm font-black text-slate-950">{row.item?.name_ar ?? "صنف"}</p>
                         <p className="mt-2 truncate text-sm font-black text-brand">↳ {row.alternative?.name_ar ?? "بديل"}</p>
-                        {row.reason ? <p className="mt-2 text-xs font-bold text-slate-500">{row.reason}</p> : null}
+                        {row.notes ? <p className="mt-2 text-xs font-bold text-slate-500">{row.notes}</p> : null}
                       </div>
                       <Button size="icon" variant="ghost" className="text-rose-600" disabled={!canWrite} onClick={() => void remove(row.id)}><Trash2 className="size-4" /></Button>
                     </div>

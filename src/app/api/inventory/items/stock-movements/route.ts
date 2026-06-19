@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { getServerAuthScope } from "@/lib/auth/session"
-import { scopeCan } from "@/lib/auth/server-permissions"
+import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-permissions"
 
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
@@ -18,19 +18,29 @@ export async function GET(request: Request) {
     if (!scope.activePharmacyId) return NextResponse.json({ error: "لا توجد صيدلية نشطة" }, { status: 400 })
     if (!scopeCan(scope, "inventory:read")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
 
+    let branchId = url.searchParams.get("branch_id")?.trim() || null
+    if (branchId && branchId !== "all") assertBranchScope(scope, branchId)
+    if (!branchId || branchId === "all") {
+      if (isBranchScoped(scope)) {
+        branchId = scope.memberships.find((row) => row.pharmacy_id === scope.activePharmacyId)?.branch_id ?? scope.activeBranchId ?? null
+      } else { branchId = null }
+    }
+
     const supabase = await createClient()
     const db = getDbClient(supabase)
     const pharmacyId = scope.activePharmacyId
 
     if (!itemId) return NextResponse.json({ error: "معرف الصنف مطلوب" }, { status: 400 })
 
-    const { data, error } = await db
+    let query = db
       .from("pharmacy_stock_movements")
       .select("id, direction, quantity, unit_price, total_value, movement_type, source_table, created_at, batch_id, item_id, branch_id")
       .eq("pharmacy_id", pharmacyId)
       .eq("item_id", itemId)
-      .order("created_at", { ascending: false })
-      .limit(200)
+    if (branchId) query = query.eq("branch_id", branchId)
+    query = query.order("created_at", { ascending: false }).limit(200)
+
+    const { data, error } = await query
 
     if (error) throw error
 

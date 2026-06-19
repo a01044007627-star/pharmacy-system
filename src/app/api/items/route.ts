@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { getServerAuthScope } from "@/lib/auth/session"
-import { scopeCan } from "@/lib/auth/server-permissions"
+import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-permissions"
 import type { BranchOption, ItemBalanceRow, ItemBarcodeRow, ItemBatchRow, ItemSubUnitRow, LookupOption, PharmacyItemListRow } from "@/features/inventory/lib/items-types"
 import { addOpeningStock } from "@/lib/inventory/opening-stock"
 import { allSearchText, expiryState, isLowStock, isOutOfStock, numberValue, primaryBarcode, quantity } from "@/features/inventory/lib/items-helpers"
@@ -264,10 +264,11 @@ export async function GET(request: Request) {
     if (!scopeCan(scope, "inventory:read")) return NextResponse.json({ error: "ليست لديك صلاحية قراءة الأصناف" }, { status: 403 })
     if (mode === "deleted" && !scopeCan(scope, "deleted-records:read")) return NextResponse.json({ error: "ليست لديك صلاحية عرض المحذوفات" }, { status: 403 })
 
-    const canAllBranches = scope.isDeveloper || scope.isOwner || scopeCan(scope, "branches:read")
-    const branchId = canAllBranches
-      ? (requestedBranchParam && requestedBranchParam !== "all" ? requestedBranchParam : null)
-      : scope.activeBranchId
+    let branchId = requestedBranchParam && requestedBranchParam !== "all" ? requestedBranchParam : null
+    if (branchId) assertBranchScope(scope, branchId)
+    if (!branchId && isBranchScoped(scope)) {
+      branchId = scope.memberships.find((row) => row.pharmacy_id === scope.activePharmacyId)?.branch_id ?? scope.activeBranchId
+    }
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
@@ -489,6 +490,9 @@ export async function POST(request: Request) {
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
     if (!scopeCan(scope, "inventory:create")) return NextResponse.json({ error: "ليست لديك صلاحية إضافة الأصناف" }, { status: 403 })
+
+    const itemBranchId = clean(body.branch_id) || null
+    if (itemBranchId) assertBranchScope(scope, itemBranchId)
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient

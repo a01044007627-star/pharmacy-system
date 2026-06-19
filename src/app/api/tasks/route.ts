@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
-import { scopeCan } from "@/lib/auth/server-permissions"
+import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-permissions"
 
 function clean(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
@@ -57,6 +57,9 @@ export async function POST(request: Request) {
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
 
+    const branchId = clean(body.branch_id) || scope.activeBranchId || null
+    if (branchId) assertBranchScope(scope, branchId)
+
     const title = clean(body.title)
     if (!title) return NextResponse.json({ error: "أدخل نص المهمة" }, { status: 400 })
 
@@ -65,7 +68,7 @@ export async function POST(request: Request) {
       .from("pharmacy_tasks")
       .insert({
         pharmacy_id: scope.activePharmacyId,
-        branch_id: clean(body.branch_id) || scope.activeBranchId || null,
+        branch_id: branchId,
         title,
         completed: false,
         assigned_to: clean(body.assigned_to) || null,
@@ -95,6 +98,14 @@ export async function PATCH(request: Request) {
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
 
     const supabase = await createClient()
+    const { data: existingTask } = await supabase
+      .from("pharmacy_tasks")
+      .select("branch_id")
+      .eq("id", taskId)
+      .eq("pharmacy_id", scope.activePharmacyId)
+      .maybeSingle()
+    if (existingTask?.branch_id) assertBranchScope(scope, existingTask.branch_id)
+
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     if ("completed" in body) updates.completed = Boolean(body.completed)
     if ("title" in body) updates.title = clean(body.title)
@@ -128,6 +139,14 @@ export async function DELETE(request: Request) {
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
 
     const supabase = await createClient()
+    const { data: taskToDelete } = await supabase
+      .from("pharmacy_tasks")
+      .select("branch_id")
+      .eq("id", taskId)
+      .eq("pharmacy_id", scope.activePharmacyId)
+      .maybeSingle()
+    if (taskToDelete?.branch_id) assertBranchScope(scope, taskToDelete.branch_id)
+
     const { error } = await supabase
       .from("pharmacy_tasks")
       .delete()

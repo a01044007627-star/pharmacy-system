@@ -244,6 +244,70 @@ export async function POST(request: Request) {
     })
     if (rpcError) throw rpcError
     const result = (data ?? {}) as { sale?: Record<string, unknown>; lines?: unknown[]; duplicate?: boolean }
+
+    if (!result.duplicate && result.sale?.id) {
+      const saleAmount = n(result.sale?.total)
+      const rawMethod = result.sale?.payment_method ?? clean(body.payment_method)
+      const paymentMethod = String(rawMethod || "cash")
+
+      try {
+        await db.from("pharmacy_financial_movements").insert({
+          pharmacy_id: pharmacyId,
+          branch_id: branchId,
+          type: "sale",
+          category: paymentMethod === "credit" ? "credit_sale" : "cash_sale",
+          amount: saleAmount,
+          direction: "in",
+          source_table: "pharmacy_sales",
+          source_id: result.sale.id,
+          description: `فاتورة ${result.sale?.invoice_number ?? ""}`,
+          movement_date: new Date().toISOString(),
+          created_by: scope.user.id,
+        })
+      } catch {} // financial movement is non-critical
+
+      try {
+        const { data: cashAccount } = await db.from("pharmacy_chart_of_accounts").select("id").eq("pharmacy_id", pharmacyId).eq("type", "asset").eq("is_active", true).limit(1).maybeSingle()
+        const { data: revenueAccount } = await db.from("pharmacy_chart_of_accounts").select("id").eq("pharmacy_id", pharmacyId).eq("type", "income").eq("is_active", true).limit(1).maybeSingle()
+
+        if (cashAccount?.id && revenueAccount?.id && saleAmount > 0) {
+          const entryNumber = `SL-${Date.now().toString(36).toUpperCase()}-${String(result.sale?.invoice_number ?? "").slice(-6)}`
+          const { data: journalEntry, error: jeError } = await db.from("pharmacy_journal_entries").insert({
+            pharmacy_id: pharmacyId,
+            branch_id: branchId,
+            entry_number: entryNumber,
+            entry_date: new Date().toISOString().slice(0, 10),
+            description: `تسجيل فاتورة بيع ${result.sale?.invoice_number ?? ""}`,
+            source_table: "pharmacy_sales",
+            source_id: result.sale.id,
+            total_debit: saleAmount,
+            total_credit: saleAmount,
+            created_by: scope.user.id,
+          }).select("*").maybeSingle()
+          if (!jeError && journalEntry) {
+            await db.from("pharmacy_journal_lines").insert([
+              {
+                pharmacy_id: pharmacyId,
+                entry_id: journalEntry.id,
+                account_id: cashAccount.id,
+                debit: saleAmount,
+                credit: 0,
+                description: `مدين: ثمن فاتورة ${result.sale?.invoice_number ?? ""}`,
+              },
+              {
+                pharmacy_id: pharmacyId,
+                entry_id: journalEntry.id,
+                account_id: revenueAccount.id,
+                debit: 0,
+                credit: saleAmount,
+                description: `دائن: إيراد فاتورة ${result.sale?.invoice_number ?? ""}`,
+              },
+            ])
+          }
+        }
+      } catch {} // journal entry is non-critical for the sale flow
+    }
+
     await writeAuditLog(db, {
       pharmacyId,
       branchId,

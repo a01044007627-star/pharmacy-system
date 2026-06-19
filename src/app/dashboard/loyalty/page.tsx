@@ -14,8 +14,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useAuth } from "@/contexts/auth-context"
 import { cn } from "@/lib/utils"
 
-type Balance = { id: string; points: number; customer: { id: string; name: string; phone: string } | null }
-type Transaction = { id: string; points: number; type: string; created_at: string; customer: { id: string; name: string } | null }
+type Balance = { id: string; current_balance: number; partner: { id: string; name: string; phone: string } | null }
+type Transaction = { id: string; points: number; type: string; created_at: string; partner: { id: string; name: string } | null }
 
 export default function LoyaltyPage() {
   const auth = useAuth()
@@ -46,10 +46,10 @@ export default function LoyaltyPage() {
   const filteredBalances = useMemo(() => {
     if (!query) return balances
     const q = query.toLowerCase()
-    return balances.filter((b) => b.customer?.name?.toLowerCase().includes(q) || b.customer?.phone?.includes(q))
+    return balances.filter((b) => b.partner?.name?.toLowerCase().includes(q) || b.partner?.phone?.includes(q))
   }, [balances, query])
 
-  const totalPoints = useMemo(() => balances.reduce((s, b) => s + Math.max(0, Number(b.points || 0)), 0), [balances])
+  const totalPoints = useMemo(() => balances.reduce((s, b) => s + Math.max(0, Number(b.current_balance || 0)), 0), [balances])
 
   return (
     <PageAccess permission="loyalty:read">
@@ -85,9 +85,9 @@ export default function LoyaltyPage() {
                 </TableRow></TableHeader>
                 <TableBody>{filteredBalances.map((row) => (
                   <TableRow key={row.id}>
-                    <TableCell className="font-black text-brand">{row.customer?.name ?? "—"}</TableCell>
-                    <TableCell dir="ltr" className="text-left font-bold">{row.customer?.phone ?? "—"}</TableCell>
-                    <TableCell className="text-center font-black">{Number(row.points || 0).toLocaleString("ar-EG")}</TableCell>
+                    <TableCell className="font-black text-brand">{row.partner?.name ?? "—"}</TableCell>
+                    <TableCell dir="ltr" className="text-left font-bold">{row.partner?.phone ?? "—"}</TableCell>
+                    <TableCell className="text-center font-black">{Number(row.current_balance || 0).toLocaleString("ar-EG")}</TableCell>
                   </TableRow>
                 ))}</TableBody>
               </Table>
@@ -102,7 +102,7 @@ export default function LoyaltyPage() {
                 </TableRow></TableHeader>
                 <TableBody>{transactions.map((row) => (
                   <TableRow key={row.id}>
-                    <TableCell className="font-black text-brand">{row.customer?.name ?? "—"}</TableCell>
+                    <TableCell className="font-black text-brand">{row.partner?.name ?? "—"}</TableCell>
                     <TableCell className="text-center"><Badge variant="outline" className={cn("font-black", row.type === "earn" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-rose-200 bg-rose-50 text-rose-700")}>{row.type === "earn" ? "إضافة" : "خصم"}</Badge></TableCell>
                     <TableCell className="text-center font-black">{Number(row.points || 0).toLocaleString("ar-EG")}</TableCell>
                     <TableCell className="text-center text-xs font-bold">{new Date(row.created_at).toLocaleDateString("ar-EG")}</TableCell>

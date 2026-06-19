@@ -1,18 +1,20 @@
 /* Logixa Pharmacy offline worker. Keep this file plain ES2017 for older clients. */
-const SW_VERSION = "2026.06.19.3"
+const SW_VERSION = "2026.06.20.1"
 const STATIC_CACHE = `logixa-pharmacy-static-${SW_VERSION}`
 const PAGE_CACHE = `logixa-pharmacy-pages-${SW_VERSION}`
 const API_CACHE = `logixa-pharmacy-api-${SW_VERSION}`
 const CACHE_PREFIX = "logixa-pharmacy-"
 const INSTALL_ASSETS = [
   "/offline",
+  "/dashboard/items",
+  "/dashboard/stocktaking",
   "/manifest.json",
   "/icon-192x192.png",
   "/icon-512x512.png",
   "/icon-192.png",
   "/icon-512.png"
 ]
-const AUTH_PATHS = ["/login", "/register", "/forgot-password", "/reset-password", "/api/auth"]
+const AUTH_PATHS = ["/auth/login", "/auth/signup", "/auth/forgot-password", "/auth/reset-password", "/api/auth"]
 const API_EXCLUDES = ["/api/auth", "/api/health", "/api/settings/backup-export", "/api/upload", "/api/download"]
 
 function cacheKeyWithoutSearch(request) {

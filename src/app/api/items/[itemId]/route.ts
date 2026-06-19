@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
-import { scopeCan } from "@/lib/auth/server-permissions"
+import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-permissions"
 import { adjustOpeningStock } from "@/lib/inventory/opening-stock"
 import { cleanItemText, finiteNonNegative, normalizeBarcodeInputs, normalizeItemName, postgresErrorMessage } from "@/features/inventory/lib/item-input"
 
@@ -36,6 +36,7 @@ export async function GET(request: Request, context: Context) {
     const { data: item, error } = await db.from("pharmacy_items").select("*,group:pharmacy_item_groups(id,name),brand:pharmacy_item_brands(id,name)").eq("id", itemId).eq("pharmacy_id", scope.activePharmacyId).maybeSingle()
     if (error) throw error
     if (!item) return NextResponse.json({ error: "الصنف غير موجود" }, { status: 404 })
+    if (item.branch_id) assertBranchScope(scope, item.branch_id as string)
 
     const [barcodes, units, variants] = await Promise.all([
       db.from("pharmacy_item_barcodes").select("id,barcode,is_primary").eq("item_id", itemId).eq("pharmacy_id", scope.activePharmacyId),
@@ -71,6 +72,8 @@ export async function PATCH(request: Request, context: Context) {
       .maybeSingle()
     if (oldError) throw oldError
     if (!oldItem) return NextResponse.json({ error: "الصنف غير موجود" }, { status: 404 })
+
+    if (oldItem.branch_id) assertBranchScope(scope, oldItem.branch_id as string)
 
     const requestedName = "name_ar" in body ? cleanItemText(body.name_ar) : cleanItemText(oldItem.name_ar)
     if (!requestedName) return NextResponse.json({ error: "اسم الصنف مطلوب" }, { status: 400 })

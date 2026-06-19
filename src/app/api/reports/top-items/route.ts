@@ -50,8 +50,8 @@ export async function GET(request: Request) {
         item_name,
         quantity,
         unit_price,
-        total_price,
-        cost_price,
+        net_total,
+        purchase_price,
         sale:pharmacy_sales!inner(id, sale_date, branch_id, pharmacy_id, voided_at)
       `)
       .eq("sale.pharmacy_id", scope.activePharmacyId)
@@ -69,8 +69,8 @@ export async function GET(request: Request) {
       const itemId = String(line.item_id ?? "unknown")
       const itemName = String(line.item_name ?? "غير معروف")
       const qty = Number(line.quantity ?? 0)
-      const revenue = Number(line.total_price ?? 0)
-      const cost = Number(line.cost_price ?? 0) * qty
+      const revenue = Number(line.net_total ?? 0)
+      const cost = Number(line.purchase_price ?? 0) * qty
       const entry = itemMap.get(itemId) ?? { name: itemName, quantity: 0, revenue: 0, cost: 0, count: 0 }
       entry.quantity += qty
       entry.revenue += revenue
