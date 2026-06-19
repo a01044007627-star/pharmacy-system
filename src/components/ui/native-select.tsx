@@ -74,34 +74,7 @@ function NativeSelect({
   )
 }
 
-function NativeSelectOption({
-  className,
-  children,
-  value,
-  disabled,
-}: React.ComponentProps<"option"> & { value?: string }) {
-  return (
-    <SelectItem
-      value={value ?? ""}
-      disabled={disabled}
-      className={className}
-    >
-      {children}
-    </SelectItem>
-  )
-}
-
-function NativeSelectOptGroup({
-  className,
-  children,
-  label,
-}: React.ComponentProps<"optgroup">) {
-  return (
-    <SelectGroup className={className}>
-      {label && <div className="px-2 py-1.5 text-xs font-black text-slate-400 text-right">{label}</div>}
-      {children}
-    </SelectGroup>
-  )
-}
+const NativeSelectOption = SelectItem
+const NativeSelectOptGroup = SelectGroup
 
 export { NativeSelect, NativeSelectOptGroup, NativeSelectOption }
