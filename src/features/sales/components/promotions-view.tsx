@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Checkbox } from "@/components/ui/checkbox"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
@@ -216,7 +217,7 @@ function CouponsSection({ auth, settings, money, canWrite }: { auth: ReturnType<
               <div><label className="mb-1 block text-xs font-black text-slate-700">من تاريخ</label><Input value={form.valid_from} onChange={(e) => setForm((f) => ({ ...f, valid_from: e.target.value }))} type="date" className="h-10 rounded-xl font-bold" /></div>
               <div><label className="mb-1 block text-xs font-black text-slate-700">إلى تاريخ</label><Input value={form.valid_until} onChange={(e) => setForm((f) => ({ ...f, valid_until: e.target.value }))} type="date" className="h-10 rounded-xl font-bold" /></div>
             </div>
-            <label className="flex items-center gap-2"><input type="checkbox" checked={form.is_active} onChange={(e) => setForm((f) => ({ ...f, is_active: e.target.checked }))} className="size-4 rounded border-slate-300" /><span className="text-sm font-bold">نشط</span></label>
+            <label className="flex items-center gap-2 cursor-pointer"><Checkbox checked={form.is_active} onCheckedChange={(checked) => setForm((f) => ({ ...f, is_active: !!checked }))} /><span className="text-sm font-bold select-none">نشط</span></label>
           </div>
           <div className="mt-4 flex justify-end gap-2">
             <Button variant="outline" onClick={() => setDialogOpen(false)}>إلغاء</Button>

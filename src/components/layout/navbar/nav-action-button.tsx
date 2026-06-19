@@ -15,10 +15,10 @@ interface NavActionButtonProps {
 }
 
 export const navbarButtonClass =
-  "inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50/80 px-3 text-slate-700 shadow-none transition hover:border-brand/30 hover:bg-brand-muted hover:text-brand"
+  "inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-200/80 bg-white/90 px-3 text-slate-700 shadow-xs transition hover:border-brand/30 hover:bg-brand-muted hover:text-brand"
 
 export const navbarIconButtonClass =
-  "inline-flex size-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50/80 text-slate-600 shadow-none transition hover:border-brand/30 hover:bg-brand-muted hover:text-brand"
+  "inline-flex size-9 shrink-0 items-center justify-center rounded-xl border border-slate-200/80 bg-white/90 text-slate-600 shadow-xs transition hover:border-brand/30 hover:bg-brand-muted hover:text-brand"
 
 export function NavActionButton({
   label, icon: Icon, href, onClick, type = "text", highlight = false, className,

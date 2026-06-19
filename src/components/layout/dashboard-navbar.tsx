@@ -66,7 +66,7 @@ const DashboardNavbar = memo(function DashboardNavbar({
   }
 
   return (
-    <header className="sticky top-0 z-30 h-16 border-b border-slate-200 bg-white/95 shadow-sm backdrop-blur">
+    <header className="sticky top-0 z-30 h-16 border-b border-[#cde5e1] bg-brand-subtle/90 shadow-xs backdrop-blur">
       <div dir="rtl" className="flex h-full min-w-0 items-center justify-between gap-3 px-3 sm:px-4">
         <div className="flex min-w-0 shrink-0 items-center gap-1.5">
           <button

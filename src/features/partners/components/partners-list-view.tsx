@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Textarea } from "@/components/ui/textarea"
@@ -290,7 +291,7 @@ export function PartnersListView({ partnerType }: PartnersListViewProps) {
           ) : (
             <Table className="min-w-[850px]">
               <TableHeader><TableRow>
-                <TableHead className="w-12 text-center"><input aria-label="تحديد كل الصفحة" type="checkbox" checked={allCurrentSelected} onChange={(event) => toggleAll(event.currentTarget.checked)} /></TableHead>
+                <TableHead className="w-12 text-center"><Checkbox className="mx-auto" aria-label="تحديد كل الصفحة" checked={allCurrentSelected} onCheckedChange={(checked) => toggleAll(!!checked)} /></TableHead>
                 <TableHead className="text-right">الاسم</TableHead>
                 <TableHead className="text-right">الهاتف</TableHead>
                 <TableHead className="text-center">الرصيد</TableHead>
@@ -302,7 +303,7 @@ export function PartnersListView({ partnerType }: PartnersListViewProps) {
               </TableRow></TableHeader>
               <TableBody>{rows.map((row) => (
                 <TableRow key={row.id}>
-                  <TableCell className="text-center"><input aria-label={`تحديد ${row.name}`} type="checkbox" checked={selectedIds.includes(row.id)} onChange={(event) => toggleOne(row.id, event.currentTarget.checked)} /></TableCell>
+                  <TableCell className="text-center"><Checkbox className="mx-auto" aria-label={`تحديد ${row.name}`} checked={selectedIds.includes(row.id)} onCheckedChange={(checked) => toggleOne(row.id, !!checked)} /></TableCell>
                   <TableCell>
                     <div className="font-black text-slate-950">{row.name}</div>
                     <div className="text-xs font-bold text-slate-400">{row.email ?? row.tax_id ?? "—"}</div>

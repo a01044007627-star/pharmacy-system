@@ -52,20 +52,20 @@ const iconMap: Record<string, LucideIcon> = {
 
 const groupToneMap = {
   sales: {
-    main: "#167fa3", ink: "#075985", soft: "#edf8ff",
-    border: "#b8d8ea", shadow: "rgba(7, 89, 133, 0.14)", strongShadow: "rgba(7, 54, 76, 0.24)",
+    main: "#0284c7", ink: "#0369a1", soft: "#f0f9ff",
+    border: "#bae6fd", shadow: "rgba(2, 132, 199, 0.08)", strongShadow: "rgba(2, 132, 199, 0.18)",
   },
   purchases: {
-    main: "#d5b800", ink: "#785f00", soft: "#fff8d9",
-    border: "#ead88b", shadow: "rgba(120, 95, 0, 0.14)", strongShadow: "rgba(99, 77, 0, 0.23)",
+    main: "#ea580c", ink: "#9a3412", soft: "#fff7ed",
+    border: "#ffedd5", shadow: "rgba(234, 88, 12, 0.08)", strongShadow: "rgba(234, 88, 12, 0.18)",
   },
   inventory: {
-    main: "#1db4c3", ink: "#087b86", soft: "#e9fbfc",
-    border: "#afe7eb", shadow: "rgba(8, 123, 134, 0.14)", strongShadow: "rgba(6, 92, 100, 0.23)",
+    main: "#0d9488", ink: "#115e59", soft: "#f0fdfa",
+    border: "#ccfbf1", shadow: "rgba(13, 148, 136, 0.08)", strongShadow: "rgba(13, 148, 136, 0.18)",
   },
   admin: {
-    main: "#4b80ed", ink: "#234da9", soft: "#eef3ff",
-    border: "#bfd0ff", shadow: "rgba(35, 77, 169, 0.14)", strongShadow: "rgba(23, 55, 122, 0.23)",
+    main: "#4f46e5", ink: "#3730a3", soft: "#eef2ff",
+    border: "#c7d2fe", shadow: "rgba(79, 70, 229, 0.08)", strongShadow: "rgba(79, 70, 229, 0.18)",
   },
 } as const
 
@@ -162,7 +162,7 @@ export function HomeActionGroups() {
                       key={`${group.title}-${item.title}`}
                       href={item.href}
                       className={cn(
-                        "home-action-tile group relative overflow-hidden rounded-lg border p-5 transition duration-200 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-dashboard-bg",
+                        "home-action-tile group relative overflow-hidden rounded-2xl border p-5 transition duration-200 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-dashboard-bg",
                         isWide ? "col-span-2" : "col-span-1",
                       )}
                     >

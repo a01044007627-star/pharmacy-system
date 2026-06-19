@@ -301,11 +301,15 @@
     color: #fff;
     border-color: var(--group-border);
     background-color: var(--group-main);
-    box-shadow: 0 12px 22px var(--group-shadow-strong);
+    box-shadow: 0 10px 24px -4px var(--group-shadow-strong), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    border-radius: 1.25rem;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   .home-action-tile:hover {
-    box-shadow: 0 16px 28px var(--group-shadow-strong);
+    box-shadow: 0 20px 32px -6px var(--group-shadow-strong);
+    transform: translateY(-4px) scale(1.02);
+    border-color: rgba(255, 255, 255, 0.4);
   }
 }
 
