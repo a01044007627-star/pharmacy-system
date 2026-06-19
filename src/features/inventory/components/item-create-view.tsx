@@ -425,7 +425,7 @@ export function ItemCreateView({
     const sell = Number(form.sell_price) || 0;
     const profit = sell - buy;
     const margin =
-      buy > 0 ? (profit / buy) * 100 : Number(form.profit_margin) || 0;
+      sell > 0 ? (profit / sell) * 100 : Number(form.profit_margin) || 0;
     return { profit, margin };
   }, [
     form.buy_price,
@@ -627,9 +627,11 @@ export function ItemCreateView({
             <Button
               variant="outline"
               className="h-10 rounded-xl"
-              render={<Link href="/dashboard/items" />}
+              asChild
             >
-              <ArrowRight className="size-4" /> الأصناف
+              <Link href="/dashboard/items">
+                <ArrowRight className="size-4" /> الأصناف
+              </Link>
             </Button>
           }
         />
@@ -638,7 +640,7 @@ export function ItemCreateView({
           <AccountingMetric label="معادلة الوحدة" value={unitEquation} />
           <AccountingMetric
             label="ربح تقديري"
-            value={`${pricingPreview.profit.toLocaleString("ar-EG", { maximumFractionDigits: 2 })} ج.م`}
+            value={`${pricingPreview.profit.toLocaleString("ar-EG", { maximumFractionDigits: 2 })} ج.م (${pricingPreview.margin.toLocaleString("ar-EG", { maximumFractionDigits: 1 })}% هامش)`}
           />
           <AccountingMetric
             label="حالة البيع"
@@ -1212,9 +1214,11 @@ export function ItemCreateView({
           <Button
             variant="outline"
             className="h-11 rounded-xl"
-            render={<Link href="/dashboard/items" />}
+            asChild
           >
-            <ArrowRight className="size-4" /> إلغاء
+            <Link href="/dashboard/items">
+              <ArrowRight className="size-4" /> إلغاء
+            </Link>
           </Button>
           <Button
             className="h-11 min-w-36 rounded-xl px-5 font-black"

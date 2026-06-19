@@ -438,10 +438,10 @@ export async function POST(request: Request) {
     if (!item) return NextResponse.json({ error: "فشل إنشاء الصنف" }, { status: 500 })
     createdItemId = item.id as string
 
-    const barcodes = Array.isArray(body.barcodes) ? body.barcodes as Array<{ barcode: string; is_primary?: boolean }> : []
-    if (barcodes.length > 0) {
+    const barcodesInput = Array.isArray(body.barcodes) ? body.barcodes as Array<{ barcode: string; is_primary?: boolean }> : []
+    if (barcodesInput.length > 0) {
       const seenBarcodes = new Set<string>()
-      const barcodeRows = barcodes
+      const barcodeRows = barcodesInput
         .map((barcode, index) => ({
           pharmacy_id: pharmacyId,
           item_id: item.id,
