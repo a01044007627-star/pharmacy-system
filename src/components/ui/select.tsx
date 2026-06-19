@@ -119,10 +119,11 @@ function SelectContent({
           data-slot="select-content"
           data-align-trigger={alignItemWithTrigger}
           className={cn("pharmacy-scrollbar relative isolate z-[99999] max-h-[min(var(--available-height),360px)] w-[var(--anchor-width)] min-w-48 origin-[var(--transform-origin)] overflow-x-hidden overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2 text-right text-slate-900 shadow-[0_18px_50px_rgba(15,23,42,0.18)] ring-1 ring-slate-950/5 duration-100 data-[align-trigger=true]:animate-none data-[side=bottom]:slide-in-from-top-2 data-[side=inline-end]:slide-in-from-left-2 data-[side=inline-start]:slide-in-from-right-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95", className )}
+          dir="rtl"
           {...props}
         >
           <SelectScrollUpButton />
-          <SelectPrimitive.List>{children}</SelectPrimitive.List>
+          <SelectPrimitive.List dir="rtl">{children}</SelectPrimitive.List>
           <SelectScrollDownButton />
         </SelectPrimitive.Popup>
       </SelectPrimitive.Positioner>
@@ -157,7 +158,7 @@ function SelectItem({
       )}
       {...props}
     >
-      <SelectPrimitive.ItemText className="flex flex-1 shrink-0 justify-end gap-2 whitespace-nowrap text-right">
+      <SelectPrimitive.ItemText className="flex flex-1 shrink-0 justify-start gap-2 whitespace-nowrap text-right">
         {localizeSelectLabel(children)}
       </SelectPrimitive.ItemText>
       <SelectPrimitive.ItemIndicator

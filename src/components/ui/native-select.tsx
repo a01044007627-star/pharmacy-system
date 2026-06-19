@@ -48,6 +48,26 @@ function NativeSelect({
     }
   }, [onChange, name])
 
+  // Extract items record to allow SelectValue to resolve value to label
+  const items = React.useMemo(() => {
+    const extracted: Record<string, React.ReactNode> = {}
+    const traverse = (node: React.ReactNode) => {
+      React.Children.forEach(node, (child) => {
+        if (!React.isValidElement(child)) return
+        const props = child.props as any
+        if (props) {
+          if ("value" in props && props.children !== undefined) {
+            extracted[String(props.value)] = props.children
+          } else if (props.children) {
+            traverse(props.children)
+          }
+        }
+      })
+    }
+    traverse(children)
+    return extracted
+  }, [children])
+
   return (
     <div
       className={cn(
@@ -62,6 +82,7 @@ function NativeSelect({
         defaultValue={defaultValue}
         onValueChange={handleValueChange}
         disabled={disabled}
+        items={items}
       >
         <SelectTrigger className={cn("w-full", selectClassName)} size={size}>
           <SelectValue placeholder="اختر..." />
