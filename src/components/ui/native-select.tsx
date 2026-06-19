@@ -1,65 +1,75 @@
 import * as React from "react"
-
 import { cn } from "@/lib/utils"
-import { ChevronDownIcon } from "lucide-react"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  SelectGroup,
+} from "./select"
 
-const nativeSelectLabelMap: Record<string, string> = {
-  all: "الكل",
-  none: "بدون",
-  active: "نشط",
-  inactive: "غير نشط",
-  pending: "قيد الانتظار",
-  paid: "مدفوع",
-  unpaid: "غير مدفوع",
-  partial: "مدفوع جزئيًا",
-  cash: "نقدي",
-  card: "بطاقة",
-  wallet: "محفظة",
-  bank: "تحويل بنكي",
-  cheque: "شيك",
-  credit: "آجل",
-  supplier: "مورد",
-  customer: "عميل",
-  both: "مورد وعميل",
-}
-
-function localizeNativeOptionLabel(children: React.ReactNode) {
-  if (typeof children !== "string") return children
-  const key = children.trim().toLowerCase()
-  return nativeSelectLabelMap[key] ?? children
-}
-
-type NativeSelectProps = Omit<React.ComponentProps<"select">, "size"> & {
-  size?: "sm" | "default"
+export interface NativeSelectProps {
+  className?: string
   selectClassName?: string
+  size?: "sm" | "default"
+  value?: string
+  defaultValue?: string
+  onChange?: (event: React.ChangeEvent<HTMLSelectElement>) => void
+  disabled?: boolean
+  name?: string
+  children?: React.ReactNode
 }
 
 function NativeSelect({
   className,
   selectClassName,
   size = "default",
-  ...props
+  value,
+  defaultValue,
+  onChange,
+  disabled,
+  name,
+  children,
 }: NativeSelectProps) {
+  const handleValueChange = React.useCallback((val: string | null) => {
+    if (onChange && val !== null) {
+      const mockEvent = {
+        target: {
+          value: val,
+          name: name || "",
+        },
+        currentTarget: {
+          value: val,
+          name: name || "",
+        },
+      } as React.ChangeEvent<HTMLSelectElement>
+      onChange(mockEvent)
+    }
+  }, [onChange, name])
+
   return (
     <div
       className={cn(
-        "group/native-select relative w-full min-w-0 has-[select:disabled]:opacity-50",
+        "group/native-select relative w-full min-w-0",
         className
       )}
       data-slot="native-select-wrapper"
       data-size={size}
     >
-      <select
-        data-slot="native-select"
-        data-size={size}
-        dir="rtl"
-        className={cn(
-          "h-10 w-full min-w-0 appearance-none rounded-xl border border-input bg-white py-1 pe-10 ps-3.5 text-right text-sm font-bold text-foreground shadow-xs transition-all outline-none select-none selection:bg-primary selection:text-primary-foreground placeholder:text-slate-400 hover:border-slate-400 focus-visible:border-brand focus-visible:ring-2 focus-visible:ring-brand/20 disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-slate-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-[size=sm]:h-8 data-[size=sm]:rounded-lg data-[size=sm]:py-0.5 dark:bg-slate-900/30 dark:border-slate-800 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40",
-          selectClassName,
-        )}
-        {...props}
-      />
-      <ChevronDownIcon className="pointer-events-none absolute top-1/2 end-3 size-4 -translate-y-1/2 text-muted-foreground select-none" aria-hidden="true" data-slot="native-select-icon" />
+      <Select
+        value={value}
+        defaultValue={defaultValue}
+        onValueChange={handleValueChange}
+        disabled={disabled}
+      >
+        <SelectTrigger className={cn("w-full", selectClassName)} size={size}>
+          <SelectValue placeholder="اختر..." />
+        </SelectTrigger>
+        <SelectContent className="z-[9999]" align="start">
+          {children}
+        </SelectContent>
+      </Select>
     </div>
   )
 }
@@ -67,29 +77,30 @@ function NativeSelect({
 function NativeSelectOption({
   className,
   children,
-  ...props
-}: React.ComponentProps<"option">) {
+  value,
+  disabled,
+}: React.ComponentProps<"option"> & { value?: string }) {
   return (
-    <option
-      data-slot="native-select-option"
-      className={cn("bg-white py-2 text-right text-slate-900", className)}
-      {...props}
+    <SelectItem
+      value={value ?? ""}
+      disabled={disabled}
+      className={className}
     >
-      {localizeNativeOptionLabel(children)}
-    </option>
+      {children}
+    </SelectItem>
   )
 }
 
 function NativeSelectOptGroup({
   className,
-  ...props
+  children,
+  label,
 }: React.ComponentProps<"optgroup">) {
   return (
-    <optgroup
-      data-slot="native-select-optgroup"
-      className={cn("bg-white py-2 text-right text-slate-900", className)}
-      {...props}
-    />
+    <SelectGroup className={className}>
+      {label && <div className="px-2 py-1.5 text-xs font-black text-slate-400 text-right">{label}</div>}
+      {children}
+    </SelectGroup>
   )
 }
 
