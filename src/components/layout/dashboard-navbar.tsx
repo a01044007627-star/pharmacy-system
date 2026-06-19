@@ -66,7 +66,7 @@ const DashboardNavbar = memo(function DashboardNavbar({
   }
 
   return (
-    <header className="sticky top-0 z-30 h-16 border-b border-[#cde5e1] bg-brand-subtle/90 shadow-xs backdrop-blur">
+    <header className="sticky top-0 z-30 h-16 border-b border-brand-hover bg-brand shadow-xs">
       <div dir="rtl" className="flex h-full min-w-0 items-center justify-between gap-3 px-3 sm:px-4">
         <div className="flex min-w-0 shrink-0 items-center gap-1.5">
           <button
@@ -119,7 +119,7 @@ const DashboardNavbar = memo(function DashboardNavbar({
             </PopoverTrigger>
             <PopoverContent
               align="start"
-              className="w-80 p-0 rounded-xl border border-slate-100 bg-white/95 backdrop-blur-md shadow-[0_10px_25px_-5px_rgba(0,0,0,0.1),0_8px_16px_-6px_rgba(0,0,0,0.05)]"
+              className="w-80 p-0 rounded-xl border border-slate-100 bg-white shadow-[0_10px_25px_-5px_rgba(0,0,0,0.1),0_8px_16px_-6px_rgba(0,0,0,0.05)]"
             >
               <div dir="rtl" className="w-full">
                 <div className="flex items-center justify-between border-b border-slate-100 px-3.5 py-2.5">
@@ -209,7 +209,7 @@ const DashboardNavbar = memo(function DashboardNavbar({
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"
-              className="w-60 p-1.5 rounded-xl border border-slate-100 bg-white/95 backdrop-blur-md shadow-[0_10px_25px_-5px_rgba(0,0,0,0.1),0_8px_16px_-6px_rgba(0,0,0,0.05)]"
+              className="w-60 p-1.5 rounded-xl border border-slate-100 bg-white shadow-[0_10px_25px_-5px_rgba(0,0,0,0.1),0_8px_16px_-6px_rgba(0,0,0,0.05)]"
             >
               <DropdownMenuGroup>
                 <DropdownMenuLabel className="flex flex-col p-2.5 rounded-lg bg-slate-50/80 mb-1.5 leading-none select-none">

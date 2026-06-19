@@ -388,7 +388,7 @@ const DashboardSidebar = memo(function DashboardSidebar({ open, onOpenChange, co
             onClick={() => onOpenChange(false)}
             className="flex min-w-0 flex-1 items-center gap-3 rounded-2xl bg-brand px-4 py-2.5 text-white shadow-sm transition hover:bg-brand-hover"
           >
-            <span className="size-2.5 shrink-0 rounded-full bg-emerald-400 shadow-[0_0_0_4px_rgba(52,211,153,0.18)]" />
+            <span className="size-2.5 shrink-0 rounded-full bg-sky-300 shadow-[0_0_0_4px_rgba(125,211,252,0.2)]" />
             <span className="min-w-0 truncate text-sm font-black tracking-wide" translate="no">{appName}</span>
           </Link>
           <button onClick={() => onOpenChange(false)} className="flex size-9 shrink-0 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 lg:hidden">

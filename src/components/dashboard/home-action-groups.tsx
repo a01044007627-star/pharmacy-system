@@ -118,7 +118,7 @@ function WelcomeHeader() {
           <Badge className="h-9 rounded-xl bg-[#edf8ff] px-3 text-[12px] font-black text-[#075985] ring-1 ring-[#bae6fd]">
             {isDeveloper ? "وضع المطور" : "مستخدم مفعل"}
           </Badge>
-          <Badge className="h-9 rounded-xl bg-[#ecfdf5] px-3 text-[12px] font-black text-[#047857] ring-1 ring-[#a7f3d0]">
+          <Badge className="h-9 rounded-xl bg-brand-muted px-3 text-[12px] font-black text-brand ring-1 ring-brand-subtle">
             <Building className="ml-1 size-3.5" />
             {activeBranch?.name ?? activePharmacy?.name ?? "كل الصيدليات"}
           </Badge>
