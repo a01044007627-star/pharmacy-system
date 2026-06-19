@@ -943,7 +943,7 @@ export async function POST(request: Request) {
       for (const { item, prepared } of insertedBySku.values()) {
         if (prepared.row.openingStock <= 0 || !prepared.row.manageStock) continue
         const quantity = prepared.row.openingStock
-        const unitPrice = item.buy_price || 0
+        const unitPrice = Number(item.buy_price) || 0
 
         balanceRows.push({
           pharmacy_id: pharmacyId,
