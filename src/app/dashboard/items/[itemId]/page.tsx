@@ -1,8 +1,12 @@
 import { ItemDetailView } from "@/features/inventory/components/item-detail-view"
 
-type PageProps = { params: Promise<{ itemId: string }> }
+type PageProps = {
+  params: Promise<{ itemId: string }>
+  searchParams: Promise<{ pharmacy_id?: string | string[] }>
+}
 
-export default async function ItemDetailsPage({ params }: PageProps) {
-  const { itemId } = await params
-  return <ItemDetailView itemId={itemId} />
+export default async function ItemDetailsPage({ params, searchParams }: PageProps) {
+  const [{ itemId }, query] = await Promise.all([params, searchParams])
+  const pharmacyId = Array.isArray(query.pharmacy_id) ? query.pharmacy_id[0] : query.pharmacy_id
+  return <ItemDetailView itemId={itemId} pharmacyId={pharmacyId} />
 }

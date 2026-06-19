@@ -6,7 +6,6 @@ import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { DashboardPageHeader } from "@/components/shared/page-ui"
 import { EmptyState, SkeletonRows } from "@/components/shared/empty-state"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -68,7 +67,7 @@ export default function PrescriptionsPage() {
         <DashboardPageHeader title="الوصفات الطبية" subtitle="إدارة الوصفات الطبية للمرضى." icon={FileText} actions={
           <>
             <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()}><RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث</Button>
-            {auth.can("hr:write") ? <Button className="h-10 rounded-xl" onClick={() => setOpen(true)}><Plus className="size-4" /> وصفة جديدة</Button> : null}
+            {auth.can("prescriptions:write") ? <Button className="h-10 rounded-xl" onClick={() => setOpen(true)}><Plus className="size-4" /> وصفة جديدة</Button> : null}
           </>
         } />
 

@@ -1,11 +1,12 @@
 "use client"
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { Session, User } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/client"
 import { isSuperAdmin, SUPER_ADMIN_ROLE, resolveRole } from "@/config/super-admin"
 import { hasPermission, normalizeRole, type Permission } from "@/lib/auth/permissions"
 import type { AuthScope, BranchSummary, MedicalRole, PharmacyMembership, PharmacySummary, UserProfile } from "@/types"
+import { apiRequest } from "@/lib/api-client"
 
 interface ClientAuthScope extends Omit<AuthScope, "user" | "session"> {
   user: User | null
@@ -72,10 +73,21 @@ function readStoredScope() {
 
 function persistScope(pharmacyId: string | null, branchId: string | null) {
   if (typeof window === "undefined") return
-  if (pharmacyId) window.localStorage.setItem("active-pharmacy-id", pharmacyId)
-  else window.localStorage.removeItem("active-pharmacy-id")
-  if (branchId) window.localStorage.setItem("active-branch-id", branchId)
-  else window.localStorage.removeItem("active-branch-id")
+  const maxAge = 60 * 60 * 24 * 30
+  if (pharmacyId) {
+    window.localStorage.setItem("active-pharmacy-id", pharmacyId)
+    document.cookie = `active-pharmacy-id=${encodeURIComponent(pharmacyId)}; path=/; max-age=${maxAge}; samesite=lax`
+  } else {
+    window.localStorage.removeItem("active-pharmacy-id")
+    document.cookie = "active-pharmacy-id=; path=/; max-age=0; samesite=lax"
+  }
+  if (branchId) {
+    window.localStorage.setItem("active-branch-id", branchId)
+    document.cookie = `active-branch-id=${encodeURIComponent(branchId)}; path=/; max-age=${maxAge}; samesite=lax`
+  } else {
+    window.localStorage.removeItem("active-branch-id")
+    document.cookie = "active-branch-id=; path=/; max-age=0; samesite=lax"
+  }
 }
 
 function buildLocalFallback(user: User | null, session: Session | null): ClientAuthScope {
@@ -96,10 +108,20 @@ function buildLocalFallback(user: User | null, session: Session | null): ClientA
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [supabase] = useState(createClient)
   const [scope, setScope] = useState<ClientAuthScope>(emptyScope)
+  const scopeRef = useRef<ClientAuthScope>(emptyScope)
+  const hydrateSequenceRef = useRef(0)
+  const hydrateAbortRef = useRef<AbortController | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  useEffect(() => { scopeRef.current = scope }, [scope])
+
   const hydrate = useCallback(async (session: Session | null, requested?: { pharmacyId?: string | null; branchId?: string | null }) => {
+    const sequence = ++hydrateSequenceRef.current
+    hydrateAbortRef.current?.abort()
+    const controller = new AbortController()
+    hydrateAbortRef.current = controller
+
     const user = session?.user ?? null
     if (!user) {
       persistScope(null, null)
@@ -109,25 +131,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return
     }
 
-    setLoading(true)
+    const existing = scopeRef.current
+    const hasUsableScope = existing.user?.id === user.id && Boolean(existing.activePharmacyId)
+    if (!hasUsableScope) setLoading(true)
     setError(null)
-    setScope((prev) => ({ ...prev, ...buildLocalFallback(user, session) }))
+    setScope((prev) => hasUsableScope ? { ...prev, user, session } : { ...prev, ...buildLocalFallback(user, session) })
 
     try {
       const stored = readStoredScope()
-      const pharmacyId = requested?.pharmacyId ?? stored.pharmacyId
-      const branchId = requested?.branchId ?? stored.branchId
+      const pharmacyId = requested && "pharmacyId" in requested ? requested.pharmacyId ?? null : stored.pharmacyId
+      const branchId = requested && "branchId" in requested ? requested.branchId ?? null : stored.branchId
       const search = new URLSearchParams()
       if (pharmacyId) search.set("pharmacy_id", pharmacyId)
       if (branchId) search.set("branch_id", branchId)
 
-      const response = await fetch(`/api/auth/me${search.size ? `?${search.toString()}` : ""}`, { cache: "no-store" })
-      if (!response.ok) throw new Error("فشل تحميل صلاحيات المستخدم")
-      const data = (await response.json()) as ApiAuthResponse
+      const data = await apiRequest<ApiAuthResponse>(
+        `/api/auth/me${search.size ? `?${search.toString()}` : ""}`,
+        { cache: "no-store", timeoutMs: 15_000, retries: 2, signal: controller.signal },
+      )
+      if (sequence !== hydrateSequenceRef.current || controller.signal.aborted) return
 
       persistScope(data.activePharmacyId, data.activeBranchId)
-      setScope({
-        user: user,
+      const nextScope: ClientAuthScope = {
+        user,
         session,
         profile: data.profile,
         role: normalizeRole(data.role),
@@ -139,13 +165,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         activeBranch: data.activeBranch,
         memberships: data.memberships ?? [],
         branches: data.branches ?? [],
-      })
+      }
+      scopeRef.current = nextScope
+      setScope(nextScope)
     } catch (err) {
+      if (controller.signal.aborted || sequence !== hydrateSequenceRef.current) return
       const message = err instanceof Error ? err.message : "فشل تحميل بيانات الصلاحيات"
       setError(message)
-      setScope(buildLocalFallback(user, session))
+      setScope((prev) => prev.user?.id === user.id && prev.activePharmacyId
+        ? { ...prev, user, session }
+        : buildLocalFallback(user, session))
     } finally {
-      setLoading(false)
+      if (sequence === hydrateSequenceRef.current) setLoading(false)
     }
   }, [])
 
@@ -155,28 +186,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [hydrate, supabase])
 
   const setActiveScope = useCallback(async (requested: { pharmacyId?: string | null; branchId?: string | null }) => {
-    persistScope(requested.pharmacyId ?? scope.activePharmacyId, requested.branchId ?? scope.activeBranchId)
-    await refreshAuth({
-      pharmacyId: requested.pharmacyId ?? scope.activePharmacyId,
-      branchId: requested.branchId ?? scope.activeBranchId,
-    })
+    const pharmacyId = "pharmacyId" in requested ? requested.pharmacyId ?? null : scope.activePharmacyId
+    const branchId = "branchId" in requested ? requested.branchId ?? null : scope.activeBranchId
+    persistScope(pharmacyId, branchId)
+    await refreshAuth({ pharmacyId, branchId })
   }, [refreshAuth, scope.activeBranchId, scope.activePharmacyId])
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }: { data: { session: Session | null } }) => hydrate(data.session))
+    let mounted = true
+    void supabase.auth.getSession().then(({ data }: { data: { session: Session | null } }) => {
+      if (mounted) void hydrate(data.session)
+    })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event: string, session: Session | null) => {
+      if (!mounted) return
       if (event === "SIGNED_OUT") {
+        hydrateAbortRef.current?.abort()
         persistScope(null, null)
+        scopeRef.current = emptyScope
         setScope(emptyScope)
         setLoading(false)
         setError(null)
         return
       }
-      hydrate(session)
+      if (event === "TOKEN_REFRESHED" && session?.user) {
+        setScope((prev) => ({ ...prev, user: session.user, session }))
+        return
+      }
+      if (["INITIAL_SESSION", "SIGNED_IN", "USER_UPDATED"].includes(event)) void hydrate(session)
     })
 
-    return () => subscription.unsubscribe()
+    return () => {
+      mounted = false
+      hydrateAbortRef.current?.abort()
+      subscription.unsubscribe()
+    }
   }, [hydrate, supabase])
 
   const signOut = useCallback(() => {

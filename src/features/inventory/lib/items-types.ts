@@ -67,6 +67,17 @@ export type PharmacyItemListRow = {
   sub_category?: string | null
   unit?: string | null
   manufacturer_name?: string | null
+  manufacturer_country?: string | null
+  pharmacy_type?: string | null
+  generic_name?: string | null
+  active_ingredient?: string | null
+  therapeutic_class?: string | null
+  dosage_form?: string | null
+  strength?: string | null
+  package_size?: string | null
+  route_of_administration?: string | null
+  registration_number?: string | null
+  storage_condition?: string | null
   item_type?: string | null
   buy_price?: number | string | null
   sell_price?: number | string | null
@@ -148,6 +159,9 @@ export type ItemsPayload = {
   groups: LookupOption[]
   brands: LookupOption[]
   manufacturers: string[]
+  activeIngredients: string[]
+  dosageForms: string[]
+  pharmacyTypes: string[]
   units: string[]
   subUnits: string[]
   branches: BranchOption[]

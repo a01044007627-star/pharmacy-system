@@ -1,9 +1,10 @@
 "use client"
 
 import { localDB } from "@/lib/sync/local-db"
+import { LEGACY_ITEM_API_MUTATION_TABLE, queueApiRequest } from "@/lib/sync/api-mutations"
 
 const CACHE_TTL = 7 * 24 * 60 * 60 * 1000
-const API_MUTATION_TABLE = "__api_items__"
+const API_MUTATION_TABLE = LEGACY_ITEM_API_MUTATION_TABLE
 
 function keyPart(value: string) {
   return encodeURIComponent(value).replace(/%/g, "_")
@@ -30,15 +31,7 @@ export async function queueItemApiRequest(input: {
   method: "POST" | "PATCH" | "DELETE"
   body: Record<string, unknown>
 }) {
-  const id = `item_api_${Date.now()}_${crypto.randomUUID()}`
-  await localDB.queueMutation({
-    id,
-    table: API_MUTATION_TABLE,
-    operation: input.method === "POST" ? "create" : input.method === "DELETE" ? "delete" : "update",
-    data: input,
-    created_at: new Date().toISOString(),
-  })
-  return id
+  return queueApiRequest({ ...input, label: "عملية صنف" })
 }
 
 export { API_MUTATION_TABLE }

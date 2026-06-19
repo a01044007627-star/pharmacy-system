@@ -12,7 +12,8 @@ export async function GET(request: Request) {
   try {
     const url = new URL(request.url)
     const itemId = url.searchParams.get("item_id")
-    const scope = await getServerAuthScope({})
+    const requestedPharmacyId = url.searchParams.get("pharmacy_id")?.trim() || null
+    const scope = await getServerAuthScope({ requestedPharmacyId })
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "لا توجد صيدلية نشطة" }, { status: 400 })
     if (!scopeCan(scope, "inventory:read")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })

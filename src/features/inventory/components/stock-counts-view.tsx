@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { CheckCircle2, ClipboardList, Loader2, Plus, RefreshCw, Search } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
@@ -17,6 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/contexts/auth-context"
 import { cn } from "@/lib/utils"
+import { apiRequest, isRequestAbort } from "@/lib/api-client"
 
 type StockCountRow = {
   id: string
@@ -88,31 +89,43 @@ export function StockCountsView() {
   const [countedQty, setCountedQty] = useState("0")
   const [unit, setUnit] = useState("")
   const [notes, setNotes] = useState("")
+  const loadControllerRef = useRef<AbortController | null>(null)
 
   const canWrite = auth.can("inventory:stocktake") || auth.isDeveloper
   const canChooseAllBranches = auth.isDeveloper || auth.isOwner || ["owner", "admin"].includes(auth.role)
 
   const load = useCallback(async () => {
     if (!auth.activePharmacyId) return
+    loadControllerRef.current?.abort()
+    const controller = new AbortController()
+    loadControllerRef.current = controller
     setLoading(true)
     try {
       const params = new URLSearchParams({
-        pharmacy_id: auth.activePharmacyId ?? "",
+        pharmacy_id: auth.activePharmacyId,
         branch_id: branchId,
-        query,
+        query: query.trim(),
         status: statusFilter,
         page: String(page),
         page_size: "25",
       })
-      const response = await fetch(`/api/inventory/stock-counts?${params.toString()}`, { cache: "no-store" })
-      const data = (await response.json().catch(() => ({}))) as ResponseData
-      if (!response.ok) throw new Error(data.error ?? "فشل تحميل الجرد")
+      const data = await apiRequest<ResponseData>(`/api/inventory/stock-counts?${params.toString()}`, {
+        cache: "no-store",
+        signal: controller.signal,
+        timeoutMs: 20000,
+        retries: 1,
+      })
       setRows(data.records ?? [])
       setSummary(data.summary ?? { total_count: 0, total_expected: 0, total_counted: 0, total_variance: 0 })
       setTotalPages(data.pagination?.totalPages ?? 1)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل تحميل الجرد")
-    } finally { setLoading(false) }
+      if (!isRequestAbort(error)) toast.error(error instanceof Error ? error.message : "فشل تحميل الجرد")
+    } finally {
+      if (loadControllerRef.current === controller) {
+        loadControllerRef.current = null
+        setLoading(false)
+      }
+    }
   }, [auth.activePharmacyId, branchId, page, query, statusFilter])
 
   useEffect(() => {
@@ -135,12 +148,15 @@ export function StockCountsView() {
           query: itemSearch.trim(),
           limit: "12",
         })
-        const response = await fetch(`/api/inventory/items/search?${params.toString()}`, { cache: "no-store", signal: controller.signal })
-        const data = (await response.json().catch(() => ({}))) as { records?: ItemSearchRow[]; error?: string }
-        if (!response.ok) throw new Error(data.error ?? "فشل البحث عن الأصناف")
+        const data = await apiRequest<{ records?: ItemSearchRow[]; error?: string }>(`/api/inventory/items/search?${params.toString()}`, {
+          cache: "no-store",
+          signal: controller.signal,
+          timeoutMs: 15000,
+          retries: 1,
+        })
         setItemOptions(data.records ?? [])
       } catch (error) {
-        if (!(error instanceof DOMException && error.name === "AbortError")) {
+        if (!isRequestAbort(error)) {
           toast.error(error instanceof Error ? error.message : "فشل البحث عن الأصناف")
         }
       } finally {
@@ -184,7 +200,7 @@ export function StockCountsView() {
     if (!selectedItemId) { toast.error("اختر صنفًا من نتائج البحث"); return }
     setSaving(true)
     try {
-      const res = await fetch("/api/inventory/stock-counts", {
+      await apiRequest<{ error?: string }>("/api/inventory/stock-counts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -196,9 +212,8 @@ export function StockCountsView() {
           unit: unit.trim() || null,
           notes: notes.trim() || null,
         }),
+        timeoutMs: 25000,
       })
-      const data = await res.json() as { error?: string }
-      if (!res.ok) throw new Error(data.error ?? "فشل تسجيل الجرد")
       toast.success("تم تسجيل الجرد")
       setShowAdd(false)
       resetForm()
@@ -211,13 +226,12 @@ export function StockCountsView() {
   async function approve(row: StockCountRow) {
     setApprovingId(row.id)
     try {
-      const res = await fetch("/api/inventory/stock-counts", {
+      await apiRequest<{ error?: string }>("/api/inventory/stock-counts", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "approve", count_id: row.id, pharmacy_id: auth.activePharmacyId }),
+        timeoutMs: 25000,
       })
-      const data = await res.json() as { error?: string }
-      if (!res.ok) throw new Error(data.error ?? "فشل اعتماد الجرد")
       toast.success("تم اعتماد الجرد وتسوية المخزون")
       void load()
     } catch (error) {
@@ -276,8 +290,9 @@ export function StockCountsView() {
           ))}
         </div>
 
-        <Card className="overflow-hidden rounded-3xl border-slate-200 shadow-sm">
-          {loading ? <SkeletonRows count={6} /> : rows.length === 0 ? (
+        <Card className="relative overflow-hidden rounded-3xl border-slate-200 shadow-sm">
+          {loading && rows.length > 0 ? <div className="absolute left-4 top-3 z-20 inline-flex items-center gap-2 rounded-full border border-blue-100 bg-white/95 px-3 py-1 text-xs font-black text-blue-700 shadow"><Loader2 className="size-3 animate-spin" /> تحديث النتائج...</div> : null}
+          {loading && rows.length === 0 ? <SkeletonRows count={6} /> : rows.length === 0 ? (
             <EmptyState icon={ClipboardList} title="لا توجد سجلات جرد" description="ابدأ بإجراء أول جرد للمخزون." />
           ) : (
             <Table className="min-w-[980px]">
@@ -333,7 +348,7 @@ export function StockCountsView() {
         </Card>
 
         <Dialog open={showAdd} onOpenChange={(open) => { if (!open) setShowAdd(false) }}>
-          <DialogContent dir="rtl" className="max-w-2xl rounded-3xl text-right">
+          <DialogContent dir="rtl" className="w-[min(760px,calc(100vw-2rem))] max-w-none rounded-3xl text-right">
             <DialogHeader><DialogTitle className="text-lg font-black">تسجيل جرد</DialogTitle></DialogHeader>
             <div className="space-y-4">
               <div className="space-y-1.5">

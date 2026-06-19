@@ -17,52 +17,49 @@ const RESPONSE_SAMPLE_LIMIT = 100
 const RESPONSE_ERROR_LIMIT = 300
 
 const CLIENT_TEMPLATE_HEADERS = [
-  "NAME",
-  "BRAND",
-  "UNIT",
-  "UNIT RAW (Original)",
-  "MAIN UNIT",
-  "SUB UNIT",
-  "QTY PER MAIN UNIT",
-  "SECONDARY UNIT",
-  "SECONDARY QTY",
-  "UNIT PARSE STATUS",
-  "UNIT PARSE NOTE",
-  "CATEGORY",
-  "SUB-CATEGORY",
-  "SKU (Leave blank to auto generate sku)",
-  "BARCODE TYPE",
-  "MANAGE STOCK (1=yes 0=No)",
-  "ALERT QUANTITY",
-  "EXPIRES IN",
-  "EXPIRY PERIOD UNIT (months/days)",
-  "APPLICABLE TAX",
-  "Selling Price Tax Type (inclusive or exclusive)",
-  "PRODUCT TYPE (single or variable)",
-  "VARIATION NAME (Keep blank if product type is single)",
-  "VARIATION VALUES (| seperated values & blank if product type if single)",
-  "VARIATION SKUs (| seperated values & blank if product type if single)",
-  "PURCHASE PRICE (Including tax)",
-  "PURCHASE PRICE (Excluding tax)",
-  "PROFIT MARGIN",
-  "OLD SELLING PRICE",
-  "SELLING PRICE",
-  "OPENING STOCK",
-  "OPENING STOCK LOCATION",
-  "EXPIRY DATE",
-  "ENABLE IMEI OR SERIAL NUMBER(1=yes 0=No)",
-  "WEIGHT",
-  "RACK",
-  "ROW",
-  "POSITION",
-  "IMAGE",
-  "PRODUCT DESCRIPTION",
-  "CUSTOM FIELD 1",
-  "CUSTOM FIELD 2",
-  "CUSTOM FIELD 3",
-  "CUSTOM FIELD 4",
-  "NOT FOR SELLING(1=yes 0=No)",
-  "PRODUCT LOCATIONS",
+  "اسم الدواء / الصنف",
+  "الاسم الإنجليزي",
+  "النوع الصيدلي",
+  "الاسم العلمي",
+  "المادة الفعالة",
+  "المجموعة العلاجية",
+  "الشكل الدوائي",
+  "التركيز",
+  "حجم العبوة",
+  "طريقة الاستخدام",
+  "رقم التسجيل",
+  "الشركة المنتجة",
+  "بلد المنشأ",
+  "العلامة التجارية",
+  "المجموعة الرئيسية",
+  "المجموعة الفرعية",
+  "وحدة البيع",
+  "الوحدة الرئيسية",
+  "الوحدة الفرعية",
+  "عدد الوحدات الفرعية",
+  "الباركود",
+  "نوع الباركود",
+  "سعر الشراء",
+  "سعر البيع القديم",
+  "سعر البيع الجديد",
+  "الحد الأدنى للمخزون",
+  "الرصيد الافتتاحي",
+  "فرع الرصيد الافتتاحي",
+  "رقم التشغيلة",
+  "تاريخ الصلاحية",
+  "مدة الصلاحية",
+  "وحدة مدة الصلاحية (months/days)",
+  "دواء مراقب (1/0)",
+  "يتطلب روشتة (1/0)",
+  "شرط التخزين",
+  "الضريبة",
+  "نوع ضريبة البيع (inclusive/exclusive)",
+  "الرف",
+  "الصف",
+  "المكان",
+  "الصورة",
+  "ملاحظات صيدلية",
+  "غير مخصص للبيع (1/0)",
 ] as const
 
 type ExcelRow = Record<string, unknown>
@@ -72,6 +69,20 @@ type ImportError = { row: number; sku?: string; name?: string; message: string }
 
 type NormalizedProductRow = {
   name: string
+  pharmacyType: string
+  genericName: string
+  activeIngredient: string
+  therapeuticClass: string
+  dosageForm: string
+  strength: string
+  packageSize: string
+  routeOfAdministration: string
+  registrationNumber: string
+  manufacturerCountry: string
+  storageCondition: string
+  isControlled: boolean
+  requiresPrescription: boolean
+  batchNumber: string
   brand: string
   unit: string
   unitRaw: string
@@ -250,10 +261,10 @@ function extractUnitPairs(value: string) {
 
 function parseImportedUnit(row: Map<string, unknown>) {
   const rawUnit = clean(valueOf(row, ["UNIT RAW (Original)", "UNIT RAW", "UNIT_ORIGINAL", "الوحدة الأصلية"]))
-  const unitInput = clean(valueOf(row, ["UNIT", "وحدة", "unit", "Unit"]))
-  const explicitMainUnit = clean(valueOf(row, ["MAIN UNIT", "PRIMARY UNIT", "وحدة رئيسية", "الوحدة الرئيسية"]))
-  const explicitSubUnit = clean(valueOf(row, ["SUB UNIT", "SUB-UNIT", "وحدة فرعية", "الوحدة الفرعية"]))
-  const explicitFactor = numberValue(valueOf(row, ["QTY PER MAIN UNIT", "UNITS PER MAIN UNIT", "COUNT PER UNIT", "عدد لكل واحدة", "عدد الوحدة الفرعية داخل الرئيسية"]), 0)
+  const unitInput = clean(valueOf(row, ["وحدة البيع", "UNIT", "وحدة", "unit", "Unit"]))
+  const explicitMainUnit = clean(valueOf(row, ["الوحدة الرئيسية", "MAIN UNIT", "PRIMARY UNIT", "وحدة رئيسية"]))
+  const explicitSubUnit = clean(valueOf(row, ["الوحدة الفرعية", "SUB UNIT", "SUB-UNIT", "وحدة فرعية"]))
+  const explicitFactor = numberValue(valueOf(row, ["عدد الوحدات الفرعية", "QTY PER MAIN UNIT", "UNITS PER MAIN UNIT", "COUNT PER UNIT", "عدد لكل واحدة", "عدد الوحدة الفرعية داخل الرئيسية"]), 0)
   const explicitSecondaryUnit = clean(valueOf(row, ["SECONDARY UNIT", "وحدة فرعية ثانية"]))
   const explicitSecondaryFactor = numberValue(valueOf(row, ["SECONDARY QTY", "SECONDARY UNIT COUNT", "عدد الوحدة الفرعية الثانية"]), 0)
   const unitParseNote = clean(valueOf(row, ["UNIT PARSE NOTE", "ملاحظة الوحدة"]))
@@ -306,20 +317,6 @@ function looksLikeBarcode(value: string) {
   return /^\d{4,30}$/.test(normalized)
 }
 
-async function insertItemUnits(db: SupabaseClient, pharmacyId: string, itemId: string, row: NormalizedProductRow, sellPrice: number) {
-  const units = new Map<string, { unit_name: string; factor: number; is_base: boolean; sell_price: number | null }>()
-  if (row.unit) units.set(row.unit, { unit_name: row.unit, factor: 1, is_base: true, sell_price: sellPrice || null })
-  if (row.mainUnit && row.mainUnit !== row.unit && row.unitFactor > 1) units.set(row.mainUnit, { unit_name: row.mainUnit, factor: row.unitFactor, is_base: false, sell_price: null })
-  if (row.subUnit && row.subUnit !== row.unit && row.subUnit !== row.mainUnit) units.set(row.subUnit, { unit_name: row.subUnit, factor: 1, is_base: false, sell_price: null })
-  if (row.secondaryUnit && row.secondaryUnit !== row.unit && row.secondaryUnit !== row.mainUnit && row.secondaryUnitFactor > 0) {
-    units.set(row.secondaryUnit, { unit_name: row.secondaryUnit, factor: row.secondaryUnitFactor, is_base: false, sell_price: null })
-  }
-  const rows = Array.from(units.values()).map((unit) => ({ pharmacy_id: pharmacyId, item_id: itemId, ...unit }))
-  if (rows.length === 0) return
-  const { error } = await db.from("pharmacy_item_units").insert(rows)
-  if (error && !/duplicate|unique/i.test(error.message)) throw error
-}
-
 function parseDateValue(value: unknown): string | null {
   if (!value) return null
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10)
@@ -358,20 +355,57 @@ function makeSku(rowNum: number, usedSkus: Set<string>) {
   return sku
 }
 
+function normalizePharmacyType(value: unknown, hint = "") {
+  const explicit = clean(value).toLowerCase().replace(/[\s-]+/g, "_")
+  const map: Record<string, string> = {
+    medicine: "medicine", drug: "medicine", "دواء": "medicine", "أدوية": "medicine",
+    medical_supply: "medical_supply", supply: "medical_supply", "مستلزم_طبي": "medical_supply", "مستلزمات_طبية": "medical_supply",
+    supplement: "supplement", "مكمل": "supplement", "مكمل_غذائي": "supplement",
+    cosmetic: "cosmetic", cosmetics: "cosmetic", "تجميل": "cosmetic",
+    personal_care: "personal_care", "عناية_شخصية": "personal_care",
+    baby_care: "baby_care", "أم_وطفل": "baby_care", "ام_وطفل": "baby_care",
+    device: "device", "جهاز_طبي": "device", "أجهزة_طبية": "device",
+    other: "other", "أخرى": "other", "اخرى": "other",
+  }
+  if (map[explicit]) return map[explicit]
+  const text = `${clean(value)} ${hint}`.toLowerCase()
+  if (/مستلزم|شاش|قطن|سرنج|قسطرة|medical supply/.test(text)) return "medical_supply"
+  if (/مكمل|فيتامين|vitamin|supplement/.test(text)) return "supplement"
+  if (/تجميل|بشرة|makeup|cosmetic/.test(text)) return "cosmetic"
+  if (/شامبو|عناية شخصية|معجون|غسول|personal care/.test(text)) return "personal_care"
+  if (/طفل|بيبي|حفاض|baby/.test(text)) return "baby_care"
+  if (/جهاز|ميزان|ترمومتر|نبولايزر|device/.test(text)) return "device"
+  return "medicine"
+}
+
 function normalizeProductRow(row: ExcelRow): NormalizedProductRow {
   const normalized = normalizeRow(row)
   const productType = normalizeProductType(valueOf(normalized, ["PRODUCT TYPE (single or variable)", "PRODUCT TYPE", "نوع المنتج"]))
-  const expiryDate = parseDateValue(valueOf(normalized, ["EXPIRY DATE", "تاريخ الصلاحية", "expiry_date"]))
-  const expiresIn = numberValue(valueOf(normalized, ["EXPIRES IN", "تنتهي خلال", "expires_in"]))
-  const applicableTax = clean(valueOf(normalized, ["APPLICABLE TAX", "الضريبة المطبقة", "tax", "tax_name"]))
+  const expiryDate = parseDateValue(valueOf(normalized, ["تاريخ الصلاحية", "EXPIRY DATE", "expiry_date"]))
+  const expiresIn = numberValue(valueOf(normalized, ["مدة الصلاحية", "EXPIRES IN", "تنتهي خلال", "expires_in"]))
+  const applicableTax = clean(valueOf(normalized, ["الضريبة", "APPLICABLE TAX", "الضريبة المطبقة", "tax", "tax_name"]))
   const unitInfo = parseImportedUnit(normalized)
-  const legacyBarcode = clean(valueOf(normalized, ["باركود", "barcode", "Barcode", "BARCODE"]))
+  const legacyBarcode = clean(valueOf(normalized, ["الباركود", "باركود", "barcode", "Barcode", "BARCODE"]))
   const variationSkus = splitPipe(valueOf(normalized, ["VARIATION SKUs (| seperated values & blank if product type if single)", "VARIATION SKUs", "variation_skus"]))
   const skuValue = clean(valueOf(normalized, ["SKU (Leave blank to auto generate sku)", "SKU", "كود", "sku", "كود الصنف"]))
   const primaryBarcode = legacyBarcode || (productType === "single" ? variationSkus.find((value) => looksLikeBarcode(value)) || (looksLikeBarcode(skuValue) ? skuValue : "") : "")
   return {
-    name: clean(valueOf(normalized, ["NAME", "الاسم", "اسم الصنف", "name_ar", "Name"])),
-    brand: clean(valueOf(normalized, ["BRAND", "ماركة", "brand", "Brand", "العلامة التجارية"])),
+    name: clean(valueOf(normalized, ["اسم الدواء / الصنف", "NAME", "الاسم", "اسم الصنف", "name_ar", "Name"])),
+    pharmacyType: normalizePharmacyType(valueOf(normalized, ["النوع الصيدلي", "PHARMACY TYPE", "pharmacy_type"]), `${clean(valueOf(normalized, ["CATEGORY", "المجموعة الرئيسية", "مجموعة", "التصنيف"]))} ${clean(valueOf(normalized, ["NAME", "اسم الدواء / الصنف", "اسم الصنف"]))}`),
+    genericName: clean(valueOf(normalized, ["الاسم العلمي", "GENERIC NAME", "generic_name"])),
+    activeIngredient: clean(valueOf(normalized, ["المادة الفعالة", "ACTIVE INGREDIENT", "active_ingredient"])),
+    therapeuticClass: clean(valueOf(normalized, ["المجموعة العلاجية", "THERAPEUTIC CLASS", "therapeutic_class"])),
+    dosageForm: clean(valueOf(normalized, ["الشكل الدوائي", "DOSAGE FORM", "dosage_form"])),
+    strength: clean(valueOf(normalized, ["التركيز", "STRENGTH", "strength"])),
+    packageSize: clean(valueOf(normalized, ["حجم العبوة", "PACKAGE SIZE", "package_size"])),
+    routeOfAdministration: clean(valueOf(normalized, ["طريقة الاستخدام", "ROUTE OF ADMINISTRATION", "route_of_administration"])),
+    registrationNumber: clean(valueOf(normalized, ["رقم التسجيل", "REGISTRATION NUMBER", "registration_number"])),
+    manufacturerCountry: clean(valueOf(normalized, ["بلد المنشأ", "MANUFACTURER COUNTRY", "manufacturer_country"])),
+    storageCondition: clean(valueOf(normalized, ["شرط التخزين", "STORAGE CONDITION", "storage_condition"])),
+    isControlled: boolValue(valueOf(normalized, ["دواء مراقب (1/0)", "دواء مراقب", "IS CONTROLLED", "is_controlled"])),
+    requiresPrescription: boolValue(valueOf(normalized, ["يتطلب روشتة (1/0)", "يتطلب روشتة", "REQUIRES PRESCRIPTION", "requires_prescription"])),
+    batchNumber: clean(valueOf(normalized, ["رقم التشغيلة", "BATCH NUMBER", "batch_number"])),
+    brand: clean(valueOf(normalized, ["العلامة التجارية", "BRAND", "ماركة", "brand", "Brand"])),
     unit: unitInfo.unit,
     unitRaw: unitInfo.unitRaw,
     mainUnit: unitInfo.mainUnit,
@@ -381,28 +415,28 @@ function normalizeProductRow(row: ExcelRow): NormalizedProductRow {
     secondaryUnitFactor: unitInfo.secondaryUnitFactor,
     unitParseNote: unitInfo.unitParseNote,
     primaryBarcode,
-    category: clean(valueOf(normalized, ["CATEGORY", "مجموعة", "group", "Group", "التصنيف"])),
-    subCategory: clean(valueOf(normalized, ["SUB-CATEGORY", "SUB CATEGORY", "sub_category", "تصنيف فرعي"])),
+    category: clean(valueOf(normalized, ["المجموعة الرئيسية", "CATEGORY", "مجموعة", "group", "Group", "التصنيف"])),
+    subCategory: clean(valueOf(normalized, ["المجموعة الفرعية", "SUB-CATEGORY", "SUB CATEGORY", "sub_category", "تصنيف فرعي"])),
     sku: skuValue,
     barcodeType: clean(valueOf(normalized, ["BARCODE TYPE", "نوع الباركود", "barcode_type"])),
     manageStock: boolValue(valueOf(normalized, ["MANAGE STOCK (1=yes 0=No)", "MANAGE STOCK", "إدارة المخزون", "manage_inventory"]), true),
-    alertQuantity: numberValue(valueOf(normalized, ["ALERT QUANTITY", "حد أدنى", "min_stock", "Min Stock"])),
+    alertQuantity: numberValue(valueOf(normalized, ["الحد الأدنى للمخزون", "ALERT QUANTITY", "حد أدنى", "min_stock", "Min Stock"])),
     expiresIn,
     expiryPeriodUnit: clean(valueOf(normalized, ["EXPIRY PERIOD UNIT (months/days)", "EXPIRY PERIOD UNIT", "expiry_period_unit"])).toLowerCase(),
     applicableTax,
     taxPercent: parseTaxPercent(applicableTax),
-    sellingPriceTaxType: normalizeTaxType(valueOf(normalized, ["Selling Price Tax Type (inclusive or exclusive)", "SELLING PRICE TAX TYPE", "selling_price_tax_type"])) ?? "exclusive",
+    sellingPriceTaxType: normalizeTaxType(valueOf(normalized, ["نوع ضريبة البيع (inclusive/exclusive)", "Selling Price Tax Type (inclusive or exclusive)", "SELLING PRICE TAX TYPE", "selling_price_tax_type"])) ?? "exclusive",
     productType,
     variationName: clean(valueOf(normalized, ["VARIATION NAME (Keep blank if product type is single)", "VARIATION NAME", "variation_name"])),
     variationValues: splitPipe(valueOf(normalized, ["VARIATION VALUES (| seperated values & blank if product type if single)", "VARIATION VALUES", "variation_values"])),
     variationSkus,
     purchasePriceIncludingTax: numberValue(valueOf(normalized, ["PURCHASE PRICE (Including tax)", "PURCHASE PRICE INCLUDING TAX", "purchase_price_including_tax"])),
-    purchasePriceExcludingTax: numberValue(valueOf(normalized, ["PURCHASE PRICE (Excluding tax)", "PURCHASE PRICE EXCLUDING TAX", "purchase_price_excluding_tax", "سعر الشراء", "buy_price", "Buy Price"])),
+    purchasePriceExcludingTax: numberValue(valueOf(normalized, ["سعر الشراء", "PURCHASE PRICE (Excluding tax)", "PURCHASE PRICE EXCLUDING TAX", "purchase_price_excluding_tax", "buy_price", "Buy Price"])),
     profitMargin: numberValue(valueOf(normalized, ["PROFIT MARGIN", "هامش الربح", "profit_margin"])),
-    oldSellingPrice: numberValue(valueOf(normalized, ["OLD SELLING PRICE", "PREVIOUS SELLING PRICE", "سعر البيع القديم", "old_sell_price"])),
-    sellingPrice: numberValue(valueOf(normalized, ["SELLING PRICE", "سعر البيع", "sell_price", "Sell Price"])),
-    openingStock: numberValue(valueOf(normalized, ["OPENING STOCK", "رصيد افتتاحي", "opening_stock", "Opening Stock"])),
-    openingStockLocation: clean(valueOf(normalized, ["OPENING STOCK LOCATION", "فرع الرصيد الافتتاحي", "opening_stock_location"])),
+    oldSellingPrice: numberValue(valueOf(normalized, ["سعر البيع القديم", "OLD SELLING PRICE", "PREVIOUS SELLING PRICE", "old_sell_price"])),
+    sellingPrice: numberValue(valueOf(normalized, ["سعر البيع الجديد", "SELLING PRICE", "سعر البيع", "sell_price", "Sell Price"])),
+    openingStock: numberValue(valueOf(normalized, ["الرصيد الافتتاحي", "OPENING STOCK", "رصيد افتتاحي", "opening_stock", "Opening Stock"])),
+    openingStockLocation: clean(valueOf(normalized, ["فرع الرصيد الافتتاحي", "OPENING STOCK LOCATION", "opening_stock_location"])),
     expiryDate,
     serialTrackingEnabled: boolValue(valueOf(normalized, ["ENABLE IMEI OR SERIAL NUMBER(1=yes 0=No)", "ENABLE IMEI OR SERIAL NUMBER", "serial_tracking_enabled"])),
     weight: numberValue(valueOf(normalized, ["WEIGHT", "الوزن", "weight"])),
@@ -410,16 +444,16 @@ function normalizeProductRow(row: ExcelRow): NormalizedProductRow {
     shelfRow: clean(valueOf(normalized, ["ROW", "صف", "shelf_row"])),
     position: clean(valueOf(normalized, ["POSITION", "مكان", "position"])),
     imageUrl: clean(valueOf(normalized, ["IMAGE", "صورة", "image_url"])),
-    productDescription: clean(valueOf(normalized, ["PRODUCT DESCRIPTION", "وصف المنتج", "PRODUCT DESC", "notes", "ملاحظات"])),
+    productDescription: clean(valueOf(normalized, ["ملاحظات صيدلية", "PRODUCT DESCRIPTION", "وصف المنتج", "PRODUCT DESC", "notes", "ملاحظات"])),
     customField1: clean(valueOf(normalized, ["CUSTOM FIELD 1", "custom_field_1"])),
     customField2: clean(valueOf(normalized, ["CUSTOM FIELD 2", "custom_field_2"])),
     customField3: clean(valueOf(normalized, ["CUSTOM FIELD 3", "custom_field_3"])),
     customField4: clean(valueOf(normalized, ["CUSTOM FIELD 4", "custom_field_4"])),
-    notForSelling: boolValue(valueOf(normalized, ["NOT FOR SELLING(1=yes 0=No)", "NOT FOR SELLING", "not_for_sale"])),
+    notForSelling: boolValue(valueOf(normalized, ["غير مخصص للبيع (1/0)", "NOT FOR SELLING(1=yes 0=No)", "NOT FOR SELLING", "not_for_sale"])),
     productLocations: splitPipe(valueOf(normalized, ["PRODUCT LOCATIONS", "مواقع المنتج", "product_locations"])),
     legacyBarcode,
     legacyNameEn: clean(valueOf(normalized, ["اسم إنجليزي", "name_en", "Name En"])),
-    legacyManufacturer: clean(valueOf(normalized, ["الشركة المصنعة", "manufacturer", "Manufacturer"])),
+    legacyManufacturer: clean(valueOf(normalized, ["الشركة المنتجة", "الشركة المصنعة", "manufacturer", "Manufacturer"])),
     legacyMaxStock: numberValue(valueOf(normalized, ["حد أقصى", "max_stock", "Max Stock"])),
     legacyHasExpiry: boolValue(valueOf(normalized, ["صلاحية", "has_expiry", "expiry"]), Boolean(expiryDate || expiresIn)),
     legacyTrackBatch: boolValue(valueOf(normalized, ["تشغيلات", "track_batch", "batch"]), Boolean(expiryDate)),
@@ -434,41 +468,6 @@ function findBranchId(branches: BranchLookupRow[], nameOrCode: string, fallbackI
     return branch.id
   }
   return fallbackId || branches.find((branch) => branch.is_default)?.id || branches[0]?.id || null
-}
-
-async function ensureLookup(db: SupabaseClient, table: "pharmacy_item_groups" | "pharmacy_item_brands", pharmacyId: string, map: Map<string, string>, name: string) {
-  const key = name.toLowerCase()
-  if (!name) return null
-  const existing = map.get(key)
-  if (existing) return existing
-  const { data, error } = await db
-    .from(table)
-    .insert({ pharmacy_id: pharmacyId, name })
-    .select("id,name")
-    .single()
-  if (error) throw error
-  const id = (data as { id: string }).id
-  map.set(key, id)
-  return id
-}
-
-async function insertVariants(db: SupabaseClient, pharmacyId: string, itemId: string, row: NormalizedProductRow) {
-  if (row.productType !== "variable" || row.variationValues.length === 0) return
-  const rows = row.variationValues.map((value, index) => ({
-    pharmacy_id: pharmacyId,
-    item_id: itemId,
-    name: row.variationName || "Variation",
-    value,
-    sku: row.variationSkus[index] || null,
-    purchase_price: row.purchasePriceExcludingTax || row.purchasePriceIncludingTax || 0,
-    sell_price: row.sellingPrice || null,
-    metadata: {
-      source: "excel_import",
-      variation_index: index,
-    },
-  }))
-  const { error } = await db.from("pharmacy_item_variants").insert(rows)
-  if (error) throw error
 }
 
 
@@ -559,6 +558,19 @@ function buildItemPayload(
     unit: row.unit || null,
     item_type: "stocked",
     manufacturer_name: row.legacyManufacturer || row.brand || null,
+    manufacturer_country: row.manufacturerCountry || null,
+    pharmacy_type: row.pharmacyType || "medicine",
+    generic_name: row.genericName || null,
+    active_ingredient: row.activeIngredient || null,
+    therapeutic_class: row.therapeuticClass || null,
+    dosage_form: row.dosageForm || null,
+    strength: row.strength || null,
+    package_size: row.packageSize || null,
+    route_of_administration: row.routeOfAdministration || null,
+    registration_number: row.registrationNumber || null,
+    storage_condition: row.storageCondition || null,
+    is_controlled: row.isControlled,
+    requires_prescription: row.requiresPrescription,
     buy_price: buyPrice,
     sell_price: row.sellingPrice,
     old_sell_price: row.oldSellingPrice,
@@ -567,8 +579,8 @@ function buildItemPayload(
     min_stock: row.alertQuantity,
     max_stock: row.legacyMaxStock,
     opening_stock: row.openingStock,
-    has_expiry: Boolean(row.legacyHasExpiry || row.expiryDate || row.expiresIn > 0),
-    track_batch: Boolean(row.legacyTrackBatch || row.expiryDate),
+    has_expiry: Boolean(row.legacyHasExpiry || row.expiryDate || row.expiresIn > 0 || ["medicine", "medical_supply", "supplement", "cosmetic", "personal_care", "baby_care"].includes(row.pharmacyType)),
+    track_batch: Boolean(row.legacyTrackBatch || row.expiryDate || ["medicine", "supplement"].includes(row.pharmacyType)),
     expiry_date: row.expiryDate,
     image_url: row.imageUrl || null,
     notes: row.productDescription || null,
@@ -579,15 +591,15 @@ function buildItemPayload(
     tax_name: row.applicableTax || null,
     tax_percent: row.taxPercent,
     selling_price_tax_type: row.sellingPriceTaxType,
-    product_type: row.productType,
-    variation_name: row.variationName || null,
-    variation_values: row.variationValues,
-    variation_skus: row.variationSkus,
+    product_type: "single",
+    variation_name: null,
+    variation_values: [],
+    variation_skus: [],
     purchase_price_including_tax: row.purchasePriceIncludingTax,
     purchase_price_excluding_tax: row.purchasePriceExcludingTax,
     profit_margin: row.profitMargin,
     opening_stock_location: row.openingStockLocation || null,
-    serial_tracking_enabled: row.serialTrackingEnabled,
+    serial_tracking_enabled: false,
     weight: row.weight,
     rack: row.rack || null,
     shelf_row: row.shelfRow || null,
@@ -609,6 +621,7 @@ function buildItemPayload(
       secondary_unit: row.secondaryUnit,
       secondary_unit_factor: row.secondaryUnitFactor,
       unit_parse_note: row.unitParseNote,
+      batch_number: row.batchNumber || null,
     },
     status: "active",
   }
@@ -638,23 +651,6 @@ function buildUnitRows(pharmacyId: string, itemId: string, row: NormalizedProduc
     units.set(row.secondaryUnit, { unit_name: row.secondaryUnit, factor: row.secondaryUnitFactor, is_base: false, sell_price: null })
   }
   return Array.from(units.values()).map((unit) => ({ pharmacy_id: pharmacyId, item_id: itemId, ...unit }))
-}
-
-function buildVariantRows(pharmacyId: string, itemId: string, row: NormalizedProductRow) {
-  if (row.productType !== "variable" || row.variationValues.length === 0) return []
-  return row.variationValues.map((value, index) => ({
-    pharmacy_id: pharmacyId,
-    item_id: itemId,
-    name: row.variationName || "Variation",
-    value,
-    sku: row.variationSkus[index] || null,
-    purchase_price: row.purchasePriceExcludingTax || row.purchasePriceIncludingTax || 0,
-    sell_price: row.sellingPrice || null,
-    metadata: {
-      source: "excel_import",
-      variation_index: index,
-    },
-  }))
 }
 
 async function insertAuxiliaryRows(db: SupabaseClient, table: string, rows: Record<string, unknown>[], onConflict?: string) {
@@ -840,13 +836,11 @@ export async function POST(request: Request) {
 
     const barcodeRows: Record<string, unknown>[] = []
     const unitRows: Record<string, unknown>[] = []
-    const variantRows: Record<string, unknown>[] = []
 
     for (const { item, prepared } of insertedBySku.values()) {
       imported.push({ id: item.id, name: item.name_ar, sku: item.sku })
       barcodeRows.push(...buildBarcodeRows(pharmacyId, item.id, prepared.row))
       unitRows.push(...buildUnitRows(pharmacyId, item.id, prepared.row, prepared.row.sellingPrice))
-      variantRows.push(...buildVariantRows(pharmacyId, item.id, prepared.row))
     }
 
     try {
@@ -861,11 +855,6 @@ export async function POST(request: Request) {
       errors.push({ row: 0, message: `تم استيراد الأصناف، لكن فشل حفظ بعض الوحدات: ${error instanceof Error ? error.message : "خطأ غير متوقع"}` })
     }
 
-    try {
-      await insertAuxiliaryRows(db, "pharmacy_item_variants", variantRows)
-    } catch (error) {
-      errors.push({ row: 0, message: `تم استيراد الأصناف، لكن فشل حفظ بعض المتغيرات: ${error instanceof Error ? error.message : "خطأ غير متوقع"}` })
-    }
 
     try {
       const batchRows = []
@@ -879,7 +868,7 @@ export async function POST(request: Request) {
             pharmacy_id: pharmacyId,
             item_id: item.id,
             branch_id: prepared.branchId,
-            batch_number: "OPENING",
+            batch_number: prepared.row.batchNumber || "OPENING",
             expiry_date: expiryDate || null,
             quantity,
             remaining_quantity: quantity,

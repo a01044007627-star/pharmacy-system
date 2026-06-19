@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowLeft, CheckCircle2, Loader2, Plus, RefreshCw, Search, XCircle } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
@@ -17,6 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/contexts/auth-context"
 import { cn } from "@/lib/utils"
+import { apiRequest, isRequestAbort } from "@/lib/api-client"
 
 type TransferLine = { item_id: string; item_name?: string | null; sku?: string | null; quantity: number; unit?: string | null }
 
@@ -99,30 +100,42 @@ export function StockTransfersView() {
   const [activeLineIndex, setActiveLineIndex] = useState<number | null>(null)
   const [itemOptions, setItemOptions] = useState<ItemSearchRow[]>([])
   const [itemsLoading, setItemsLoading] = useState(false)
+  const loadControllerRef = useRef<AbortController | null>(null)
 
   const canWrite = auth.can("inventory:transfer.write") || auth.isDeveloper
   const canChooseAllBranches = auth.isDeveloper || auth.isOwner || ["owner", "admin"].includes(auth.role)
 
   const load = useCallback(async () => {
     if (!auth.activePharmacyId) return
+    loadControllerRef.current?.abort()
+    const controller = new AbortController()
+    loadControllerRef.current = controller
     setLoading(true)
     try {
       const params = new URLSearchParams({
-        pharmacy_id: auth.activePharmacyId ?? "",
+        pharmacy_id: auth.activePharmacyId,
         page: String(page),
         page_size: "25",
         query: search.trim(),
         status: statusFilter,
         branch_id: branchFilter,
       })
-      const response = await fetch(`/api/inventory/stock-transfers?${params.toString()}`, { cache: "no-store" })
-      const data = (await response.json().catch(() => ({}))) as ResponseData
-      if (!response.ok) throw new Error(data.error ?? "فشل تحميل التحويلات")
+      const data = await apiRequest<ResponseData>(`/api/inventory/stock-transfers?${params.toString()}`, {
+        cache: "no-store",
+        signal: controller.signal,
+        timeoutMs: 20000,
+        retries: 1,
+      })
       setRows(data.records ?? [])
       setTotalPages(data.pagination?.totalPages ?? 1)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل تحميل التحويلات")
-    } finally { setLoading(false) }
+      if (!isRequestAbort(error)) toast.error(error instanceof Error ? error.message : "فشل تحميل التحويلات")
+    } finally {
+      if (loadControllerRef.current === controller) {
+        loadControllerRef.current = null
+        setLoading(false)
+      }
+    }
   }, [auth.activePharmacyId, branchFilter, page, search, statusFilter])
 
   useEffect(() => {
@@ -150,12 +163,15 @@ export function StockTransfersView() {
           query: term,
           limit: "12",
         })
-        const response = await fetch(`/api/inventory/items/search?${params.toString()}`, { cache: "no-store", signal: controller.signal })
-        const data = (await response.json().catch(() => ({}))) as { records?: ItemSearchRow[]; error?: string }
-        if (!response.ok) throw new Error(data.error ?? "فشل البحث عن الأصناف")
+        const data = await apiRequest<{ records?: ItemSearchRow[]; error?: string }>(`/api/inventory/items/search?${params.toString()}`, {
+          cache: "no-store",
+          signal: controller.signal,
+          timeoutMs: 15000,
+          retries: 1,
+        })
         setItemOptions(data.records ?? [])
       } catch (error) {
-        if (!(error instanceof DOMException && error.name === "AbortError")) {
+        if (!isRequestAbort(error)) {
           toast.error(error instanceof Error ? error.message : "فشل البحث عن الأصناف")
         }
       } finally {
@@ -241,7 +257,7 @@ export function StockTransfersView() {
 
     setSaving(true)
     try {
-      const res = await fetch("/api/inventory/stock-transfers", {
+      await apiRequest<{ error?: string }>("/api/inventory/stock-transfers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -252,9 +268,8 @@ export function StockTransfersView() {
           lines: validLines.map((line) => ({ item_id: line.item_id, item_name: line.item_name, quantity: Number(line.quantity), unit: line.unit || null })),
           notes: transferNotes.trim() || null,
         }),
+        timeoutMs: 25000,
       })
-      const data = await res.json() as { error?: string }
-      if (!res.ok) throw new Error(data.error ?? "فشل إنشاء التحويل")
       toast.success(autoComplete ? "تم إنشاء وتنفيذ التحويل بنجاح" : "تم إنشاء التحويل كمسودة")
       setShowAdd(false)
       resetForm()
@@ -267,13 +282,12 @@ export function StockTransfersView() {
   async function runAction(row: TransferRow, action: "complete" | "cancel") {
     setActingId(row.id)
     try {
-      const response = await fetch("/api/inventory/stock-transfers", {
+      await apiRequest<{ error?: string }>("/api/inventory/stock-transfers", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, transfer_id: row.id, pharmacy_id: auth.activePharmacyId }),
+        timeoutMs: 25000,
       })
-      const data = await response.json().catch(() => ({})) as { error?: string }
-      if (!response.ok) throw new Error(data.error ?? "فشل تعديل التحويل")
       toast.success(action === "complete" ? "تم تنفيذ التحويل" : "تم إلغاء التحويل")
       void load()
     } catch (error) {
@@ -294,7 +308,15 @@ export function StockTransfersView() {
                 <RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث
               </Button>
               {canWrite ? (
-                <Button className="h-10 rounded-xl" onClick={() => { resetForm(); setShowAdd(true) }}>
+                <Button
+                  className="h-10 rounded-xl"
+                  disabled={auth.branches.length < 2}
+                  onClick={() => {
+                    if (auth.branches.length < 2) { toast.error("أضف فرعين على الأقل لإجراء تحويل مخزني"); return }
+                    resetForm()
+                    setShowAdd(true)
+                  }}
+                >
                   <Plus className="size-4" /> تحويل جديد
                 </Button>
               ) : null}
@@ -333,8 +355,9 @@ export function StockTransfersView() {
           </CardContent>
         </Card>
 
-        <Card className="overflow-hidden rounded-3xl border-slate-200 shadow-sm">
-          {loading ? <SkeletonRows count={5} /> : rows.length === 0 ? (
+        <Card className="relative overflow-hidden rounded-3xl border-slate-200 shadow-sm">
+          {loading && rows.length > 0 ? <div className="absolute left-4 top-3 z-20 inline-flex items-center gap-2 rounded-full border border-blue-100 bg-white/95 px-3 py-1 text-xs font-black text-blue-700 shadow"><Loader2 className="size-3 animate-spin" /> تحديث النتائج...</div> : null}
+          {loading && rows.length === 0 ? <SkeletonRows count={5} /> : rows.length === 0 ? (
             <EmptyState icon={ArrowLeft} title="لا توجد تحويلات" description="ابدأ أول تحويل بين الفروع من زر تحويل جديد." />
           ) : (
             <Table className="min-w-[1050px]">
@@ -403,22 +426,22 @@ export function StockTransfersView() {
         </Card>
 
         <Dialog open={showAdd} onOpenChange={(open) => { if (!open) setShowAdd(false) }}>
-          <DialogContent dir="rtl" className="max-w-4xl rounded-3xl text-right">
+          <DialogContent dir="rtl" className="w-[min(980px,calc(100vw-1rem))] max-w-none max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-3xl p-3 text-right sm:p-5">
             <DialogHeader><DialogTitle className="text-lg font-black">تحويل مخزني جديد</DialogTitle></DialogHeader>
             <div className="space-y-4">
-              <div className="grid gap-3 md:grid-cols-3">
+              <div className="grid gap-3 lg:grid-cols-3">
                 <div className="space-y-1.5">
                   <Label className="font-black">من فرع</Label>
                   <NativeSelect value={fromBranchId} onChange={(e) => { setFromBranchId(e.target.value); setTransferLines([emptyLine()]) }}>
                     <NativeSelectOption value="">اختر الفرع</NativeSelectOption>
-                    {auth.branches.map((branch) => <NativeSelectOption key={branch.id} value={branch.id}>{branch.name}</NativeSelectOption>)}
+                    {auth.branches.filter((branch) => branch.id !== toBranchId).map((branch) => <NativeSelectOption key={branch.id} value={branch.id}>{branch.name}</NativeSelectOption>)}
                   </NativeSelect>
                 </div>
                 <div className="space-y-1.5">
                   <Label className="font-black">إلى فرع</Label>
                   <NativeSelect value={toBranchId} onChange={(e) => setToBranchId(e.target.value)}>
                     <NativeSelectOption value="">اختر الفرع</NativeSelectOption>
-                    {auth.branches.map((branch) => <NativeSelectOption key={branch.id} value={branch.id}>{branch.name}</NativeSelectOption>)}
+                    {auth.branches.filter((branch) => branch.id !== fromBranchId).map((branch) => <NativeSelectOption key={branch.id} value={branch.id}>{branch.name}</NativeSelectOption>)}
                   </NativeSelect>
                 </div>
                 <div className="space-y-1.5">
@@ -433,11 +456,11 @@ export function StockTransfersView() {
               <div className="rounded-2xl border border-slate-100 bg-slate-50/70 p-3">
                 <div className="mb-2 flex items-center justify-between">
                   <Label className="font-black">الأصناف</Label>
-                  <Button variant="outline" size="sm" className="rounded-xl" onClick={addLine}>+ إضافة صنف</Button>
+                  <Button variant="outline" size="sm" className="rounded-xl" disabled={!fromBranchId} onClick={addLine}>+ إضافة صنف</Button>
                 </div>
                 <div className="space-y-3">
                   {transferLines.map((line, index) => (
-                    <div key={index} className="grid gap-2 rounded-2xl bg-white p-3 shadow-sm md:grid-cols-[1fr_130px_110px_44px]">
+                    <div key={index} className="grid gap-2 rounded-2xl bg-white p-3 shadow-sm lg:grid-cols-[minmax(0,1fr)_130px_110px_44px]">
                       <div className="relative space-y-1">
                         <Label className="text-xs font-black">الصنف</Label>
                         <Input
@@ -490,9 +513,9 @@ export function StockTransfersView() {
 
               <div className="space-y-1.5"><Label className="font-black">ملاحظات</Label><Textarea value={transferNotes} onChange={(e) => setTransferNotes(e.target.value)} placeholder="اختياري..." className="min-h-20 rounded-xl" /></div>
             </div>
-            <DialogFooter>
+            <DialogFooter className="sticky bottom-0 -mx-3 -mb-3 border-t border-slate-100 bg-white/95 px-3 py-3 backdrop-blur sm:-mx-5 sm:-mb-5 sm:px-5">
               <Button variant="outline" className="rounded-xl" onClick={() => setShowAdd(false)}>إلغاء</Button>
-              <Button className="rounded-xl" disabled={saving || !fromBranchId || !toBranchId} onClick={() => void addTransfer()}>
+              <Button className="rounded-xl" disabled={saving || !fromBranchId || !toBranchId || fromBranchId === toBranchId || !transferLines.some((line) => line.item_id && Number(line.quantity) > 0)} onClick={() => void addTransfer()}>
                 {saving ? <Loader2 className="size-4 animate-spin" /> : null} {autoComplete ? "إنشاء وتنفيذ" : "حفظ مسودة"}
               </Button>
             </DialogFooter>

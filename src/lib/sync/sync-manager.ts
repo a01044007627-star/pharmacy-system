@@ -4,7 +4,7 @@ import { localDB } from "./local-db"
 import { localSQLite } from "./local-sqlite"
 import { createClient } from "@/lib/supabase/client"
 import { network } from "@/lib/network"
-import { API_MUTATION_TABLE } from "@/features/inventory/lib/items-offline"
+import { API_MUTATION_TABLE, LEGACY_ITEM_API_MUTATION_TABLE, type QueuedApiRequest } from "./api-mutations"
 
 export interface SyncStatus {
   isSyncing: boolean
@@ -97,15 +97,15 @@ export class SyncManager {
             data: Record<string, unknown>
           }
 
-          if (table === API_MUTATION_TABLE) {
-            const apiRequest = data as unknown as { path: string; method: "POST" | "PATCH" | "DELETE"; body: Record<string, unknown> }
+          if (table === API_MUTATION_TABLE || table === LEGACY_ITEM_API_MUTATION_TABLE) {
+            const apiRequest = data as unknown as QueuedApiRequest
             const response = await fetch(apiRequest.path, {
               method: apiRequest.method,
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(apiRequest.body),
+              headers: { "Content-Type": "application/json", ...(apiRequest.headers ?? {}) },
+              body: apiRequest.method === "DELETE" && !apiRequest.body ? undefined : JSON.stringify(apiRequest.body ?? {}),
             })
             const payload = await response.json().catch(() => ({})) as { error?: string }
-            if (!response.ok) throw new Error(payload.error ?? "فشل مزامنة عملية الصنف")
+            if (!response.ok) throw new Error(payload.error ?? `فشل مزامنة ${apiRequest.label ?? "العملية"}`)
           } else if (operation === "create") {
             const { error } = await supabase.from(table).insert(data)
             if (error) throw error

@@ -20,7 +20,7 @@ export const homeActionGroups: HomeActionGroup[] = [
       { title: "تقرير المبيعات", href: "/dashboard/reports/sales", icon: "file-chart" },
       { title: "مرتجع البيع", href: "/dashboard/sales/returns", icon: "rotate" },
       { title: "عروض الأسعار", href: "/dashboard/sales/price-offers", icon: "layers" },
-      { title: "الزبائن", href: "/dashboard/users/customers", icon: "users" },
+      { title: "الزبائن", href: "/dashboard/crm", icon: "users" },
     ],
   },
   {
@@ -29,7 +29,7 @@ export const homeActionGroups: HomeActionGroup[] = [
     items: [
       { title: "إضافة شراء", href: "/dashboard/purchases", icon: "receipt", size: "wide" },
       { title: "مرتجع شراء", href: "/dashboard/purchases/returns", icon: "asterisk" },
-      { title: "الموردين", href: "/dashboard/users/suppliers", icon: "user-round" },
+      { title: "الموردين", href: "/dashboard/crm/suppliers", icon: "user-round" },
       { title: "المصاريف", href: "/dashboard/accounts/expenses", icon: "banknote", size: "wide" },
     ],
   },
@@ -37,8 +37,8 @@ export const homeActionGroups: HomeActionGroup[] = [
     title: "المخزون",
     tone: "inventory",
     items: [
-      { title: "إضافة صنف", href: "/dashboard/items/new", icon: "gem", size: "wide" },
-      { title: "الأصناف", href: "/dashboard/items", icon: "store", size: "wide" },
+      { title: "إضافة دواء أو صنف", href: "/dashboard/items/new", icon: "gem", size: "wide" },
+      { title: "الأدوية والأصناف", href: "/dashboard/items", icon: "store", size: "wide" },
       { title: "ملصق باركود", href: "/dashboard/items/barcode", icon: "barcode" },
       { title: "نقل مخزني", href: "/dashboard/stocktaking/transfer", icon: "truck" },
     ],

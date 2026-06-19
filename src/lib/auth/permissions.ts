@@ -101,6 +101,7 @@ export type Permission =
   | "notifications:templates.write"
   | "notifications:system.read"
   | "prescriptions:read"
+  | "prescriptions:write"
   | "delivery:read"
   | "loyalty:read"
   | "sync:read"
@@ -145,7 +146,7 @@ export const ALL_PERMISSIONS: Permission[] = [
   "settings:extra-units.read", "settings:extra-units.write",
   "settings:custom-labels.read", "settings:custom-labels.write",
   "notifications:read", "notifications:manage", "notifications:templates.write", "notifications:system.read",
-  "prescriptions:read", "delivery:read", "loyalty:read", "sync:read", "deleted-records:read", "deleted-records:restore",
+  "prescriptions:read", "prescriptions:write", "delivery:read", "loyalty:read", "sync:read", "deleted-records:read", "deleted-records:restore",
 ]
 
 const SETTINGS_READ_PERMISSIONS: Permission[] = ALL_PERMISSIONS.filter((p) => p.startsWith("settings:") && p.endsWith(".read"))
@@ -209,7 +210,7 @@ const ROLE_PERMISSIONS: Record<MedicalRole, Permission[]> = {
     "crm:read", "crm:write",
     "settings:read", "settings:write", ...ADMIN_SETTINGS,
     "notifications:read", "notifications:manage", "notifications:templates.write",
-    "prescriptions:read", "delivery:read", "loyalty:read", "sync:read", "deleted-records:read", "deleted-records:restore",
+    "prescriptions:read", "prescriptions:write", "delivery:read", "loyalty:read", "sync:read", "deleted-records:read", "deleted-records:restore",
   ],
   manager: [
     "pharmacy:read", "branches:read", "branches:write", "users:read",
@@ -241,7 +242,7 @@ const ROLE_PERMISSIONS: Record<MedicalRole, Permission[]> = {
     "items:print", "items:ledger.read",
     "crm:read",
     "settings:read", "settings:items.read", "settings:stock-alerts.read", "settings:barcode.read", "settings:printers.read",
-    "notifications:read",
+    "notifications:read", "prescriptions:read", "prescriptions:write",
   ],
   cashier: [
     "pharmacy:read", "branches:read",

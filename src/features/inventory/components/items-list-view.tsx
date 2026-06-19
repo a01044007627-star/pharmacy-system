@@ -17,7 +17,8 @@ import {
   Eye,
   FileSpreadsheet,
   Filter,
-  Image,
+  Image as ImageIcon,
+  Loader2,
   Package,
   Plus,
   RefreshCw,
@@ -50,7 +51,6 @@ import { PrintContentButton, PrintableTable, type PrintableTableColumn } from "@
 import { useAuth } from "@/contexts/auth-context"
 import { cn } from "@/lib/utils"
 import { useDebouncedValue } from "@/hooks/use-debounced-value"
-import { EmptyState } from "@/components/shared/empty-state"
 import type { BranchOption, ItemsMode, ItemsPayload, PharmacyItemListRow, PharmacyOption } from "@/features/inventory/lib/items-types"
 import {
   csvCell,
@@ -68,6 +68,7 @@ import {
   unitEquationLabel,
 } from "@/features/inventory/lib/items-helpers"
 import { cacheItemsList, queueItemApiRequest, readCachedItemsList } from "@/features/inventory/lib/items-offline"
+import { apiRequest, isRequestAbort } from "@/lib/api-client"
 
 type ColumnKey =
   | "select"
@@ -84,6 +85,9 @@ type ColumnKey =
   | "oldSellPrice"
   | "buyPrice"
   | "manufacturer"
+  | "pharmacyType"
+  | "activeIngredient"
+  | "dosage"
   | "group"
   | "subCategory"
   | "brand"
@@ -111,16 +115,15 @@ const ALL_COLUMNS: Array<{ key: ColumnKey; label: string; canHide?: boolean; cla
   { key: "sellPrice", label: "سعر البيع الجديد", canHide: true, className: "min-w-[150px] text-center" },
   { key: "oldSellPrice", label: "سعر البيع القديم", canHide: true, className: "min-w-[150px] text-center" },
   { key: "buyPrice", label: "سعر الشراء", canHide: true, className: "min-w-[130px] text-center" },
-  { key: "manufacturer", label: "شركة الأدوية", canHide: true, className: "min-w-[180px]" },
+  { key: "manufacturer", label: "الشركة المنتجة", canHide: true, className: "min-w-[180px]" },
+  { key: "pharmacyType", label: "النوع الصيدلي", canHide: true, className: "min-w-[150px]" },
+  { key: "activeIngredient", label: "المادة الفعالة", canHide: true, className: "min-w-[190px]" },
+  { key: "dosage", label: "الشكل والتركيز", canHide: true, className: "min-w-[170px]" },
   { key: "group", label: "المجموعة الرئيسية", canHide: true, className: "min-w-[170px]" },
   { key: "subCategory", label: "المجموعة الفرعية", canHide: true, className: "min-w-[150px]" },
   { key: "brand", label: "الماركة", canHide: true, className: "min-w-[150px]" },
-  { key: "type", label: "نوع الصنف", canHide: true, className: "min-w-[130px]" },
-  { key: "productType", label: "نوع المنتج", canHide: true, className: "min-w-[130px]" },
   { key: "tax", label: "الضريبة", canHide: true, className: "min-w-[130px]" },
   { key: "storage", label: "المكان", canHide: true, className: "min-w-[150px]" },
-  { key: "customFields", label: "حقول مخصصة", canHide: true, className: "min-w-[220px]" },
-  { key: "weight", label: "الوزن", canHide: true, className: "min-w-[100px] text-center" },
   { key: "expiry", label: "تاريخ الصلاحية", canHide: true, className: "min-w-[170px]" },
   { key: "sku", label: "SKU / الباركود", canHide: true, className: "min-w-[170px]" },
   { key: "status", label: "الحالة", canHide: true, className: "min-w-[110px] text-center" },
@@ -135,6 +138,9 @@ const DEFAULT_VISIBLE: ColumnKey[] = [
   "sellPrice",
   "oldSellPrice",
   "manufacturer",
+  "pharmacyType",
+  "activeIngredient",
+  "dosage",
   "group",
   "subCategory",
   "unit",
@@ -145,14 +151,18 @@ const DEFAULT_VISIBLE: ColumnKey[] = [
   "sku",
 ]
 
-const pageSizeOptions = [25, 50, 100, 500, 1000, 100000]
+const pageSizeOptions = [25, 50, 100, 250, 500, 1000]
 
 const itemTypeOptions = [
-  { value: "all", label: "كل الأنواع" },
-  { value: "stocked", label: "مخزني" },
-  { value: "service", label: "خدمة" },
-  { value: "digital", label: "رقمي" },
-  { value: "consignment", label: "عهدة" },
+  { value: "all", label: "كل الأنواع الصيدلية" },
+  { value: "medicine", label: "دواء" },
+  { value: "medical_supply", label: "مستلزم طبي" },
+  { value: "supplement", label: "مكمل غذائي" },
+  { value: "cosmetic", label: "تجميل وعناية بالبشرة" },
+  { value: "personal_care", label: "عناية شخصية" },
+  { value: "baby_care", label: "أم وطفل" },
+  { value: "device", label: "جهاز طبي" },
+  { value: "other", label: "صنف صيدلي آخر" },
 ]
 
 const priceFilterOptions = [
@@ -237,7 +247,7 @@ function getFilterChips({
   const chips: string[] = []
   if (isDeveloper && selectedPharmacy) chips.push(`الصيدلية: ${selectedPharmacy.name}`)
   if (filters.branchId !== "all") chips.push(`الفرع: ${branches.find((branch) => branch.id === filters.branchId)?.name ?? filters.branchId}`)
-  if (filters.itemType !== "all") chips.push(`نوع الصنف: ${optionLabel(itemTypeOptions, filters.itemType)}`)
+  if (filters.itemType !== "all") chips.push(`النوع الصيدلي: ${optionLabel(itemTypeOptions, filters.itemType)}`)
   if (filters.groupId !== "all") chips.push(`المجموعة: ${payload?.groups.find((group) => group.id === filters.groupId)?.name ?? filters.groupId}`)
   if (filters.brandId !== "all") chips.push(`الماركة: ${payload?.brands.find((brand) => brand.id === filters.brandId)?.name ?? filters.brandId}`)
   if (filters.manufacturer !== "all") chips.push(`الشركة: ${filters.manufacturer}`)
@@ -275,7 +285,7 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
   const [search, setSearch] = React.useState("")
-  const debouncedSearch = useDebouncedValue(search.trim().toLowerCase(), 180)
+  const debouncedSearch = useDebouncedValue(search.trim().toLowerCase(), 350)
   const [visibleColumns, setVisibleColumns] = React.useState<Set<ColumnKey>>(() => new Set(DEFAULT_VISIBLE))
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(() => new Set())
   const [page, setPage] = React.useState(1)
@@ -283,6 +293,9 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
   const [sort, setSort] = React.useState<{ key: ColumnKey; dir: "asc" | "desc" }>({ key: "name", dir: "asc" })
   const [filtersVisible, setFiltersVisible] = React.useState(true)
   const [bulkBusy, setBulkBusy] = React.useState(false)
+  const requestRef = React.useRef<AbortController | null>(null)
+  const requestSequenceRef = React.useRef(0)
+  const payloadRef = React.useRef<ItemsPayload | null>(null)
 
   React.useEffect(() => {
     if (auth.activePharmacyId && !selectedPharmacyId) setSelectedPharmacyId(auth.activePharmacyId)
@@ -293,77 +306,83 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
     let cancelled = false
     ;(async () => {
       try {
-        const response = await fetch("/api/pharmacies", { cache: "no-store" })
-        if (!response.ok) throw new Error("فشل تحميل الصيدليات")
-        const data = await response.json() as { pharmacies?: PharmacyOption[] }
+        const data = await apiRequest<{ pharmacies?: PharmacyOption[] }>("/api/pharmacies", {
+          cache: "no-store",
+          timeoutMs: 15_000,
+          retries: 1,
+        })
         if (!cancelled) setPharmacies(data.pharmacies ?? [])
       } catch (err) {
-        if (!cancelled) console.warn(err)
+        if (!cancelled && !isRequestAbort(err)) console.warn(err)
       }
     })()
     return () => { cancelled = true }
   }, [auth.isDeveloper])
 
+  const pharmacyId = auth.isDeveloper ? selectedPharmacyId : (auth.activePharmacyId ?? "")
+  const queryString = React.useMemo(() => {
+    if (!pharmacyId) return ""
+    const query = new URLSearchParams()
+    query.set("mode", mode)
+    query.set("pharmacy_id", pharmacyId)
+    query.set("branch_id", filters.branchId)
+    query.set("page", String(page))
+    query.set("page_size", String(pageSize))
+    query.set("sort_key", sort.key)
+    query.set("sort_dir", sort.dir)
+    if (debouncedSearch) query.set("search", debouncedSearch)
+    query.set("pharmacy_type", filters.itemType)
+    query.set("group_id", filters.groupId)
+    query.set("brand_id", filters.brandId)
+    query.set("manufacturer", filters.manufacturer)
+    query.set("unit", filters.unit)
+    query.set("sub_unit", filters.subUnit)
+    query.set("expiry", filters.expiry)
+    query.set("price", filters.price)
+    query.set("stock", filters.stock)
+    if (filters.notForSale) query.set("not_for_sale", "true")
+    return query.toString()
+  }, [debouncedSearch, filters, mode, page, pageSize, pharmacyId, sort])
+
   const loadItems = React.useCallback(async () => {
-    const pharmacyId = auth.isDeveloper ? selectedPharmacyId : auth.activePharmacyId
-    if (!pharmacyId) {
+    if (!pharmacyId || !queryString) {
+      requestRef.current?.abort()
       setLoading(false)
-      setPayload({ items: [], groups: [], brands: [], manufacturers: [], units: [], subUnits: [], branches: [], pharmacyId: null, branchId: null })
+      const emptyPayload = { items: [], groups: [], brands: [], manufacturers: [], activeIngredients: [], dosageForms: [], pharmacyTypes: [], units: [], subUnits: [], branches: [], pharmacyId: null, branchId: null } as ItemsPayload
+      payloadRef.current = emptyPayload
+      setPayload(emptyPayload)
       return
     }
 
+    requestRef.current?.abort()
+    const controller = new AbortController()
+    requestRef.current = controller
+    const sequence = ++requestSequenceRef.current
     setLoading(true)
     setError(null)
+
     try {
-      const query = new URLSearchParams()
-      query.set("mode", mode)
-      query.set("pharmacy_id", pharmacyId)
-      query.set("branch_id", filters.branchId)
-      query.set("page", String(page))
-      query.set("page_size", String(pageSize))
-      query.set("sort_key", sort.key)
-      query.set("sort_dir", sort.dir)
-      if (debouncedSearch) query.set("search", debouncedSearch)
-      query.set("item_type", filters.itemType)
-      query.set("group_id", filters.groupId)
-      query.set("brand_id", filters.brandId)
-      query.set("manufacturer", filters.manufacturer)
-      query.set("unit", filters.unit)
-      query.set("sub_unit", filters.subUnit)
-      query.set("expiry", filters.expiry)
-      query.set("price", filters.price)
-      query.set("stock", filters.stock)
-      if (filters.notForSale) query.set("not_for_sale", "true")
-      const queryString = query.toString()
-      const response = await fetch(`/api/items?${queryString}`, { cache: "no-store" })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error ?? "فشل تحميل الأصناف")
-      const nextPayload = data as ItemsPayload
+      if (!payloadRef.current) {
+        const cached = await readCachedItemsList<ItemsPayload>(queryString)
+        if (cached && sequence === requestSequenceRef.current && !controller.signal.aborted) { payloadRef.current = cached; setPayload(cached) }
+      }
+
+      const nextPayload = await apiRequest<ItemsPayload>(`/api/items?${queryString}`, {
+        cache: "no-store",
+        signal: controller.signal,
+        timeoutMs: 22_000,
+        retries: 1,
+      })
+      if (sequence !== requestSequenceRef.current || controller.signal.aborted) return
+      payloadRef.current = nextPayload
       setPayload(nextPayload)
       setSelectedIds(new Set())
-      await cacheItemsList(queryString, nextPayload)
+      void cacheItemsList(queryString, nextPayload)
     } catch (err) {
-      const query = new URLSearchParams()
-      query.set("mode", mode)
-      query.set("pharmacy_id", pharmacyId)
-      query.set("branch_id", filters.branchId)
-      query.set("page", String(page))
-      query.set("page_size", String(pageSize))
-      query.set("sort_key", sort.key)
-      query.set("sort_dir", sort.dir)
-      if (debouncedSearch) query.set("search", debouncedSearch)
-      query.set("item_type", filters.itemType)
-      query.set("group_id", filters.groupId)
-      query.set("brand_id", filters.brandId)
-      query.set("manufacturer", filters.manufacturer)
-      query.set("unit", filters.unit)
-      query.set("sub_unit", filters.subUnit)
-      query.set("expiry", filters.expiry)
-      query.set("price", filters.price)
-      query.set("stock", filters.stock)
-      if (filters.notForSale) query.set("not_for_sale", "true")
-      const cached = await readCachedItemsList<ItemsPayload>(query.toString())
+      if (isRequestAbort(err) || sequence !== requestSequenceRef.current) return
+      const cached = await readCachedItemsList<ItemsPayload>(queryString)
       if (cached) {
+        payloadRef.current = cached
         setPayload(cached)
         setSelectedIds(new Set())
         setError(null)
@@ -374,20 +393,24 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
         toast.error(message)
       }
     } finally {
-      setLoading(false)
+      if (sequence === requestSequenceRef.current) setLoading(false)
     }
-  }, [auth.activePharmacyId, auth.isDeveloper, debouncedSearch, filters, mode, page, pageSize, selectedPharmacyId, sort])
+  }, [pharmacyId, queryString])
 
-  React.useEffect(() => { void loadItems() }, [loadItems])
-
-  React.useEffect(() => { setPage(1) }, [filters, debouncedSearch, pageSize, mode, sort])
+  React.useEffect(() => {
+    void loadItems()
+    return () => requestRef.current?.abort()
+  }, [loadItems])
 
   const branches = payload?.branches ?? auth.branches as BranchOption[]
 
   const setFilter = <K extends keyof Filters>(key: K, value: Filters[K]) => {
+    setPage(1)
     setFilters((prev) => ({ ...prev, [key]: value }))
   }
 
+  const initialLoading = loading && !payload
+  const refreshing = loading && Boolean(payload)
   const filteredItems = payload?.items ?? []
   const sortedItems = filteredItems
   const itemsTotal = payload?.itemsTotal ?? sortedItems.length
@@ -422,6 +445,7 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
 
   const toggleSort = (key: ColumnKey) => {
     if (["select", "actions", "image", "subUnits"].includes(key)) return
+    setPage(1)
     setSort((prev) => prev.key === key ? { key, dir: prev.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" })
   }
 
@@ -620,7 +644,7 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
               <SlidersHorizontal className="size-3.5" />
               {filtersVisible ? "إخفاء التصفية" : "إظهار التصفية"}
             </Button>
-            <Button type="button" variant="ghost" className="h-8 rounded-xl text-xs font-black text-slate-400 hover:text-slate-700" onClick={() => { setFilters(defaultFilters); setSearch("") }}>
+            <Button type="button" variant="ghost" className="h-8 rounded-xl text-xs font-black text-slate-400 hover:text-slate-700" onClick={() => { setPage(1); setFilters(defaultFilters); setSearch("") }}>
               <X className="size-3.5" />
               تصفير
             </Button>
@@ -630,7 +654,16 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
         {filtersVisible ? <div className="grid min-w-0 gap-x-4 gap-y-3 p-4 sm:grid-cols-2 sm:p-6 lg:grid-cols-3 2xl:grid-cols-4">
           {auth.isDeveloper ? (
             <FilterField label="الصيدلية" icon={<Building className="size-4" />}>
-              <Select value={selectedPharmacyId || "all"} onValueChange={(value: string | null) => { const v = value ?? ""; setSelectedPharmacyId(v === "all" ? "" : v); setFilters((prev) => ({ ...prev, branchId: "all" })) }}>
+              <Select value={selectedPharmacyId || "all"} onValueChange={(value: string | null) => {
+                const nextPharmacyId = value && value !== "all" ? value : ""
+                requestRef.current?.abort()
+                payloadRef.current = null
+                setPayload(null)
+                setPage(1)
+                setSelectedPharmacyId(nextPharmacyId)
+                setFilters((prev) => ({ ...prev, branchId: "all" }))
+                if (nextPharmacyId) void auth.setActiveScope({ pharmacyId: nextPharmacyId, branchId: null })
+              }}>
                 <SelectTrigger className={filterSelectClass()}><SelectValue placeholder="اختر الصيدلية">{selectedPharmacy?.name ?? "اختر صيدلية"}</SelectValue></SelectTrigger>
                 <SelectContent className={dropdownClass()} align="center">
                   <SelectItem value="all">اختر صيدلية</SelectItem>
@@ -650,7 +683,7 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
             </Select>
           </FilterField>
 
-          <FilterField label="نوع الصنف">
+          <FilterField label="نوع الصنف الصيدلي">
             <AppSelect value={filters.itemType} onChange={(value) => setFilter("itemType", value)} options={itemTypeOptions} />
           </FilterField>
 
@@ -674,7 +707,7 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
             </Select>
           </FilterField>
 
-          <FilterField label="شركة الأدوية">
+          <FilterField label="الشركة المنتجة">
             <Select value={filters.manufacturer} onValueChange={(value: string | null) => setFilter("manufacturer", value ?? "all")}>
               <SelectTrigger className={filterSelectClass()}><SelectValue>{manufacturerFilterLabel}</SelectValue></SelectTrigger>
               <SelectContent className={dropdownClass()} align="center">
@@ -744,7 +777,7 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
                   <Package className="size-4" />
                 </span>
                 <div>
-                  <h2 className="text-lg font-black text-slate-950">{mode === "deleted" ? "الأصناف المحذوفة" : "كل الأصناف"}</h2>
+                  <h2 className="text-lg font-black text-slate-950">{mode === "deleted" ? "الأدوية والأصناف المحذوفة" : "كل الأدوية والأصناف"}</h2>
                   <p className="mt-0.5 text-xs font-bold text-slate-500">{itemsTotal.toLocaleString("ar-EG")} صف حسب الفلاتر الحالية</p>
                 </div>
               </div>
@@ -755,8 +788,8 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
                 <Search className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
                 <Input
                   value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="ابحث بالاسم، الباركود، الشركة، الفرع، السعر..."
+                  onChange={(event) => { setPage(1); setSearch(event.target.value) }}
+                  placeholder="ابحث بالاسم، الباركود، المادة الفعالة، التركيز أو الشركة..."
                   className="h-10 rounded-2xl border-slate-300 bg-white pr-9 pl-3 text-right text-sm font-bold shadow-none focus-visible:ring-2 focus-visible:ring-sky-100"
                 />
               </div>
@@ -825,10 +858,10 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
                 </DropdownMenu>
                 <div className="flex h-9 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-700">
                   <span>عرض</span>
-                  <Select value={String(pageSize)} onValueChange={(value: string | null) => { setPageSize(Number(value)); if (Number(value) === 100000) setPage(1) }}>
+                  <Select value={String(pageSize)} onValueChange={(value: string | null) => { setPage(1); setPageSize(Number(value)) }}>
                     <SelectTrigger className="h-7 w-20 rounded-lg border-slate-200 bg-white px-2 text-xs font-bold text-slate-700 shadow-none"><SelectValue /></SelectTrigger>
                     <SelectContent className={dropdownClass("min-w-24")} align="center" side="bottom" sideOffset={12}>
-                      {pageSizeOptions.map((size) => <SelectItem key={size} value={String(size)}>{size === 100000 ? "الكل" : size.toLocaleString("en-US")}</SelectItem>)}
+                      {pageSizeOptions.map((size) => <SelectItem key={size} value={String(size)}>{size.toLocaleString("en-US")}</SelectItem>)}
                     </SelectContent>
                   </Select>
                   <span>إدخالات</span>
@@ -866,7 +899,12 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
           <div className="m-5 rounded-2xl border border-rose-100 bg-rose-50 p-4 text-sm font-black text-rose-700">{error}</div>
         ) : null}
 
-        <div className="min-h-[320px] min-w-0 overflow-auto pharmacy-scrollbar px-3 pb-4 sm:px-6 lg:max-h-[calc(100vh-400px)]">
+        <div className="relative min-h-[320px] min-w-0 overflow-auto pharmacy-scrollbar px-3 pb-4 sm:px-6 lg:max-h-[calc(100vh-400px)]">
+          {refreshing ? (
+            <div className="pointer-events-none sticky top-2 z-40 ms-auto mb-2 flex w-fit items-center gap-2 rounded-full border border-blue-100 bg-white/95 px-3 py-1.5 text-xs font-black text-blue-700 shadow-lg backdrop-blur">
+              <Loader2 className="size-3.5 animate-spin" /> تحديث النتائج...
+            </div>
+          ) : null}
           <Table dir="rtl" className="w-full min-w-[1180px] border-separate border-spacing-0 overflow-hidden rounded-xl border border-slate-100 bg-white">
             <TableHeader className="sticky top-0 z-20 bg-white shadow-[0_1px_0_rgba(226,232,240,0.95)]">
               <TableRow className="bg-gradient-to-l from-slate-50 to-white hover:bg-slate-50">
@@ -895,7 +933,7 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {loading ? (
+              {initialLoading ? (
                 Array.from({ length: 7 }).map((_, index) => (
                   <TableRow key={index}>
                     <TableCell colSpan={visibleColumnList.length} className="p-3">
@@ -916,6 +954,7 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
                   columns={visibleColumnList}
                   selected={selectedIds.has(item.id)}
                   branchId={filters.branchId}
+                  pharmacyId={pharmacyId}
                   mode={mode}
                   permissions={{ canUpdate, canDelete, canRestore, canArchive, canCreate }}
                   onSelect={(checked) => toggleSelected(item.id, checked)}
@@ -928,14 +967,9 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
 
           <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
             <div className="text-sm font-bold text-slate-500">
-              {pageSize === 100000 ? (
-                <>عرض كل {itemsTotal.toLocaleString("ar-EG")} إدخالات</>
-              ) : (
-                <>عرض {itemsTotal === 0 ? 0 : ((currentPage - 1) * pageSize + 1).toLocaleString("ar-EG")} إلى {Math.min(currentPage * pageSize, itemsTotal).toLocaleString("ar-EG")} من {itemsTotal.toLocaleString("ar-EG")} إدخالات — صفحة {currentPage.toLocaleString("ar-EG")} / {totalPages.toLocaleString("ar-EG")}</>
-              )}
+              <>عرض {itemsTotal === 0 ? 0 : ((currentPage - 1) * pageSize + 1).toLocaleString("ar-EG")} إلى {Math.min(currentPage * pageSize, itemsTotal).toLocaleString("ar-EG")} من {itemsTotal.toLocaleString("ar-EG")} إدخالات — صفحة {currentPage.toLocaleString("ar-EG")} / {totalPages.toLocaleString("ar-EG")}</>
               {selectedIds.size ? <span className="me-2 text-brand">— {selectedIds.size.toLocaleString("ar-EG")} محدد</span> : null}
             </div>
-            {pageSize !== 100000 ? (
             <div className="flex items-center overflow-hidden rounded-xl border border-slate-200 bg-white">
               <Button type="button" variant="ghost" className="h-9 rounded-none border-l border-slate-200 px-4 text-xs font-bold" disabled={currentPage <= 1} onClick={() => setPage((prev) => Math.max(1, prev - 1))}>
                 <ChevronRight className="size-3.5" />
@@ -947,7 +981,6 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
                 <ChevronLeft className="size-3.5" />
               </Button>
             </div>
-            ) : null}
           </div>
       </Card>
     </section>
@@ -1005,9 +1038,10 @@ function LegendDot({ className, label }: { className: string; label: string }) {
   return <span className="inline-flex items-center gap-1.5"><span className={cn("size-2.5 rounded-full ring-1.5", className)} />{label}</span>
 }
 
-function getTimeForSort(item: PharmacyItemListRow) {
-  const expiry = item.expiry_date ?? item.batches?.find((batch) => batch.expiry_date)?.expiry_date
-  return expiry ? new Date(expiry).getTime() : Number.MAX_SAFE_INTEGER
+function itemScopeHref(path: string, pharmacyId: string) {
+  if (!pharmacyId) return path
+  const separator = path.includes("?") ? "&" : "?"
+  return `${path}${separator}pharmacy_id=${encodeURIComponent(pharmacyId)}`
 }
 
 function exportValue(item: PharmacyItemListRow, key: ColumnKey, branchId: string) {
@@ -1023,6 +1057,9 @@ function exportValue(item: PharmacyItemListRow, key: ColumnKey, branchId: string
     case "oldSellPrice": return money(item.old_sell_price)
     case "buyPrice": return money(item.buy_price)
     case "manufacturer": return item.manufacturer_name ?? "—"
+    case "pharmacyType": return optionLabel(itemTypeOptions, item.pharmacy_type ?? "other")
+    case "activeIngredient": return item.active_ingredient ?? item.generic_name ?? "—"
+    case "dosage": return [item.dosage_form, item.strength, item.package_size].filter(Boolean).join(" — ") || "—"
     case "group": return item.group?.name ?? "—"
     case "subCategory": return item.sub_category ?? "—"
     case "brand": return item.brand?.name ?? "—"
@@ -1044,6 +1081,7 @@ function ItemRow({
   columns,
   selected,
   branchId,
+  pharmacyId,
   mode,
   permissions,
   onSelect,
@@ -1053,6 +1091,7 @@ function ItemRow({
   columns: Array<{ key: ColumnKey; label: string; className?: string }>
   selected: boolean
   branchId: string
+  pharmacyId: string
   mode: ItemsMode
   permissions: ItemActionPermissions
   onSelect: (checked: boolean) => void
@@ -1073,7 +1112,7 @@ function ItemRow({
     <TableRow className={cn("border-b border-slate-100 transition", rowTone)}>
       {columns.map((column) => (
         <TableCell key={column.key} className={cn("border-b border-slate-100 px-3 py-3 text-right text-sm font-bold text-slate-800", column.className)}>
-          {renderCell({ item, keyName: column.key, selected, branchId, mode, permissions, onSelect, onAction })}
+          {renderCell({ item, keyName: column.key, selected, branchId, pharmacyId, mode, permissions, onSelect, onAction })}
         </TableCell>
       ))}
     </TableRow>
@@ -1085,6 +1124,7 @@ function renderCell({
   keyName,
   selected,
   branchId,
+  pharmacyId,
   mode,
   permissions,
   onSelect,
@@ -1094,6 +1134,7 @@ function renderCell({
   keyName: ColumnKey
   selected: boolean
   branchId: string
+  pharmacyId: string
   mode: ItemsMode
   permissions: ItemActionPermissions
   onSelect: (checked: boolean) => void
@@ -1103,9 +1144,14 @@ function renderCell({
     case "select":
       return <div className="flex justify-center"><Checkbox checked={selected} onCheckedChange={(checked: boolean | "indeterminate") => onSelect(Boolean(checked))} /></div>
     case "actions":
-      return <ItemActions item={item} mode={mode} permissions={permissions} onAction={onAction} />
+      return <ItemActions item={item} pharmacyId={pharmacyId} mode={mode} permissions={permissions} onAction={onAction} />
     case "image":
-      return item.image_url ? <img src={item.image_url} alt={item.name_ar} className="mx-auto size-10 rounded-xl object-cover ring-1 ring-slate-100" /> : <span className="mx-auto flex size-10 items-center justify-center rounded-xl bg-slate-50 text-slate-400">            <Image className="size-5" /></span>
+      return item.image_url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={item.image_url} alt={item.name_ar} loading="lazy" decoding="async" className="mx-auto size-10 rounded-xl object-cover ring-1 ring-slate-100" />
+      ) : (
+        <span className="mx-auto flex size-10 items-center justify-center rounded-xl bg-slate-50 text-slate-400"><ImageIcon className="size-5" /></span>
+      )
     case "name":
       return (
         <div className="min-w-0">
@@ -1138,6 +1184,9 @@ function renderCell({
     case "oldSellPrice": return numberValue(item.old_sell_price) > 0 ? <span className="text-slate-500 line-through decoration-slate-400">{money(item.old_sell_price)} ج.م</span> : <span className="text-slate-400">—</span>
     case "buyPrice": return <span>{money(item.buy_price)} ج.م</span>
     case "manufacturer": return item.manufacturer_name ?? <span className="text-slate-400">—</span>
+    case "pharmacyType": return <Badge variant="outline" className="bg-violet-50 font-black text-violet-700">{optionLabel(itemTypeOptions, item.pharmacy_type ?? "other")}</Badge>
+    case "activeIngredient": return <span className="font-bold text-slate-700">{item.active_ingredient ?? item.generic_name ?? "—"}</span>
+    case "dosage": return <div><div className="font-black text-slate-800">{[item.dosage_form, item.strength].filter(Boolean).join(" — ") || "—"}</div>{item.package_size ? <div className="mt-0.5 text-xs font-bold text-slate-400">{item.package_size}</div> : null}</div>
     case "group": return item.group?.name ?? <span className="text-slate-400">—</span>
     case "subCategory": return item.sub_category ?? <span className="text-slate-400">—</span>
     case "brand": return item.brand?.name ?? <span className="text-slate-400">—</span>
@@ -1165,7 +1214,7 @@ type ItemActionPermissions = {
   canArchive: boolean
 }
 
-function ItemActions({ item, mode, permissions, onAction }: { item: PharmacyItemListRow; mode: ItemsMode; permissions: ItemActionPermissions; onAction: (action: "delete" | "restore" | "archive" | "activate" | "deactivate") => void }) {
+function ItemActions({ item, pharmacyId, mode, permissions, onAction }: { item: PharmacyItemListRow; pharmacyId: string; mode: ItemsMode; permissions: ItemActionPermissions; onAction: (action: "delete" | "restore" | "archive" | "activate" | "deactivate") => void }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -1176,15 +1225,15 @@ function ItemActions({ item, mode, permissions, onAction }: { item: PharmacyItem
           </Button>
         }
       />
-      <DropdownMenuContent className="w-64 rounded-xl border-slate-200 bg-white p-1 text-right shadow-xl" align="center">
-        <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={`/dashboard/items/barcode?item=${item.id}`} />}>
-          الملصقات <Barcode className="size-4 text-slate-500" />
+      <DropdownMenuContent className="w-72 max-h-[min(70vh,520px)] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border-slate-200 bg-white p-1 text-right shadow-xl" align="end" sideOffset={6}>
+        <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={itemScopeHref(`/dashboard/items/barcode?item=${item.id}`, pharmacyId)} />}>
+          طباعة ملصق الدواء <Barcode className="size-4 text-slate-500" />
         </DropdownMenuItem>
-        <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={`/dashboard/items/${item.id}`} />}>
-          فحص <Eye className="size-4 text-slate-500" />
+        <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={itemScopeHref(`/dashboard/items/${item.id}`, pharmacyId)} />}>
+          بطاقة الدواء <Eye className="size-4 text-slate-500" />
         </DropdownMenuItem>
         {permissions.canUpdate ? (
-          <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={`/dashboard/items/${item.id}/edit`} />}>
+          <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={itemScopeHref(`/dashboard/items/${item.id}/edit`, pharmacyId)} />}>
             تعديل <Edit className="size-4 text-slate-500" />
           </DropdownMenuItem>
         ) : null}
@@ -1199,20 +1248,20 @@ function ItemActions({ item, mode, permissions, onAction }: { item: PharmacyItem
         )}
         <DropdownMenuSeparator />
         {permissions.canUpdate ? (
-          <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={`/dashboard/items/${item.id}/opening-stock`} />}>
+          <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={itemScopeHref(`/dashboard/items/${item.id}/opening-stock`, pharmacyId)} />}>
             إضافة كمية افتتاحية جديدة <Box className="size-4 text-slate-500" />
           </DropdownMenuItem>
         ) : null}
-        <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={`/dashboard/items/${item.id}/card`} />}>
+        <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={itemScopeHref(`/dashboard/items/${item.id}/card`, pharmacyId)} />}>
           كرت الصنف <RotateCcw className="size-4 text-slate-500" />
         </DropdownMenuItem>
         {permissions.canUpdate ? (
-          <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={`/dashboard/items/price-groups?item=${item.id}`} />}>
+          <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={itemScopeHref(`/dashboard/items/price-groups?item=${item.id}`, pharmacyId)} />}>
             إضافة أو تعديل مجموعة الأسعار <FileSpreadsheet className="size-4 text-slate-500" />
           </DropdownMenuItem>
         ) : null}
         {permissions.canCreate ? (
-          <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={`/dashboard/items/new?duplicate=${item.id}`} />}>
+          <DropdownMenuItem className="justify-end gap-2 rounded-lg font-bold" render={<Link href={itemScopeHref(`/dashboard/items/new?duplicate=${item.id}`, pharmacyId)} />}>
             صنف مكرر <Copy className="size-4 text-slate-500" />
           </DropdownMenuItem>
         ) : null}

@@ -1,8 +1,13 @@
 import { redirect } from "next/navigation"
 
-type PageProps = { params: Promise<{ itemId: string }> }
+type PageProps = {
+  params: Promise<{ itemId: string }>
+  searchParams: Promise<{ pharmacy_id?: string | string[] }>
+}
 
-export default async function ItemOpeningStockRedirect({ params }: PageProps) {
-  const { itemId } = await params
-  redirect(`/dashboard/items/${itemId}/edit`)
+export default async function ItemOpeningStockRedirect({ params, searchParams }: PageProps) {
+  const [{ itemId }, query] = await Promise.all([params, searchParams])
+  const pharmacyId = Array.isArray(query.pharmacy_id) ? query.pharmacy_id[0] : query.pharmacy_id
+  const suffix = pharmacyId ? `?pharmacy_id=${encodeURIComponent(pharmacyId)}` : ""
+  redirect(`/dashboard/items/${itemId}/edit${suffix}`)
 }

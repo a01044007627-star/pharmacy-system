@@ -16,6 +16,7 @@ import { useAuth } from "@/contexts/auth-context"
 import type { PharmacyItemListRow } from "@/features/inventory/lib/items-types"
 import { money, primaryBarcode } from "@/features/inventory/lib/items-helpers"
 import { encodeCode128 } from "@/features/inventory/lib/barcode-encoder"
+import { apiRequest } from "@/lib/api-client"
 
 /** Renders a Code-128B barcode as a pure SVG — no external deps */
 function BarcodeSVG({ value }: { value: string; format?: string }) {
@@ -83,6 +84,8 @@ export function BarcodePrintView() {
   const auth = useAuth()
   const searchParams = useSearchParams()
   const itemId = searchParams.get("item")
+  const pharmacyId = searchParams.get("pharmacy_id") || auth.activePharmacyId
+  const scopeQuery = pharmacyId ? `?pharmacy_id=${encodeURIComponent(pharmacyId)}` : ""
   
   const [item, setItem] = useState<PharmacyItemListRow | null>(null)
   const [papers, setPapers] = useState<Paper[]>([])
@@ -101,19 +104,15 @@ export function BarcodePrintView() {
   })
 
   const loadData = useCallback(async () => {
-    if (!itemId || !auth.activePharmacyId) return
+    if (!itemId || !pharmacyId) return
     setLoading(true)
     try {
-      // Load Item details
-      const itemRes = await fetch(`/api/items/${itemId}`, { cache: "no-store" })
-      const itemData = await itemRes.json()
-      if (!itemRes.ok) throw new Error(itemData.error ?? "فشل تحميل بيانات الصنف")
-      setItem(itemData.item)
-
-      // Load paper configs
-      const paperRes = await fetch("/api/settings/entities?entity=barcode-papers", { cache: "no-store" })
-      const paperData = await paperRes.json()
-      const list = (paperData.rows ?? []) as Paper[]
+      const [itemData, paperData] = await Promise.all([
+        apiRequest<{ item?: PharmacyItemListRow }>(`/api/items/${itemId}${scopeQuery}`, { cache: "no-store", timeoutMs: 18000, retries: 1 }),
+        apiRequest<{ rows?: Paper[] }>(`/api/settings/entities?entity=barcode-papers&pharmacy_id=${encodeURIComponent(pharmacyId)}`, { cache: "no-store", timeoutMs: 18000, retries: 1 }),
+      ])
+      setItem(itemData.item ?? null)
+      const list = paperData.rows ?? []
       setPapers(list)
 
       const def = list.find((p) => p.is_default) ?? list[0]
@@ -123,7 +122,7 @@ export function BarcodePrintView() {
     } finally {
       setLoading(false)
     }
-  }, [itemId, auth.activePharmacyId])
+  }, [itemId, pharmacyId, scopeQuery])
 
   useEffect(() => {
     void loadData()
@@ -185,7 +184,7 @@ export function BarcodePrintView() {
         </div>
         <div className="flex gap-2">
           <Button variant="outline" className="h-10 rounded-xl" asChild>
-            <Link href="/dashboard/items">
+            <Link href={`/dashboard/items${scopeQuery}`}>
               <ArrowRight className="size-4" /> الأصناف
             </Link>
           </Button>

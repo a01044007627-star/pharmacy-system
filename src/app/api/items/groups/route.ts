@@ -12,9 +12,10 @@ function clean(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const scope = await getServerAuthScope()
+    const requestedPharmacyId = clean(new URL(request.url).searchParams.get("pharmacy_id")) || null
+    const scope = await getServerAuthScope({ requestedPharmacyId })
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
     if (!scopeCan(scope, "inventory:read")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
@@ -32,7 +33,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({})) as Record<string, unknown>
-    const scope = await getServerAuthScope()
+    const scope = await getServerAuthScope({ requestedPharmacyId: clean(body.pharmacy_id) || null })
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
     if (!scopeCan(scope, "inventory:create")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
@@ -51,7 +52,7 @@ export async function PATCH(request: Request) {
   try {
     const body = await request.json().catch(() => ({})) as Record<string, unknown>
     if (!body.id) return NextResponse.json({ error: "معرف المجموعة مطلوب" }, { status: 400 })
-    const scope = await getServerAuthScope()
+    const scope = await getServerAuthScope({ requestedPharmacyId: clean(body.pharmacy_id) || null })
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
     if (!scopeCan(scope, "inventory:update")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
@@ -75,7 +76,8 @@ export async function DELETE(request: Request) {
     const url = new URL(request.url)
     const id = url.searchParams.get("id")
     if (!id) return NextResponse.json({ error: "معرف المجموعة مطلوب" }, { status: 400 })
-    const scope = await getServerAuthScope()
+    const requestedPharmacyId = clean(url.searchParams.get("pharmacy_id")) || null
+    const scope = await getServerAuthScope({ requestedPharmacyId })
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
     if (!scopeCan(scope, "inventory:delete")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })

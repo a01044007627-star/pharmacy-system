@@ -86,12 +86,12 @@ export async function GET(request: Request) {
 
     if (query) {
       const barcodeNeedle = query.replace(/[% ,().]/g, "")
-      const { data: barcodeHits, error: barcodeHitError } = await db
+      const { data: barcodeHits, error: barcodeHitError } = barcodeNeedle ? await db
         .from("pharmacy_item_barcodes")
         .select("item_id, barcode, is_primary")
         .eq("pharmacy_id", pharmacyId)
         .ilike("barcode", `%${barcodeNeedle}%`)
-        .limit(limit)
+        .limit(limit) : { data: [], error: null }
       if (barcodeHitError) throw barcodeHitError
 
       const existing = new Set(items.map((item) => item.id))
@@ -113,9 +113,16 @@ export async function GET(request: Request) {
 
     const limited = items.slice(0, limit)
     const ids = limited.map((item) => item.id)
+    let balancesQuery = db
+      .from("pharmacy_stock_balances")
+      .select("item_id,branch_id,quantity")
+      .eq("pharmacy_id", pharmacyId)
+      .in("item_id", ids)
+    if (branchId) balancesQuery = balancesQuery.eq("branch_id", branchId)
+
     const [barcodesResult, balancesResult] = ids.length > 0 ? await Promise.all([
       db.from("pharmacy_item_barcodes").select("item_id,barcode,is_primary").eq("pharmacy_id", pharmacyId).in("item_id", ids),
-      db.from("pharmacy_stock_balances").select("item_id,branch_id,quantity").eq("pharmacy_id", pharmacyId).in("item_id", ids),
+      balancesQuery,
     ]) : [{ data: [], error: null }, { data: [], error: null }]
 
     if (barcodesResult.error) throw barcodesResult.error

@@ -69,6 +69,9 @@ function sanitizeSearch(value: string) {
 const SQL_SORT_MAP: Record<string, string> = {
   name: "name_ar",
   manufacturer: "manufacturer_name",
+  pharmacyType: "pharmacy_type",
+  activeIngredient: "active_ingredient",
+  dosage: "dosage_form",
   group: "group_id",
   brand: "brand_id",
   subCategory: "sub_category",
@@ -97,7 +100,7 @@ function priceChanged(item: PharmacyItemListRow) {
 function applyListFilters(items: PharmacyItemListRow[], url: URL, branchId: string | null) {
   const search = clean(url.searchParams.get("search")).toLowerCase()
   const filters = {
-    itemType: paramValue(url, "item_type"),
+    pharmacyType: paramValue(url, "pharmacy_type"),
     groupId: paramValue(url, "group_id"),
     brandId: paramValue(url, "brand_id"),
     manufacturer: paramValue(url, "manufacturer"),
@@ -110,7 +113,7 @@ function applyListFilters(items: PharmacyItemListRow[], url: URL, branchId: stri
   }
 
   return items.filter((item) => {
-    if (filters.itemType !== "all" && item.item_type !== filters.itemType) return false
+    if (filters.pharmacyType !== "all" && item.pharmacy_type !== filters.pharmacyType) return false
     if (filters.groupId !== "all" && item.group_id !== filters.groupId) return false
     if (filters.brandId !== "all" && item.brand_id !== filters.brandId) return false
     if (filters.manufacturer !== "all" && (item.manufacturer_name ?? "") !== filters.manufacturer) return false
@@ -143,6 +146,9 @@ function sortItems(items: PharmacyItemListRow[], sortKey: string, sortDir: strin
       case "oldSellPrice": return numberValue(item.old_sell_price)
       case "buyPrice": return numberValue(item.buy_price)
       case "manufacturer": return item.manufacturer_name ?? ""
+      case "pharmacyType": return item.pharmacy_type ?? ""
+      case "activeIngredient": return item.active_ingredient ?? item.generic_name ?? ""
+      case "dosage": return [item.dosage_form, item.strength, item.package_size].filter(Boolean).join(" ")
       case "group": return item.group?.name ?? ""
       case "brand": return item.brand?.name ?? ""
       case "subCategory": return item.sub_category ?? ""
@@ -176,7 +182,7 @@ async function fetchItemPage(
   mode: "active" | "deleted",
   options: {
     search?: string
-    itemType?: string
+    pharmacyType?: string
     groupId?: string
     brandId?: string
     manufacturer?: string
@@ -204,7 +210,7 @@ async function fetchItemPage(
       )
     }
   }
-  if (options.itemType && options.itemType !== "all") query = query.eq("item_type", options.itemType)
+  if (options.pharmacyType && options.pharmacyType !== "all") query = query.eq("pharmacy_type", options.pharmacyType)
   if (options.groupId && options.groupId !== "all") query = query.eq("group_id", options.groupId)
   if (options.brandId && options.brandId !== "all") query = query.eq("brand_id", options.brandId)
   if (options.manufacturer && options.manufacturer !== "all") query = query.eq("manufacturer_name", options.manufacturer)
@@ -294,7 +300,7 @@ export async function GET(request: Request) {
     const sortDir = paramValue(url, "sort_dir", "asc")
     const search = clean(url.searchParams.get("search"))
     const filters = {
-      itemType: paramValue(url, "item_type"),
+      pharmacyType: paramValue(url, "pharmacy_type"),
       groupId: paramValue(url, "group_id"),
       brandId: paramValue(url, "brand_id"),
       manufacturer: paramValue(url, "manufacturer"),
@@ -307,12 +313,12 @@ export async function GET(request: Request) {
     }
 
     const [{ data: catalogData, error: catalogError }, { data: optionData, error: optionError }] = await Promise.all([
-      db.rpc("pharmacy_items_catalog", {
+      db.rpc("pharmacy_items_catalog_v2", {
         p_pharmacy_id: pharmacyId,
         p_branch_id: branchId,
         p_mode: mode,
         p_search: search,
-        p_item_type: filters.itemType,
+        p_pharmacy_type: filters.pharmacyType,
         p_group_id: filters.groupId,
         p_brand_id: filters.brandId,
         p_manufacturer: filters.manufacturer,
@@ -346,6 +352,9 @@ export async function GET(request: Request) {
         brands,
         branches,
         manufacturers: Array.isArray(options.manufacturers) ? options.manufacturers : [],
+        activeIngredients: Array.isArray(options.activeIngredients) ? options.activeIngredients : [],
+        dosageForms: Array.isArray(options.dosageForms) ? options.dosageForms : [],
+        pharmacyTypes: Array.isArray(options.pharmacyTypes) ? options.pharmacyTypes : [],
         units: Array.isArray(options.units) ? options.units : [],
         subUnits: Array.isArray(options.subUnits) ? options.subUnits : [],
         pharmacyId,
@@ -363,7 +372,7 @@ export async function GET(request: Request) {
 
     const { items: rawItems, count: sqlCount } = await fetchItemPage(db, pharmacyId, branchId, mode, {
       search: search.toLowerCase(),
-      itemType: filters.itemType,
+      pharmacyType: filters.pharmacyType,
       groupId: filters.groupId,
       brandId: filters.brandId,
       manufacturer: filters.manufacturer,
@@ -456,6 +465,9 @@ export async function GET(request: Request) {
       brands,
       branches,
       manufacturers: uniqueStrings(rawItems.map((item) => item.manufacturer_name)),
+      activeIngredients: uniqueStrings(rawItems.map((item) => item.active_ingredient)),
+      dosageForms: uniqueStrings(rawItems.map((item) => item.dosage_form)),
+      pharmacyTypes: uniqueStrings(rawItems.map((item) => item.pharmacy_type)),
       units: uniqueStrings(rawItems.map((item) => item.unit)),
       subUnits: uniqueStrings(subUnits.map((unit) => unit.unit_name)),
       pharmacyId,
@@ -523,6 +535,17 @@ export async function POST(request: Request) {
       unit: baseUnit,
       item_type: clean(body.item_type) || "stocked",
       manufacturer_name: clean(body.manufacturer_name) || null,
+      manufacturer_country: clean(body.manufacturer_country) || null,
+      pharmacy_type: clean(body.pharmacy_type) || "medicine",
+      generic_name: clean(body.generic_name) || null,
+      active_ingredient: clean(body.active_ingredient) || null,
+      therapeutic_class: clean(body.therapeutic_class) || null,
+      dosage_form: clean(body.dosage_form) || null,
+      strength: clean(body.strength) || null,
+      package_size: clean(body.package_size) || null,
+      route_of_administration: clean(body.route_of_administration) || null,
+      registration_number: clean(body.registration_number) || null,
+      storage_condition: clean(body.storage_condition) || null,
       buy_price: Math.max(0, Number(body.buy_price) || 0),
       sell_price: Math.max(0, Number(body.sell_price) || 0),
       old_sell_price: Math.max(0, Number(body.old_sell_price) || 0),

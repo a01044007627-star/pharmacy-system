@@ -18,24 +18,21 @@ const defaultSettings = {
 }
 
 const defaultShortcuts = [
-  { key: "ctrl+n", action: "إنشاء صنف جديد" },
-  { key: "ctrl+s", action: "حفظ" },
-  { key: "ctrl+f", action: "بحث" },
-  { key: "ctrl+p", action: "طباعة" },
-  { key: "ctrl+d", action: "نسخ" },
-  { key: "f1", action: "مساعدة" },
-  { key: "f8", action: "فتح الكاشير" },
-  { key: "escape", action: "إغلاق" },
+  { key: "Ctrl + N", action: "فتح صفحة إضافة صنف" },
+  { key: "Ctrl + F", action: "الانتقال إلى مربع البحث الحالي" },
+  { key: "Ctrl + P", action: "طباعة المحتوى الحالي" },
+  { key: "F8", action: "فتح شاشة الكاشير" },
+  { key: "Escape", action: "إغلاق القوائم والنوافذ المفتوحة" },
 ]
 
 function ShortcutsSettingsForm() {
-  const { getSetting, updateSetting, saveSettings, resetSettings, saving, canWrite, dirty } = useSettingsPage()
+  const { getSetting, updateSetting, saveSettings, resetSettings, saving, canWrite } = useSettingsPage()
 
   return (
     <div className="space-y-5">
       <SettingsPageHeader
         title="إعدادات الاختصارات"
-        description="تخصيص اختصارات لوحة المفاتيح"
+        description="تفعيل الاختصارات التشغيلية الموحّدة في المنظومة"
         onSave={saveSettings}
         onReset={resetSettings}
         saving={saving}
@@ -69,8 +66,8 @@ function ShortcutsSettingsForm() {
               </div>
             ))}
           </div>
-          <p className="mt-3 text-xs font-semibold text-slate-400">
-            سيتم إضافة إمكانية تخصيص الاختصارات قريباً
+          <p className="mt-3 text-xs font-semibold text-slate-500">
+            الاختصارات أعلاه مفعّلة فعليًا في جميع صفحات لوحة التحكم عند تشغيل الإعداد.
           </p>
         </CardContent>
       </Card>

@@ -48,7 +48,7 @@ export async function POST(request: Request) {
     const scope = await getServerAuthScope({ requestedPharmacyId: clean(body.pharmacy_id) || null })
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId && !clean(body.pharmacy_id)) return NextResponse.json({ error: "اختر صيدلية أولًا" }, { status: 400 })
-    if (!scopeCan(scope, "prescriptions:read") && !scope.isDeveloper) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
+    if (!scopeCan(scope, "prescriptions:write") && !scope.isDeveloper) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient

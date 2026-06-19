@@ -41,12 +41,14 @@ import { Separator } from "@/components/ui/separator"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
-import { useNetwork } from "@/hooks/use-data-layer"
+import { useNetwork, useSyncStatus } from "@/hooks/use-data-layer"
+import { queueApiRequest } from "@/lib/sync/api-mutations"
+import { syncManager } from "@/lib/sync/sync-manager"
 import { useSound } from "@/hooks/use-sound"
 import { cn } from "@/lib/utils"
 import { numberValue, escapeHtml, labelFromMap } from "@/lib/helpers"
 import { money } from "@/lib/formatters"
-import { EmptyState, SkeletonRows } from "@/components/shared/empty-state"
+import { EmptyState } from "@/components/shared/empty-state"
 import { Calculator as CalculatorWidget } from "@/features/calculator"
 
 type CashierProductBarcode = {
@@ -156,6 +158,14 @@ type InvoicePrintDesign = {
   status?: string | null
 }
 
+type PriceGroup = {
+  id: string
+  name: string
+  markup_percent?: number | null
+  status?: string | null
+  is_default?: boolean | null
+}
+
 type ReceiptPrinterProfile = {
   name?: string
   paper_width?: number | null
@@ -163,7 +173,7 @@ type ReceiptPrinterProfile = {
   status?: string | null
 }
 
-const OFFLINE_SALES_KEY = "pharmacy_cashier_offline_sales_v1"
+const LEGACY_OFFLINE_SALES_KEY = "pharmacy_cashier_offline_sales_v1"
 const DRAFT_KEY = "pharmacy_cashier_draft_v1"
 const CATALOG_PANEL_KEY = "pharmacy_cashier_catalog_panel_v1"
 const CATALOG_PANEL_WIDTH_KEY = "pharmacy_cashier_catalog_panel_width_v1"
@@ -172,9 +182,6 @@ const PAYMENT_METHOD_LABELS: Record<string, string> = {
   cash: "نقدي", card: "بطاقة", credit: "آجل", mixed: "متعدد", wallet: "محفظة", "bank-transfer": "تحويل بنكي",
 }
 
-const PRICE_LIST_LABELS: Record<string, string> = {
-  default: "سعر البيع الافتراضي", wholesale: "سعر الجملة", offer: "سعر العروض",
-}
 
 function paperWidthFromProfiles(design: InvoicePrintDesign | null, printer: ReceiptPrinterProfile | null) {
   const printerWidth = Number(printer?.paper_width)
@@ -191,16 +198,16 @@ function lineTotal(line: CartLine) {
   return Math.max(0, line.quantity * line.unit_price - line.discount)
 }
 
-function readOfflineSales() {
+function readLegacyOfflineSales() {
   try {
-    return JSON.parse(localStorage.getItem(OFFLINE_SALES_KEY) ?? "[]") as unknown[]
+    return JSON.parse(localStorage.getItem(LEGACY_OFFLINE_SALES_KEY) ?? "[]") as unknown[]
   } catch {
     return []
   }
 }
 
-function writeOfflineSales(rows: unknown[]) {
-  localStorage.setItem(OFFLINE_SALES_KEY, JSON.stringify(rows))
+function clearLegacyOfflineSales() {
+  localStorage.removeItem(LEGACY_OFFLINE_SALES_KEY)
 }
 
 function shiftTime(value?: string) {
@@ -253,10 +260,20 @@ function clampPanelWidth(value: number) {
   return Math.min(620, Math.max(320, Math.round(value)))
 }
 
+function priceForGroup(product: CashierProduct, group: PriceGroup | null) {
+  if (!group) return Math.max(0, numberValue(product.sell_price))
+  const buyPrice = Math.max(0, numberValue(product.buy_price))
+  const markup = Math.max(0, numberValue(group.markup_percent))
+  if (buyPrice <= 0) return Math.max(0, numberValue(product.sell_price))
+  return Math.round((buyPrice * (1 + markup / 100) + Number.EPSILON) * 100) / 100
+}
+
+
 
 export function CashierView() {
   const auth = useAuth()
   const network = useNetwork()
+  const syncStatus = useSyncStatus()
   const settings = useAppSettings()
   const { play } = useSound()
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -270,12 +287,12 @@ export function CashierView() {
   const [customerName, setCustomerName] = useState("نقد جمهوري")
   const [paymentMethod, setPaymentMethod] = useState("cash")
   const [priceList, setPriceList] = useState("default")
+  const [priceGroups, setPriceGroups] = useState<PriceGroup[]>([])
   const [paidAmount, setPaidAmount] = useState(0)
   const [invoiceDiscount, setInvoiceDiscount] = useState(0)
   const [loading, setLoading] = useState(false)
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [offlineCount, setOfflineCount] = useState(0)
   const [searchFocused, setSearchFocused] = useState(false)
   const [showRecent, setShowRecent] = useState(false)
   const [showCatalog, setShowCatalog] = useState(true)
@@ -293,11 +310,12 @@ export function CashierView() {
   const [lastInvoice, setLastInvoice] = useState<PrintableInvoice | null>(null)
   const [printDesign, setPrintDesign] = useState<InvoicePrintDesign | null>(null)
   const [printerProfile, setPrinterProfile] = useState<ReceiptPrinterProfile | null>(null)
-  const [syncingOffline, setSyncingOffline] = useState(false)
   const [isPending, startTransition] = useTransition()
 
-  const canDiscount = auth.isDeveloper || auth.can("sales:discount")
-  const canPriceOverride = auth.isDeveloper || auth.can("sales:price-override")
+  const discountFeatureEnabled = settings.bool("sales", "enableDiscount", true)
+  const priceOverrideFeatureEnabled = settings.bool("sales", "enablePriceOverride", true)
+  const canDiscount = discountFeatureEnabled && (auth.isDeveloper || auth.can("sales:discount"))
+  const canPriceOverride = priceOverrideFeatureEnabled && (auth.isDeveloper || auth.can("sales:price-override"))
   const canSell = auth.isDeveloper || auth.can("sales:write")
   const pharmacyId = auth.activePharmacyId
   const branchId = cashierBranchId ?? auth.activeBranchId
@@ -309,7 +327,43 @@ export function CashierView() {
       ? auth.branches.filter((branch) => branch.id === membership.branch_id)
       : auth.branches
   }, [auth.branches, auth.isDeveloper, auth.isOwner, auth.memberships, auth.role, pharmacyId])
-  const calculatorEnabled = settings.get("cashier", "enableCalculator", "true") !== "false"
+  const calculatorEnabled = settings.bool("cashier", "enableCalculator", true)
+  const searchEnabled = settings.bool("cashier", "enableSearch", true)
+  const barcodeSearchEnabled = settings.bool("cashier", "enableBarcodeSearch", true)
+  const categoryFilterEnabled = settings.bool("cashier", "enableCategoryFilter", true)
+  const customerSelectionEnabled = settings.bool("cashier", "enableCustomerSelection", true)
+  const holdSaleEnabled = settings.bool("cashier", "holdSaleEnabled", true)
+  const quickSaleEnabled = settings.bool("cashier", "quickSaleEnabled", true)
+  const audioOnScan = settings.bool("cashier", "audioOnScan", true)
+  const showItemStock = settings.bool("cashier", "showItemStock", true)
+  const showItemPrice = settings.bool("cashier", "showItemPrice", true)
+  const showExpiryInSales = settings.bool("items", "showExpiryInSales", true)
+  const showBatchInSales = settings.bool("items", "showBatchInSales", false)
+  const allowNegativeStock = settings.bool("items", "allowNegativeStock", false)
+  const saleItemBehavior = settings.get("sales", "saleItemBehavior", "increase")
+  const searchMinChars = Math.max(1, settings.number("cashier", "searchMinChars", 2))
+  const maxDiscountPercent = Math.min(100, Math.max(0, settings.number("sales", "maxDiscountPercent", 100)))
+  const acceptedPaymentMethods = useMemo(() => {
+    const methods = new Set(
+      settings.get("payments", "acceptedPaymentMethods", "cash,card")
+        .split(",")
+        .map((value) => value.trim())
+        .map((value) => value === "bank" ? "bank-transfer" : value)
+        .filter(Boolean),
+    )
+    methods.add("cash")
+    if (!settings.bool("payments", "enableCardPayment", true)) methods.delete("card")
+    if (settings.bool("payments", "enableWalletPayment", true)) methods.add("wallet")
+    else methods.delete("wallet")
+    if (settings.bool("payments", "enableBankTransfer", true)) methods.add("bank-transfer")
+    else methods.delete("bank-transfer")
+    if (settings.bool("payments", "enablePartialPayment", true)) methods.add("mixed")
+    else methods.delete("mixed")
+    methods.add("credit")
+    return Array.from(methods)
+  }, [settings])
+  const selectedPriceGroup = useMemo(() => priceGroups.find((group) => group.id === priceList) ?? null, [priceGroups, priceList])
+  const effectiveProductPrice = useCallback((product: CashierProduct) => priceForGroup(product, selectedPriceGroup), [selectedPriceGroup])
 
   const subtotal = useMemo(() => lines.reduce((total, line) => total + line.quantity * line.unit_price, 0), [lines])
   const linesDiscount = useMemo(() => lines.reduce((total, line) => total + line.discount, 0), [lines])
@@ -373,7 +427,13 @@ export function CashierView() {
   }, [shiftParams])
 
   const fetchProducts = useCallback(async (term = query) => {
-    if (!pharmacyId || !branchId) return
+    if (!pharmacyId || !branchId || !searchEnabled) return
+    const normalizedTerm = term.trim()
+    const looksLikeBarcode = barcodeSearchEnabled && /^[0-9A-Za-z_-]{4,}$/.test(normalizedTerm)
+    if (normalizedTerm && normalizedTerm.length < searchMinChars && !looksLikeBarcode) {
+      setProducts([])
+      return
+    }
     setLoading(true)
     try {
       const params = new URLSearchParams({ query: term, pharmacy_id: pharmacyId, branch_id: branchId, limit: term.trim() ? "80" : "60" })
@@ -388,7 +448,7 @@ export function CashierView() {
     } finally {
       setLoading(false)
     }
-  }, [branchId, pharmacyId, query])
+  }, [barcodeSearchEnabled, branchId, pharmacyId, query, searchEnabled, searchMinChars])
 
   const fetchCatalogProducts = useCallback(async () => {
     if (!pharmacyId || !branchId) return
@@ -427,9 +487,10 @@ export function CashierView() {
   const loadPrintSettings = useCallback(async () => {
     if (!pharmacyId) return
     try {
-      const [designResponse, printerResponse] = await Promise.all([
+      const [designResponse, printerResponse, priceGroupsResponse] = await Promise.all([
         fetch("/api/settings/entities?entity=invoice-designs", { cache: "no-store" }),
         fetch("/api/settings/entities?entity=receipt-printers", { cache: "no-store" }),
+        fetch("/api/settings/entities?entity=price-groups", { cache: "no-store" }),
       ])
       if (designResponse.ok) {
         const data = await designResponse.json().catch(() => ({})) as { rows?: InvoicePrintDesign[] }
@@ -441,9 +502,18 @@ export function CashierView() {
         const rows = data.rows ?? []
         setPrinterProfile(rows.find((row) => row.status !== "inactive" && row.is_default) ?? rows.find((row) => row.status !== "inactive") ?? null)
       }
+      if (priceGroupsResponse.ok) {
+        const data = await priceGroupsResponse.json().catch(() => ({})) as { rows?: PriceGroup[] }
+        const rows = (data.rows ?? []).filter((row) => row.status !== "inactive")
+        setPriceGroups(rows)
+        const defaultGroup = rows.find((row) => row.is_default)
+        setPriceList((current) => current === "default" && defaultGroup ? defaultGroup.id : current)
+      }
     } catch {
       setPrintDesign(null)
       setPrinterProfile(null)
+      setPriceGroups([])
+      setPriceList("default")
     }
   }, [pharmacyId])
 
@@ -463,7 +533,18 @@ export function CashierView() {
     const storedWidth = Number(localStorage.getItem(CATALOG_PANEL_WIDTH_KEY))
     setShowCatalog(storedPanel !== "hidden")
     if (Number.isFinite(storedWidth) && storedWidth > 0) setCatalogPanelWidth(clampPanelWidth(storedWidth))
-    setOfflineCount(readOfflineSales().length)
+  }, [])
+
+  useEffect(() => {
+    const legacyRows = readLegacyOfflineSales() as Array<Record<string, unknown>>
+    if (legacyRows.length === 0) return
+    void (async () => {
+      for (const payload of legacyRows) {
+        await queueApiRequest({ path: "/api/sales/cashier", method: "POST", body: payload, label: "فاتورة بيع أوفلاين" })
+      }
+      clearLegacyOfflineSales()
+      await syncManager.refreshPending()
+    })()
   }, [])
 
   useEffect(() => {
@@ -480,10 +561,10 @@ export function CashierView() {
   }, [branchId, loadShift, pharmacyId])
 
   useEffect(() => {
-    if (!pharmacyId || !branchId || !shift) return
+    if (!pharmacyId || !branchId || !shift || !searchEnabled) return
     const handle = window.setTimeout(() => { void fetchProducts(query) }, 220)
     return () => window.clearTimeout(handle)
-  }, [branchId, fetchProducts, pharmacyId, query, shift])
+  }, [branchId, fetchProducts, pharmacyId, query, searchEnabled, shift])
 
   useEffect(() => {
     if (!pharmacyId || !branchId || !shift) return
@@ -491,9 +572,15 @@ export function CashierView() {
   }, [branchId, fetchCatalogProducts, pharmacyId, shift])
 
   useEffect(() => {
+    if (!acceptedPaymentMethods.includes(paymentMethod)) {
+      const preferred = settings.get("payments", "defaultPaymentMethod", "cash")
+      const normalized = preferred === "bank" ? "bank-transfer" : preferred
+      setPaymentMethod(acceptedPaymentMethods.includes(normalized) ? normalized : acceptedPaymentMethods[0] ?? "cash")
+      return
+    }
     if (paymentMethod === "credit") setPaidAmount(0)
     else setPaidAmount(total)
-  }, [paymentMethod, total])
+  }, [acceptedPaymentMethods, paymentMethod, settings, total])
 
   const setCatalogVisible = useCallback((next: boolean) => {
     setShowCatalog(next)
@@ -593,32 +680,34 @@ export function CashierView() {
   }
 
   function addProduct(product: CashierProduct) {
-    if (product.manage_inventory && product.available_qty <= 0) {
+    if (!allowNegativeStock && product.manage_inventory && product.available_qty <= 0) {
       toast.warning("الصنف غير متاح في المخزون")
-      play("warning", 0.35)
+      if (audioOnScan) play("warning", 0.35)
       return
     }
-    if (product.nearest_expiry) {
-      const batchText = product.nearest_batch_number ? ` — تشغيلة ${product.nearest_batch_number}` : ""
-      toast.info(`بيع الأقرب انتهاءً أولًا: ${expiryLabel(product.nearest_expiry)}${batchText}`, {
-        duration: 4500,
-      })
+    if (showExpiryInSales && product.nearest_expiry) {
+      const batchText = showBatchInSales && product.nearest_batch_number ? ` — تشغيلة ${product.nearest_batch_number}` : ""
+      toast.info(`بيع الأقرب انتهاءً أولًا: ${expiryLabel(product.nearest_expiry)}${batchText}`, { duration: 4500 })
     }
     setLines((current) => {
       const existing = current.find((line) => line.id === product.id)
       if (existing) {
-        const nextQuantity = existing.quantity + 1
-        if (product.manage_inventory && nextQuantity > product.available_qty) {
+        if (saleItemBehavior === "warn") {
+          toast.warning("الصنف موجود بالفعل في الفاتورة")
+          return current
+        }
+        const nextQuantity = saleItemBehavior === "replace" ? 1 : existing.quantity + 1
+        if (!allowNegativeStock && product.manage_inventory && nextQuantity > product.available_qty) {
           toast.warning("الكمية المطلوبة أكبر من المتاح")
           return current
         }
         return current.map((line) => line.id === product.id ? { ...line, quantity: nextQuantity } : line)
       }
-      return [...current, { ...product, quantity: 1, discount: 0, unit_price: product.sell_price }]
+      return [...current, { ...product, quantity: 1, discount: 0, unit_price: effectiveProductPrice(product) }]
     })
     setQuery("")
     setSearchFocused(false)
-    play("item-added", 0.35)
+    if (audioOnScan) play("item-added", 0.35)
     window.setTimeout(() => searchInputRef.current?.focus(), 20)
   }
 
@@ -627,12 +716,23 @@ export function CashierView() {
       if (line.id !== id) return line
       const next = { ...line, ...updates }
       const nextQuantity = Math.max(0.001, numberValue(updates.quantity, line.quantity))
-      if (line.manage_inventory && nextQuantity > line.available_qty) {
+      if (!allowNegativeStock && line.manage_inventory && nextQuantity > line.available_qty) {
         toast.warning("الكمية المطلوبة أكبر من المتاح")
         return line
       }
-      return { ...next, quantity: nextQuantity, unit_price: Math.max(0, numberValue(next.unit_price, line.unit_price)), discount: Math.max(0, numberValue(next.discount, line.discount)) }
+      const nextPrice = canPriceOverride ? Math.max(0, numberValue(next.unit_price, line.unit_price)) : line.unit_price
+      const gross = nextQuantity * nextPrice
+      const lineDiscountLimit = gross * (maxDiscountPercent / 100)
+      const nextDiscount = canDiscount ? Math.min(lineDiscountLimit, Math.max(0, numberValue(next.discount, line.discount))) : 0
+      return { ...next, quantity: nextQuantity, unit_price: nextPrice, discount: nextDiscount }
     }))
+  }
+
+  function changePriceList(nextValue: string) {
+    if (!canPriceOverride) return
+    const nextGroup = priceGroups.find((group) => group.id === nextValue) ?? null
+    setPriceList(nextGroup?.id ?? "default")
+    setLines((current) => current.map((line) => ({ ...line, unit_price: priceForGroup(line, nextGroup) })))
   }
 
   function removeLine(id: string) {
@@ -643,7 +743,9 @@ export function CashierView() {
     setLines([])
     setInvoiceDiscount(0)
     setCustomerName("نقد جمهوري")
-    setPaymentMethod("cash")
+    const preferred = settings.get("payments", "defaultPaymentMethod", "cash")
+    const normalized = preferred === "bank" ? "bank-transfer" : preferred
+    setPaymentMethod(acceptedPaymentMethods.includes(normalized) ? normalized : acceptedPaymentMethods[0] ?? "cash")
     setPaidAmount(0)
     localStorage.removeItem(DRAFT_KEY)
   }
@@ -654,45 +756,14 @@ export function CashierView() {
   }
 
   const syncOfflineSales = useCallback(async () => {
-    if (!network.online || syncingOffline) return
-    const rows = readOfflineSales() as Array<Record<string, unknown>>
-    if (rows.length === 0) {
-      setOfflineCount(0)
-      return
-    }
-    setSyncingOffline(true)
-    const remaining: Array<Record<string, unknown>> = []
-    let synced = 0
-    for (const row of rows) {
-      try {
-        const response = await fetch("/api/sales/cashier", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(row),
-        })
-        const data = (await response.json().catch(() => ({}))) as { error?: string }
-        if (!response.ok) throw new Error(data.error ?? "فشل مزامنة فاتورة أوفلاين")
-        synced += 1
-      } catch {
-        remaining.push(row)
-      }
-    }
-    writeOfflineSales(remaining)
-    setOfflineCount(remaining.length)
-    setSyncingOffline(false)
-    if (synced > 0) {
-      toast.success(`تمت مزامنة ${synced.toLocaleString("ar-EG")} فاتورة أوفلاين`)
-      startTransition(() => {
-        void fetchProducts("")
-        void fetchCatalogProducts()
-        void loadShift()
-      })
-    }
-  }, [fetchCatalogProducts, fetchProducts, loadShift, network.online, syncingOffline])
-
-  useEffect(() => {
-    if (network.online && offlineCount > 0) void syncOfflineSales()
-  }, [network.online, offlineCount, syncOfflineSales])
+    if (!network.online || syncStatus.isSyncing) return
+    await syncManager.forceSync()
+    startTransition(() => {
+      void fetchProducts("")
+      void fetchCatalogProducts()
+      void loadShift()
+    })
+  }, [fetchCatalogProducts, fetchProducts, loadShift, network.online, syncStatus.isSyncing])
 
   async function submitSale(methodOverride?: string) {
     if (!pharmacyId || !branchId) {
@@ -708,7 +779,13 @@ export function CashierView() {
       return
     }
     const effectiveMethod = methodOverride ?? paymentMethod
+    if (!acceptedPaymentMethods.includes(effectiveMethod)) {
+      toast.error("طريقة الدفع غير مفعلة من الإعدادات")
+      return
+    }
     const effectivePaid = effectiveMethod === "credit" ? 0 : (effectiveMethod === "mixed" ? paidAmount : total)
+    const invoiceDiscountLimit = subtotal * (maxDiscountPercent / 100)
+    const safeInvoiceDiscount = canDiscount ? Math.min(invoiceDiscountLimit, Math.max(0, invoiceDiscount)) : 0
     const payload = {
       client_request_id: crypto.randomUUID(),
       pharmacy_id: pharmacyId,
@@ -717,7 +794,7 @@ export function CashierView() {
       customer_name: customerName,
       payment_method: effectiveMethod,
       paid_amount: effectivePaid,
-      discount_total: invoiceDiscount,
+      discount_total: safeInvoiceDiscount,
       lines: lines.map((line) => ({
         item_id: line.id,
         barcode: primaryProductBarcode(line),
@@ -744,7 +821,7 @@ export function CashierView() {
         savedAt: new Date().toISOString(),
         lines: lines.map((line) => ({ ...line })),
         subtotal,
-        discountTotal: linesDiscount + invoiceDiscount,
+        discountTotal: linesDiscount + safeInvoiceDiscount,
         total,
         paidAmount: effectivePaid,
       })
@@ -757,16 +834,15 @@ export function CashierView() {
         void loadShift()
       })
     } catch (error) {
-      if (error instanceof Error && error.message !== "offline") {
-        toast.error(error.message)
+      const shouldQueue = !network.online || (error instanceof Error && error.message === "offline") || error instanceof TypeError
+      if (!shouldQueue) {
+        toast.error(error instanceof Error ? error.message : "فشل حفظ الفاتورة")
         play("error", 0.35)
       } else {
-        const rows = readOfflineSales()
-        rows.push({ ...payload, saved_at: new Date().toISOString() })
-        writeOfflineSales(rows)
-        setOfflineCount(rows.length)
+        await queueApiRequest({ path: "/api/sales/cashier", method: "POST", body: { ...payload, saved_at: new Date().toISOString() }, label: "فاتورة بيع أوفلاين" })
+        await syncManager.refreshPending()
         clearInvoice()
-        toast.warning("تم حفظ الفاتورة أوفلاين للمراجعة والمزامنة")
+        toast.warning("تم حفظ الفاتورة في طابور المزامنة الآمن")
       }
     } finally {
       setSaving(false)
@@ -989,7 +1065,7 @@ export function CashierView() {
                   <CalculatorIcon className="size-3.5" /> الحاسبة F3
                 </Button>
               ) : null}
-              <Button variant="outline" className="h-9 rounded-2xl gap-1.5 text-xs" onClick={() => saveDraft()} disabled={lines.length === 0}>
+              <Button variant="outline" className="h-9 rounded-2xl gap-1.5 text-xs" onClick={() => saveDraft()} disabled={!holdSaleEnabled || lines.length === 0}>
                 <Save className="size-3.5" /> مسودة
               </Button>
               <Button variant="outline" className="h-9 rounded-2xl gap-1.5 text-xs" onClick={printInvoice} disabled={lines.length === 0 && !lastInvoice}>
@@ -1004,14 +1080,14 @@ export function CashierView() {
           )}
         </div>
 
-        {offlineCount > 0 ? (
+        {syncStatus.pendingMutations > 0 ? (
           <Alert className="mx-3 mt-3 rounded-2xl border-amber-100 bg-amber-50 text-amber-800 sm:mx-4">
             <WifiOff className="size-4" />
             <AlertTitle className="font-black">فواتير أوفلاين محفوظة</AlertTitle>
             <AlertDescription className="flex flex-wrap items-center gap-3 font-bold">
-              <span>يوجد {offlineCount.toLocaleString("ar-EG")} فاتورة محفوظة محليًا.</span>
-              <Button size="sm" variant="secondary" className="h-8 rounded-xl" onClick={() => void syncOfflineSales()} disabled={!network.online || syncingOffline}>
-                {syncingOffline ? "جاري المزامنة..." : "مزامنة الآن"}
+              <span>يوجد {syncStatus.pendingMutations.toLocaleString("ar-EG")} عملية محفوظة محليًا في انتظار المزامنة.</span>
+              <Button size="sm" variant="secondary" className="h-8 rounded-xl" onClick={() => void syncOfflineSales()} disabled={!network.online || syncStatus.isSyncing}>
+                {syncStatus.isSyncing ? "جاري المزامنة..." : "مزامنة الآن"}
               </Button>
             </AlertDescription>
           </Alert>
@@ -1024,7 +1100,7 @@ export function CashierView() {
               <div className="grid min-w-0 gap-2 sm:grid-cols-2">
                 <div className="flex h-11 overflow-hidden rounded-xl border-2 border-slate-200 bg-white transition-all focus-within:border-brand/40">
                   <span className="flex w-11 items-center justify-center border-l-2 border-slate-200 text-slate-400"><UserPlus className="size-4" strokeWidth={2.2} /></span>
-                  <Input className="h-full flex-1 rounded-none border-0 bg-transparent px-3 text-right text-sm font-bold shadow-none placeholder:font-bold focus-visible:ring-0" value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="نقد جمهوري" />
+                  <Input disabled={!customerSelectionEnabled} className="h-full flex-1 rounded-none border-0 bg-transparent px-3 text-right text-sm font-bold shadow-none placeholder:font-bold focus-visible:ring-0 disabled:bg-slate-50" value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="نقد جمهوري" />
                 </div>
                 <div className="flex h-11 overflow-hidden rounded-xl border-2 border-slate-200 bg-white transition-all focus-within:border-brand/40">
                   <span className="flex w-11 items-center justify-center border-l-2 border-slate-200 text-slate-400"><Wallet className="size-4" strokeWidth={2.2} /></span>
@@ -1033,50 +1109,53 @@ export function CashierView() {
                       <SelectValue>{labelFromMap(PAYMENT_METHOD_LABELS, paymentMethod)}</SelectValue>
                     </SelectTrigger>
                     <SelectContent align="start" sideOffset={8}>
-                      <SelectItem value="cash">نقدي</SelectItem>
-                      <SelectItem value="card">بطاقة</SelectItem>
-                      <SelectItem value="wallet">محفظة</SelectItem>
-                      <SelectItem value="mixed">دفع متعدد</SelectItem>
-                      <SelectItem value="credit">بيع آجل</SelectItem>
+                      {acceptedPaymentMethods.includes("cash") ? <SelectItem value="cash">نقدي</SelectItem> : null}
+                      {acceptedPaymentMethods.includes("card") ? <SelectItem value="card">بطاقة</SelectItem> : null}
+                      {acceptedPaymentMethods.includes("wallet") ? <SelectItem value="wallet">محفظة</SelectItem> : null}
+                      {acceptedPaymentMethods.includes("bank-transfer") ? <SelectItem value="bank-transfer">تحويل بنكي</SelectItem> : null}
+                      {acceptedPaymentMethods.includes("mixed") ? <SelectItem value="mixed">دفع متعدد</SelectItem> : null}
+                      {acceptedPaymentMethods.includes("credit") ? <SelectItem value="credit">بيع آجل</SelectItem> : null}
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="flex h-11 overflow-hidden rounded-xl border-2 border-slate-200 bg-white transition-all focus-within:border-brand/40 sm:col-span-2">
-                  <span className="flex w-11 items-center justify-center border-l-2 border-slate-200 text-slate-400"><CreditCard className="size-4" strokeWidth={2.2} /></span>
-                  <Select value={priceList} onValueChange={(value) => setPriceList(value ?? "default")}>
-                    <SelectTrigger className="h-full w-full rounded-none border-0 bg-transparent py-0 text-sm font-bold shadow-none hover:bg-transparent focus-visible:ring-0">
-                      <SelectValue>{labelFromMap(PRICE_LIST_LABELS, priceList)}</SelectValue>
-                    </SelectTrigger>
-                    <SelectContent align="start" sideOffset={8}>
-                      <SelectItem value="default">سعر البيع الافتراضي</SelectItem>
-                      <SelectItem value="wholesale">سعر الجملة</SelectItem>
-                      <SelectItem value="offer">سعر العروض</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+                {canPriceOverride && priceGroups.length > 0 ? (
+                  <div className="flex h-11 overflow-hidden rounded-xl border-2 border-slate-200 bg-white transition-all focus-within:border-brand/40 sm:col-span-2">
+                    <span className="flex w-11 items-center justify-center border-l-2 border-slate-200 text-slate-400"><CreditCard className="size-4" strokeWidth={2.2} /></span>
+                    <Select value={priceList} onValueChange={(value) => changePriceList(value ?? "default")}>
+                      <SelectTrigger className="h-full w-full rounded-none border-0 bg-transparent py-0 text-sm font-bold shadow-none hover:bg-transparent focus-visible:ring-0">
+                        <SelectValue>{selectedPriceGroup?.name ?? "سعر البيع الافتراضي"}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent align="start" sideOffset={8}>
+                        <SelectItem value="default">سعر البيع الافتراضي</SelectItem>
+                        {priceGroups.map((group) => <SelectItem key={group.id} value={group.id}>{group.name} — ربح {numberValue(group.markup_percent).toLocaleString("ar-EG")}%</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
               </div>
 
               <div className="relative min-w-0">
                 <div className="flex h-14 overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-sm transition-all focus-within:border-brand focus-within:shadow-md focus-within:shadow-brand/10">
-                  <button type="button" className="flex w-14 items-center justify-center border-l-2 border-slate-200 text-brand transition hover:bg-brand/5" onClick={() => setSearchFocused(true)} title="إضافة صنف">
+                  <button disabled={!searchEnabled} type="button" className="flex w-14 items-center justify-center border-l-2 border-slate-200 text-brand transition hover:bg-brand/5 disabled:cursor-not-allowed disabled:text-slate-300" onClick={() => setSearchFocused(true)} title="إضافة صنف">
                     <Package className="size-6" strokeWidth={2.2} />
                   </button>
                   <Input
                     ref={searchInputRef}
+                    disabled={!searchEnabled}
                     className="h-full flex-1 rounded-none border-0 bg-transparent px-3 text-right text-base font-black text-slate-900 shadow-none placeholder:font-bold placeholder:text-slate-400 focus-visible:ring-0 sm:px-4 sm:text-lg"
                     value={query}
                     onFocus={() => setSearchFocused(true)}
                     onBlur={() => window.setTimeout(() => setSearchFocused(false), 200)}
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={handleSearchKeyDown}
-                    placeholder="🔍  امسح الباركود أو اكتب اسم الصنف..."
+                    placeholder={searchEnabled ? `🔍  امسح الباركود أو اكتب ${searchMinChars} حرف على الأقل...` : "البحث معطل من الإعدادات"}
                     autoFocus
                   />
-                  <button type="button" onClick={() => void fetchProducts(query)} className="flex w-14 items-center justify-center border-r-2 border-slate-200 text-slate-500 transition hover:bg-brand/5 hover:text-brand" title="بحث">
+                  <button disabled={!searchEnabled} type="button" onClick={() => void fetchProducts(query)} className="flex w-14 items-center justify-center border-r-2 border-slate-200 text-slate-500 transition hover:bg-brand/5 hover:text-brand disabled:cursor-not-allowed disabled:text-slate-300" title="بحث">
                     <Search className="size-5" />
                   </button>
                 </div>
-                {searchFocused ? (
+                {searchEnabled && searchFocused ? (
                   <div className="absolute left-0 right-0 top-full z-50 mt-1.5 max-h-[min(460px,60dvh)] overflow-auto rounded-2xl border-2 border-slate-200 bg-white p-2 text-right shadow-2xl shadow-slate-200/60 pharmacy-scrollbar">
                     {loading ? (
                       <div className="grid gap-2 p-1">
@@ -1121,7 +1200,7 @@ export function CashierView() {
                                   <Barcode className="size-3" />
                                   <span dir="ltr">{primaryProductBarcode(product) || "بدون باركود"}</span>
                                 </span>
-                                {product.nearest_expiry ? (
+                                {showExpiryInSales && product.nearest_expiry ? (
                                   <span className="mt-1 flex items-center gap-1 text-[11px] font-black text-amber-700">
                                     <CalendarDays className="size-3" />
                                     بيع الأقرب: {expiryLabel(product.nearest_expiry)}
@@ -1129,9 +1208,9 @@ export function CashierView() {
                                 ) : null}
                               </span>
                               <Badge className={cn("shrink-0 rounded-xl px-3 py-1 text-xs font-black", low ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700")}>
-                                {product.manage_inventory ? `${product.available_qty.toLocaleString("ar-EG")} ${product.unit ?? ""}` : "مفتوح"}
+                                {showItemStock ? (product.manage_inventory ? `${product.available_qty.toLocaleString("ar-EG")} ${product.unit ?? ""}` : "مفتوح") : ""}
                               </Badge>
-                              <span className="shrink-0 text-left text-lg font-black text-brand tabular-nums">{money(numberValue(product.sell_price), currency)}</span>
+                              <span className="shrink-0 text-left text-lg font-black text-brand tabular-nums">{showItemPrice ? money(effectiveProductPrice(product), currency) : ""}</span>
                             </button>
                           )
                         })}
@@ -1183,7 +1262,7 @@ export function CashierView() {
                         className="h-10 rounded-2xl border-slate-200 bg-white pr-9 pl-3 text-right text-sm font-bold shadow-none focus-visible:ring-2 focus-visible:ring-brand/15"
                       />
                     </div>
-                    <div className="flex gap-1.5 overflow-x-auto pb-1 pharmacy-scrollbar">
+                    {categoryFilterEnabled ? <div className="flex gap-1.5 overflow-x-auto pb-1 pharmacy-scrollbar">
                       {catalogCategories.map((category) => (
                         <button
                           key={category.id}
@@ -1200,7 +1279,7 @@ export function CashierView() {
                           <span className="mr-1 opacity-70">{category.count.toLocaleString("ar-EG")}</span>
                         </button>
                       ))}
-                    </div>
+                    </div> : null}
                   </div>
 
                   <div className="min-h-0 flex-1 overflow-auto p-2 pharmacy-scrollbar">
@@ -1243,16 +1322,16 @@ export function CashierView() {
                                   <span className="truncate" dir="ltr">{primaryProductBarcode(product) || "بدون باركود"}</span>
                                 </span>
                                 <span className="mt-1 block truncate text-[11px] font-black text-slate-400">{productGroupLabel(product)}</span>
-                                {product.nearest_expiry ? (
+                                {showExpiryInSales && product.nearest_expiry ? (
                                   <span className="mt-1 flex items-center gap-1 text-[11px] font-black text-amber-700">
                                     <CalendarDays className="size-3" /> {expiryLabel(product.nearest_expiry)}
                                   </span>
                                 ) : null}
                               </span>
                               <span className="flex shrink-0 flex-col items-end gap-1">
-                                <span className="text-sm font-black text-brand tabular-nums">{money(numberValue(product.sell_price), currency)}</span>
+                                <span className="text-sm font-black text-brand tabular-nums">{showItemPrice ? money(effectiveProductPrice(product), currency) : ""}</span>
                                 <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-black", low ? "bg-rose-100 text-rose-700" : "bg-emerald-50 text-emerald-700")}>
-                                  {product.manage_inventory ? product.available_qty.toLocaleString("ar-EG") : "خدمة"}
+                                  {showItemStock ? (product.manage_inventory ? product.available_qty.toLocaleString("ar-EG") : "خدمة") : ""}
                                 </span>
                               </span>
                             </button>
@@ -1265,7 +1344,7 @@ export function CashierView() {
               ) : null}
 
               <div className="flex min-h-0 flex-col gap-3">
-                {lines.some((line) => line.nearest_expiry) ? (
+                {showExpiryInSales && lines.some((line) => line.nearest_expiry) ? (
                   <Alert className="shrink-0 rounded-2xl border-amber-200 bg-amber-50 text-amber-900">
                     <CalendarDays className="size-4" />
                     <AlertTitle className="font-black">طبّق الأقرب انتهاءً أولًا (FEFO)</AlertTitle>
@@ -1293,11 +1372,11 @@ export function CashierView() {
                           <TableCell className="min-w-[220px]">
                             <div className="font-black text-slate-950">{line.name_ar}</div>
                             <div className="text-xs font-bold text-slate-400" dir="ltr">{primaryProductBarcode(line) || "—"}</div>
-                            {line.nearest_expiry ? (
+                            {showExpiryInSales && line.nearest_expiry ? (
                               <div className="mt-1 inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-black text-amber-700">
                                 <CalendarDays className="size-3" />
                                 الأقرب: {expiryLabel(line.nearest_expiry)}
-                                {line.nearest_batch_number ? ` — ${line.nearest_batch_number}` : ""}
+                                {showBatchInSales && line.nearest_batch_number ? ` — ${line.nearest_batch_number}` : ""}
                               </div>
                             ) : null}
                           </TableCell>
@@ -1325,7 +1404,7 @@ export function CashierView() {
                 <div className="grid shrink-0 gap-2 border-t border-slate-100 pt-3 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="rounded-2xl bg-slate-50 p-3"><div className="text-xs font-black text-slate-400">الكمية</div><div className="mt-1 text-lg font-black text-slate-950">{lines.reduce((t, l) => t + l.quantity, 0).toLocaleString("ar-EG")}</div></div>
                   <div className="rounded-2xl bg-slate-50 p-3"><div className="text-xs font-black text-slate-400">المجموع</div><div className="mt-1 text-lg font-black text-slate-950">{money(subtotal, currency)}</div></div>
-                  <div className="rounded-2xl bg-slate-50 p-3"><Label className="text-xs font-black text-slate-400">خصم الفاتورة (-)</Label><Input disabled={!canDiscount} dir="ltr" className="mt-1 h-9 rounded-xl text-center font-black" value={invoiceDiscount} onChange={(e) => setInvoiceDiscount(numberValue(e.target.value))} /></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><Label className="text-xs font-black text-slate-400">خصم الفاتورة (-)</Label><Input disabled={!canDiscount} dir="ltr" className="mt-1 h-9 rounded-xl text-center font-black" value={invoiceDiscount} onChange={(e) => setInvoiceDiscount(Math.min(subtotal * (maxDiscountPercent / 100), Math.max(0, numberValue(e.target.value))))} /></div>
                   <div className="rounded-2xl bg-slate-50 p-3"><Label className="text-xs font-black text-slate-400">المدفوع</Label><Input dir="ltr" className="mt-1 h-9 rounded-xl text-center font-black" value={paidAmount} onChange={(e) => setPaidAmount(numberValue(e.target.value))} /></div>
                 </div>
               </div>
@@ -1364,11 +1443,11 @@ export function CashierView() {
 
           <div className="flex w-full min-w-0 shrink-0 items-center gap-1.5 overflow-x-auto pb-1 pharmacy-scrollbar lg:w-auto lg:pb-0">
             <Button variant="destructive" className="shrink-0 h-9 rounded-xl px-4 text-sm font-black" onClick={clearInvoice} disabled={saving || lines.length === 0}><X className="size-4" /> إلغاء</Button>
-            <Button className="shrink-0 h-9 rounded-xl bg-emerald-600 px-4 text-sm font-black hover:bg-emerald-700" onClick={() => void submitSale("cash")} disabled={!canSell || saving || isPending || lines.length === 0}><DollarSign className="size-4" /> نقدي</Button>
-            <Button className="shrink-0 h-9 rounded-xl bg-slate-950 px-4 text-sm font-black hover:bg-slate-800" onClick={() => void submitSale("mixed")} disabled={!canSell || saving || isPending || lines.length === 0}><Wallet className="size-4" /> متعدد</Button>
-            <Button variant="outline" className="shrink-0 h-9 rounded-xl px-3 text-sm font-black text-brand" onClick={() => void submitSale("card")} disabled={!canSell || saving || isPending || lines.length === 0}><CreditCard className="size-4" /> بطاقة</Button>
-            <Button variant="outline" className="shrink-0 h-9 rounded-xl px-3 text-sm font-black" onClick={() => void submitSale("credit")} disabled={!canSell || saving || isPending || lines.length === 0}><Receipt className="size-4" /> أجل</Button>
-            <Button variant="outline" className="shrink-0 h-9 rounded-xl px-3 text-sm font-black" onClick={() => saveDraft("تم حفظ عرض السعر كمسودة") } disabled={lines.length === 0}><FileText className="size-4" /> عرض سعر</Button>
+            <Button className="shrink-0 h-9 rounded-xl bg-emerald-600 px-4 text-sm font-black hover:bg-emerald-700" onClick={() => void submitSale("cash")} disabled={!quickSaleEnabled || !acceptedPaymentMethods.includes("cash") || !canSell || saving || isPending || lines.length === 0}><DollarSign className="size-4" /> نقدي</Button>
+            <Button className="shrink-0 h-9 rounded-xl bg-slate-950 px-4 text-sm font-black hover:bg-slate-800" onClick={() => void submitSale("mixed")} disabled={!quickSaleEnabled || !acceptedPaymentMethods.includes("mixed") || !canSell || saving || isPending || lines.length === 0}><Wallet className="size-4" /> متعدد</Button>
+            <Button variant="outline" className="shrink-0 h-9 rounded-xl px-3 text-sm font-black text-brand" onClick={() => void submitSale("card")} disabled={!quickSaleEnabled || !acceptedPaymentMethods.includes("card") || !canSell || saving || isPending || lines.length === 0}><CreditCard className="size-4" /> بطاقة</Button>
+            <Button variant="outline" className="shrink-0 h-9 rounded-xl px-3 text-sm font-black" onClick={() => void submitSale("credit")} disabled={!quickSaleEnabled || !acceptedPaymentMethods.includes("credit") || !canSell || saving || isPending || lines.length === 0}><Receipt className="size-4" /> أجل</Button>
+            <Button variant="outline" className="shrink-0 h-9 rounded-xl px-3 text-sm font-black" onClick={() => saveDraft("تم حفظ عرض السعر كمسودة") } disabled={!settings.bool("sales", "enablePriceOffers", true) || lines.length === 0}><FileText className="size-4" /> عرض سعر</Button>
           </div>
 
           <Separator orientation="vertical" className="hidden h-8 lg:block" />

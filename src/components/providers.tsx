@@ -8,6 +8,8 @@ import { AuthProvider } from "@/contexts/auth-context"
 import { BranchProvider } from "@/contexts/branch-context"
 import { NotificationProvider } from "@/contexts/notification-context"
 import { AppSettingsProvider } from "@/contexts/settings-context"
+import { SyncBootstrap } from "@/components/pwa/sync-bootstrap"
+import { KeyboardShortcuts } from "@/components/pwa/keyboard-shortcuts"
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
@@ -30,7 +32,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
         <AuthProvider>
           <BranchProvider>
             <AppSettingsProvider>
-              <NotificationProvider>{children}</NotificationProvider>
+              <NotificationProvider><SyncBootstrap /><KeyboardShortcuts />{children}</NotificationProvider>
             </AppSettingsProvider>
           </BranchProvider>
           <Toaster richColors position="top-left" theme="light" />

@@ -21,10 +21,11 @@ function num(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-export async function GET(_request: Request, context: Context) {
+export async function GET(request: Request, context: Context) {
   try {
     const { itemId } = await context.params
-    const scope = await getServerAuthScope()
+    const requestedPharmacyId = clean(new URL(request.url).searchParams.get("pharmacy_id")) || null
+    const scope = await getServerAuthScope({ requestedPharmacyId })
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
     if (!scopeCan(scope, "inventory:read")) return NextResponse.json({ error: "ليست لديك صلاحية عرض الأصناف" }, { status: 403 })
@@ -109,7 +110,9 @@ export async function PATCH(request: Request, context: Context) {
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
     const textFields = [
-      "name_ar", "name_en", "sku", "group_id", "brand_id", "unit", "item_type", "manufacturer_name", "notes", "image_url",
+      "name_ar", "name_en", "sku", "group_id", "brand_id", "unit", "item_type", "manufacturer_name", "manufacturer_country",
+      "pharmacy_type", "generic_name", "active_ingredient", "therapeutic_class", "dosage_form", "strength", "package_size",
+      "route_of_administration", "registration_number", "storage_condition", "notes", "image_url",
       "branch_id", "status", "expiry_date", "category", "sub_category", "barcode_type", "expiry_period_unit", "tax_name",
       "selling_price_tax_type", "product_type", "variation_name", "opening_stock_location", "rack", "shelf_row", "position",
       "product_description", "custom_field_1", "custom_field_2", "custom_field_3", "custom_field_4",

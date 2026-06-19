@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowRight, Package, Plus, Save, Search, Trash2 } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
@@ -17,6 +17,9 @@ import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
 import { calculatePurchaseTotals } from "@/features/purchases/lib/purchase-totals"
 import { PartnerFormDialog } from "@/features/partners/components/partner-form-dialog"
+import { useNetwork } from "@/hooks/use-data-layer"
+import { localDB } from "@/lib/sync/local-db"
+import { queueApiRequest } from "@/lib/sync/api-mutations"
 
 type Item = {
   id: string
@@ -37,6 +40,8 @@ export function PurchaseCreateView() {
   const auth = useAuth()
   const router = useRouter()
   const settings = useAppSettings()
+  const network = useNetwork()
+  const defaultsApplied = useRef(false)
   const currency = settings.get("project", "currencySymbol", "ج.م")
   const [items, setItems] = useState<Item[]>([])
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
@@ -53,6 +58,22 @@ export function PurchaseCreateView() {
   const [notes, setNotes] = useState("")
   const [saving, setSaving] = useState(false)
 
+  const purchaseDiscountEnabled = settings.bool("purchases", "enablePurchaseDiscount", true)
+  const shippingEnabled = settings.bool("purchases", "enableShippingCost", true)
+  const batchTrackingEnabled = settings.bool("purchases", "enableBatchTracking", false) || settings.bool("items", "enableBatchTracking", false)
+  const expiryTrackingEnabled = settings.bool("purchases", "enableExpiryTracking", true) && settings.bool("items", "enableExpiryTracking", true)
+  const acceptedPaymentMethods = useMemo(() => {
+    const allowed = new Set(["cash", "card", "wallet", "bank-transfer"])
+    const methods = settings.get("payments", "acceptedPaymentMethods", "cash,card")
+      .split(",")
+      .map((value) => value.trim())
+      .map((value) => value === "bank" ? "bank-transfer" : value)
+      .filter((value) => allowed.has(value))
+    return methods.length ? Array.from(new Set(methods)) : ["cash"]
+  }, [settings])
+
+  const bootstrapCacheKey = useMemo(() => `purchases:bootstrap:${auth.activePharmacyId ?? "none"}:${auth.activeBranchId ?? "all"}`, [auth.activeBranchId, auth.activePharmacyId])
+
   const loadBootstrap = useCallback(async () => {
     if (!auth.activePharmacyId) return
     const params = new URLSearchParams({ pharmacy_id: auth.activePharmacyId, branch_id: auth.activeBranchId ?? "", bootstrap: "1" })
@@ -62,12 +83,30 @@ export function PurchaseCreateView() {
       if (!response.ok) throw new Error(data.error ?? "فشل تحميل بيانات الشراء")
       setItems(data.items ?? [])
       setSuppliers(data.suppliers ?? [])
+      await localDB.setCache(bootstrapCacheKey, data, 7 * 24 * 60 * 60 * 1000)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل تحميل بيانات الشراء")
+      const cached = await localDB.getCache(bootstrapCacheKey) as { items?: Item[]; suppliers?: Supplier[] } | null
+      if (cached) {
+        setItems(cached.items ?? [])
+        setSuppliers(cached.suppliers ?? [])
+        toast.warning("تم تحميل آخر بيانات محفوظة للمشتريات بدون إنترنت")
+      } else {
+        toast.error(error instanceof Error ? error.message : "فشل تحميل بيانات الشراء")
+      }
     }
-  }, [auth.activeBranchId, auth.activePharmacyId])
+  }, [auth.activeBranchId, auth.activePharmacyId, bootstrapCacheKey])
 
   useEffect(() => { void loadBootstrap() }, [loadBootstrap])
+
+  useEffect(() => {
+    if (settings.loading || defaultsApplied.current) return
+    defaultsApplied.current = true
+    setHeaderDiscount(purchaseDiscountEnabled ? String(settings.number("purchases", "defaultDiscountPercent", 0)) : "0")
+    setShipping(shippingEnabled ? String(settings.number("purchases", "defaultShippingCost", 0)) : "0")
+    const preferred = settings.get("payments", "defaultPaymentMethod", "cash")
+    const normalized = preferred === "bank" ? "bank-transfer" : preferred
+    setPaymentMethod(acceptedPaymentMethods.includes(normalized) ? normalized : acceptedPaymentMethods[0])
+  }, [acceptedPaymentMethods, purchaseDiscountEnabled, settings, shippingEnabled])
 
   const filteredItems = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -102,41 +141,65 @@ export function PurchaseCreateView() {
       toast.error("أضف صنفاً واحداً على الأقل")
       return
     }
-    const missingExpiry = lines.find((line) => line.has_expiry && !line.expiryDate)
+    const missingExpiry = lines.find((line) => expiryTrackingEnabled && line.has_expiry && !line.expiryDate)
     if (missingExpiry) {
       toast.error(`أدخل تاريخ الصلاحية للصنف ${missingExpiry.name_ar}`)
       return
     }
+    const missingBatch = lines.find((line) => batchTrackingEnabled && line.track_batch && !line.batchNumber.trim())
+    if (missingBatch) {
+      toast.error(`أدخل رقم التشغيلة للصنف ${missingBatch.name_ar}`)
+      return
+    }
+
+    const payload = {
+      pharmacy_id: auth.activePharmacyId,
+      branch_id: auth.activeBranchId,
+      client_request_id: crypto.randomUUID(),
+      supplier_id: supplierId || null,
+      supplier_name: supplierName,
+      payment_method: paymentMethod,
+      paid_amount: Number(paid),
+      header_discount: purchaseDiscountEnabled ? Number(headerDiscount) : 0,
+      tax_total: Number(tax),
+      shipping_fee: shippingEnabled ? Number(shipping) : 0,
+      purchase_date: new Date(purchaseDate).toISOString(),
+      notes,
+      lines: lines.map((line) => ({
+        item_id: line.id,
+        quantity: Number(line.quantity),
+        buy_price: Number(line.buyPrice),
+        sell_price: Number(line.sellPrice),
+        discount: purchaseDiscountEnabled ? Number(line.discount) : 0,
+        unit: line.unit,
+        batch_number: batchTrackingEnabled ? line.batchNumber : "",
+        expiry_date: expiryTrackingEnabled && line.expiryDate ? line.expiryDate : null,
+      })),
+    }
+
+    const queueOffline = async () => {
+      await queueApiRequest({ path: "/api/purchases", method: "POST", body: payload, label: "فاتورة الشراء" })
+      toast.warning("تم حفظ فاتورة الشراء أوفلاين وستُنفذ تلقائيًا عند عودة الاتصال")
+      router.push("/dashboard/sync")
+    }
+
     setSaving(true)
     try {
-      const response = await fetch("/api/purchases", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pharmacy_id: auth.activePharmacyId,
-          branch_id: auth.activeBranchId,
-          client_request_id: crypto.randomUUID(),
-          supplier_id: supplierId || null,
-          supplier_name: supplierName,
-          payment_method: paymentMethod,
-          paid_amount: Number(paid),
-          header_discount: Number(headerDiscount),
-          tax_total: Number(tax),
-          shipping_fee: Number(shipping),
-          purchase_date: new Date(purchaseDate).toISOString(),
-          notes,
-          lines: lines.map((line) => ({
-            item_id: line.id,
-            quantity: Number(line.quantity),
-            buy_price: Number(line.buyPrice),
-            sell_price: Number(line.sellPrice),
-            discount: Number(line.discount),
-            unit: line.unit,
-            batch_number: line.batchNumber,
-            expiry_date: line.expiryDate || null,
-          })),
-        }),
-      })
+      if (!network.online) {
+        await queueOffline()
+        return
+      }
+      let response: Response
+      try {
+        response = await fetch("/api/purchases", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+      } catch {
+        await queueOffline()
+        return
+      }
       const data = await response.json().catch(() => ({})) as { purchase?: { id?: string }; error?: string }
       if (!response.ok) throw new Error(data.error ?? "فشل حفظ فاتورة الشراء")
       toast.success("تم استلام فاتورة الشراء وإضافة المخزون")
@@ -171,7 +234,10 @@ export function PurchaseCreateView() {
             </div>
             <Input type="datetime-local" value={purchaseDate} onChange={(event) => setPurchaseDate(event.target.value)} className="h-11 rounded-xl" />
             <NativeSelect value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)}>
-              <NativeSelectOption value="cash">نقدي</NativeSelectOption><NativeSelectOption value="card">بطاقة</NativeSelectOption><NativeSelectOption value="wallet">محفظة</NativeSelectOption><NativeSelectOption value="bank-transfer">تحويل بنكي</NativeSelectOption>
+              {acceptedPaymentMethods.includes("cash") ? <NativeSelectOption value="cash">نقدي</NativeSelectOption> : null}
+              {acceptedPaymentMethods.includes("card") ? <NativeSelectOption value="card">بطاقة</NativeSelectOption> : null}
+              {acceptedPaymentMethods.includes("wallet") ? <NativeSelectOption value="wallet">محفظة</NativeSelectOption> : null}
+              {acceptedPaymentMethods.includes("bank-transfer") ? <NativeSelectOption value="bank-transfer">تحويل بنكي</NativeSelectOption> : null}
             </NativeSelect>
             <Input value={paid} onChange={(event) => setPaid(event.target.value)} type="number" min="0" placeholder="المبلغ المدفوع" className="h-11 rounded-xl" />
           </CardContent>
@@ -200,9 +266,9 @@ export function PurchaseCreateView() {
                     <TableCell><Input type="number" min="0.001" step="0.001" value={line.quantity} onChange={(event) => updateLine(index, "quantity", event.target.value)} className="mx-auto h-10 w-24 text-center" /></TableCell>
                     <TableCell><Input type="number" min="0" value={line.buyPrice} onChange={(event) => updateLine(index, "buyPrice", event.target.value)} className="mx-auto h-10 w-28 text-center" /></TableCell>
                     <TableCell><Input type="number" min="0" value={line.sellPrice} onChange={(event) => updateLine(index, "sellPrice", event.target.value)} className="mx-auto h-10 w-28 text-center" /></TableCell>
-                    <TableCell><Input type="number" min="0" value={line.discount} onChange={(event) => updateLine(index, "discount", event.target.value)} className="mx-auto h-10 w-28 text-center" /></TableCell>
-                    <TableCell><Input value={line.batchNumber} onChange={(event) => updateLine(index, "batchNumber", event.target.value)} placeholder={line.track_batch ? "مطلوب/تلقائي" : "اختياري"} className="mx-auto h-10 w-36 text-center" /></TableCell>
-                    <TableCell><Input type="date" required={line.has_expiry} value={line.expiryDate} onChange={(event) => updateLine(index, "expiryDate", event.target.value)} className="mx-auto h-10 w-40 text-center" /></TableCell>
+                    <TableCell><Input disabled={!purchaseDiscountEnabled} type="number" min="0" value={purchaseDiscountEnabled ? line.discount : "0"} onChange={(event) => updateLine(index, "discount", event.target.value)} className="mx-auto h-10 w-28 text-center disabled:bg-slate-50" /></TableCell>
+                    <TableCell><Input disabled={!batchTrackingEnabled} value={line.batchNumber} onChange={(event) => updateLine(index, "batchNumber", event.target.value)} placeholder={batchTrackingEnabled && line.track_batch ? "مطلوب" : "غير مفعل"} className="mx-auto h-10 w-36 text-center disabled:bg-slate-50" /></TableCell>
+                    <TableCell><Input disabled={!expiryTrackingEnabled} type="date" required={expiryTrackingEnabled && line.has_expiry} value={line.expiryDate} onChange={(event) => updateLine(index, "expiryDate", event.target.value)} className="mx-auto h-10 w-40 text-center disabled:bg-slate-50" /></TableCell>
                     <TableCell className="text-center font-black text-brand">{money(net)}</TableCell>
                     <TableCell><Button size="icon" variant="ghost" className="text-rose-600" onClick={() => setLines((current) => current.filter((_, lineIndex) => lineIndex !== index))}><Trash2 className="size-4" /></Button></TableCell>
                   </TableRow>
@@ -214,9 +280,9 @@ export function PurchaseCreateView() {
 
         <div className="grid gap-4 lg:grid-cols-[1fr_380px]">
           <Card className="rounded-3xl border-slate-200 shadow-sm"><CardContent className="grid gap-3 p-4 md:grid-cols-3">
-            <Input type="number" min="0" value={headerDiscount} onChange={(event) => setHeaderDiscount(event.target.value)} placeholder="خصم الفاتورة" className="h-11 rounded-xl" />
+            <Input disabled={!purchaseDiscountEnabled} type="number" min="0" value={purchaseDiscountEnabled ? headerDiscount : "0"} onChange={(event) => setHeaderDiscount(event.target.value)} placeholder="خصم الفاتورة" className="h-11 rounded-xl disabled:bg-slate-50" />
             <Input type="number" min="0" value={tax} onChange={(event) => setTax(event.target.value)} placeholder="الضريبة" className="h-11 rounded-xl" />
-            <Input type="number" min="0" value={shipping} onChange={(event) => setShipping(event.target.value)} placeholder="الشحن" className="h-11 rounded-xl" />
+            <Input disabled={!shippingEnabled} type="number" min="0" value={shippingEnabled ? shipping : "0"} onChange={(event) => setShipping(event.target.value)} placeholder="الشحن" className="h-11 rounded-xl disabled:bg-slate-50" />
             <Textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="ملاحظات..." className="min-h-24 md:col-span-3" />
           </CardContent></Card>
           <Card className="rounded-3xl border-0 bg-slate-950 text-white shadow-lg"><CardContent className="space-y-3 p-5">

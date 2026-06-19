@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation"
 import {
   Building, Percent, Package, ContactRound, ShoppingCart, Monitor,
   Truck, Wallet, Bell, Settings, FileText, Mail, MessageSquare,
-  Gift, Copy, Tag,
+  Gift, Copy,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { Card } from "@/components/ui/card"
@@ -46,7 +46,6 @@ const settingsTabs: SettingsTab[] = [
   { id: "shortcuts", module: "shortcuts", group: "النظام", label: "الاختصارات", icon: FileText, href: "/dashboard/settings/shortcuts" },
   { id: "rewards", module: "rewards", group: "إضافات", label: "المكافآت", icon: Gift, href: "/dashboard/settings/rewards" },
   { id: "extraUnits", module: "extraUnits", group: "إضافات", label: "الوحدات الإضافية", icon: Copy, href: "/dashboard/settings/extra-units" },
-  { id: "customLabels", module: "customLabels", group: "إضافات", label: "التسميات المخصصة", icon: Tag, href: "/dashboard/settings/custom-labels" },
 ]
 
 function useCanReadSettingsModule(module: SettingsPermissionModule) {

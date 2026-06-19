@@ -34,12 +34,13 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/contexts/auth-context";
 import { useUploadThing } from "@/lib/uploadthing/client";
-import { ITEM_TYPES } from "@/features/inventory/constants";
+import { DOSAGE_FORMS, PHARMACY_ITEM_TYPES } from "@/features/inventory/constants";
 import type {
   BranchOption,
   LookupOption,
 } from "@/features/inventory/lib/items-types";
 import { cacheItemDetail, queueItemApiRequest, readCachedItemDetail } from "@/features/inventory/lib/items-offline";
+import { apiRequest, isRequestAbort } from "@/lib/api-client";
 
 type UploadResult = {
   serverData?: { url?: string | null };
@@ -64,6 +65,17 @@ type FormData = {
   item_type: string;
   product_type: string;
   manufacturer_name: string;
+  manufacturer_country: string;
+  pharmacy_type: string;
+  generic_name: string;
+  active_ingredient: string;
+  therapeutic_class: string;
+  dosage_form: string;
+  strength: string;
+  package_size: string;
+  route_of_administration: string;
+  registration_number: string;
+  storage_condition: string;
   buy_price: string;
   purchase_price_including_tax: string;
   purchase_price_excluding_tax: string;
@@ -123,6 +135,17 @@ const defaults: FormData = {
   item_type: "stocked",
   product_type: "single",
   manufacturer_name: "",
+  manufacturer_country: "",
+  pharmacy_type: "medicine",
+  generic_name: "",
+  active_ingredient: "",
+  therapeutic_class: "",
+  dosage_form: "غير محدد",
+  strength: "",
+  package_size: "",
+  route_of_administration: "",
+  registration_number: "",
+  storage_condition: "درجة حرارة الغرفة",
   buy_price: "0",
   purchase_price_including_tax: "0",
   purchase_price_excluding_tax: "0",
@@ -135,11 +158,11 @@ const defaults: FormData = {
   max_stock: "0",
   opening_stock: "0",
   opening_stock_location: "",
-  has_expiry: false,
+  has_expiry: true,
   expiry_date: "",
   expiry_period_value: "0",
   expiry_period_unit: "months",
-  track_batch: false,
+  track_batch: true,
   is_controlled: false,
   requires_prescription: false,
   serial_tracking_enabled: false,
@@ -254,6 +277,17 @@ function formFromApi(data: ItemApiResponse): FormData {
     item_type: String(item.item_type ?? "stocked"),
     product_type: String(item.product_type ?? "single"),
     manufacturer_name: String(item.manufacturer_name ?? ""),
+    manufacturer_country: String(item.manufacturer_country ?? ""),
+    pharmacy_type: String(item.pharmacy_type ?? "medicine"),
+    generic_name: String(item.generic_name ?? ""),
+    active_ingredient: String(item.active_ingredient ?? ""),
+    therapeutic_class: String(item.therapeutic_class ?? ""),
+    dosage_form: String(item.dosage_form ?? "غير محدد"),
+    strength: String(item.strength ?? ""),
+    package_size: String(item.package_size ?? ""),
+    route_of_administration: String(item.route_of_administration ?? ""),
+    registration_number: String(item.registration_number ?? ""),
+    storage_condition: String(item.storage_condition ?? "درجة حرارة الغرفة"),
     buy_price: numberString(item.buy_price),
     purchase_price_including_tax: numberString(
       item.purchase_price_including_tax,
@@ -319,13 +353,22 @@ function formFromApi(data: ItemApiResponse): FormData {
 
 export function ItemCreateView({
   itemId,
+  duplicateFromId,
+  pharmacyId,
   mode = "create",
 }: {
   itemId?: string;
+  duplicateFromId?: string;
+  pharmacyId?: string;
   mode?: "create" | "edit";
 }) {
   const auth = useAuth();
   const router = useRouter();
+  const activePharmacyId = auth.activePharmacyId;
+  const setActiveScope = auth.setActiveScope;
+  const effectivePharmacyId = pharmacyId || activePharmacyId || "";
+  const scopeQuery = effectivePharmacyId ? `?pharmacy_id=${encodeURIComponent(effectivePharmacyId)}` : "";
+  const listHref = `/dashboard/items${scopeQuery}`;
   const [form, setForm] = useState<FormData>(defaults);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(mode === "edit");
@@ -347,55 +390,72 @@ export function ItemCreateView({
   );
 
   useEffect(() => {
-    if (!auth.activePharmacyId) return;
+    if (!pharmacyId || pharmacyId === activePharmacyId) return;
+    void setActiveScope({ pharmacyId, branchId: null });
+  }, [pharmacyId, activePharmacyId, setActiveScope]);
+
+  useEffect(() => {
+    if (!effectivePharmacyId) return;
+    const controller = new AbortController();
     async function loadLookups() {
       try {
-        const [gRes, bRes, uRes] = await Promise.all([
-          fetch("/api/items/groups", { cache: "no-store" }),
-          fetch("/api/items/brands", { cache: "no-store" }),
-          fetch("/api/items/units", { cache: "no-store" }),
-        ]);
         const [gData, bData, uData] = await Promise.all([
-          gRes.json(),
-          bRes.json(),
-          uRes.json(),
+          apiRequest<{ groups?: LookupOption[] }>(`/api/items/groups${scopeQuery}`, { cache: "no-store", signal: controller.signal, timeoutMs: 15000, retries: 1 }),
+          apiRequest<{ brands?: LookupOption[] }>(`/api/items/brands${scopeQuery}`, { cache: "no-store", signal: controller.signal, timeoutMs: 15000, retries: 1 }),
+          apiRequest<{ units?: Array<{ id: string; unit_name: string }> }>(`/api/items/units${scopeQuery}`, { cache: "no-store", signal: controller.signal, timeoutMs: 15000, retries: 1 }),
         ]);
-        if (gRes.ok) setGroups(gData.groups ?? []);
-        if (bRes.ok) setBrands(bData.brands ?? []);
-        if (uRes.ok)
-          setUnits(
-            (uData.units ?? []).map((u: { id: string; unit_name: string }) => ({
-              id: u.id,
-              name: u.unit_name,
-            })),
-          );
-      } catch {
-        /* ignore lookup errors */
+        setGroups(gData.groups ?? []);
+        setBrands(bData.brands ?? []);
+        setUnits((uData.units ?? []).map((u) => ({ id: u.id, name: u.unit_name })));
+      } catch (error) {
+        if (!isRequestAbort(error)) toast.error(error instanceof Error ? error.message : "فشل تحميل بيانات التصنيف");
       }
     }
     void loadLookups();
-  }, [auth.activePharmacyId]);
+    return () => controller.abort();
+  }, [effectivePharmacyId, scopeQuery]);
 
   useEffect(() => {
-    if (mode !== "edit" || !itemId) return;
-    const currentItemId = itemId;
+    const currentItemId = mode === "edit" ? itemId : duplicateFromId;
+    if (!currentItemId) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     async function loadItem() {
       setLoading(true);
       try {
-        const response = await fetch(`/api/items/${currentItemId}`, {
+        const data = await apiRequest<ItemApiResponse>(`/api/items/${currentItemId}${scopeQuery}`, {
           cache: "no-store",
+          timeoutMs: 18000,
+          retries: 1,
         });
-        const data = (await response
-          .json()
-          .catch(() => ({}))) as ItemApiResponse;
-        if (!response.ok) throw new Error(data.error ?? "فشل تحميل الصنف");
-        await cacheItemDetail(currentItemId, data);
-        if (!cancelled) setForm(formFromApi(data));
+        await cacheItemDetail(`${effectivePharmacyId || "active"}:${currentItemId}`, data);
+        if (!cancelled) {
+          const loaded = formFromApi(data);
+          setForm(mode === "edit" ? loaded : {
+            ...loaded,
+            name_ar: loaded.name_ar ? `${loaded.name_ar} - نسخة` : "",
+            name_en: loaded.name_en ? `${loaded.name_en} Copy` : "",
+            sku: "",
+            barcodes: "",
+            opening_stock: "0",
+          });
+        }
       } catch (error) {
-        const cached = await readCachedItemDetail<ItemApiResponse>(currentItemId);
+        const cached = await readCachedItemDetail<ItemApiResponse>(`${effectivePharmacyId || "active"}:${currentItemId}`);
         if (cached) {
-          if (!cancelled) setForm(formFromApi(cached));
+          if (!cancelled) {
+            const loaded = formFromApi(cached);
+            setForm(mode === "edit" ? loaded : {
+              ...loaded,
+              name_ar: loaded.name_ar ? `${loaded.name_ar} - نسخة` : "",
+              name_en: loaded.name_en ? `${loaded.name_en} Copy` : "",
+              sku: "",
+              barcodes: "",
+              opening_stock: "0",
+            });
+          }
           toast.warning("تم تحميل آخر نسخة محفوظة للصنف بدون إنترنت");
         } else {
           toast.error(error instanceof Error ? error.message : "فشل تحميل الصنف");
@@ -408,7 +468,7 @@ export function ItemCreateView({
     return () => {
       cancelled = true;
     };
-  }, [itemId, mode]);
+  }, [duplicateFromId, effectivePharmacyId, itemId, mode, scopeQuery]);
 
   const set = useCallback((key: keyof FormData, value: string | boolean) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -459,18 +519,17 @@ export function ItemCreateView({
             ? "/api/items/brands"
             : "/api/items/units";
       const payload = kind === "unit" ? { unit_name: name } : { name };
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = (await response.json().catch(() => ({}))) as {
+      const data = await apiRequest<{
         group?: LookupOption;
         brand?: LookupOption;
         unit?: { id: string; unit_name?: string; name?: string };
         error?: string;
-      };
-      if (!response.ok) throw new Error(data.error ?? "فشل الإضافة");
+      }>(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, pharmacy_id: effectivePharmacyId }),
+        timeoutMs: 18000,
+      });
       if (kind === "group" && data.group) {
         setGroups((prev) =>
           [...prev, data.group!].sort((a, b) =>
@@ -509,8 +568,6 @@ export function ItemCreateView({
   }
 
   function buildPayload() {
-    const variationValues = pipeToArray(form.variation_values);
-    const variationSkus = pipeToArray(form.variation_skus);
     const qtyPerMain = Math.max(1, Number(form.qty_per_main_unit) || 1);
     const baseUnitName = form.sub_unit.trim() || form.unit.trim();
     const mainUnitName = form.main_unit.trim();
@@ -540,12 +597,15 @@ export function ItemCreateView({
     ].filter(Boolean);
     return {
       ...form,
-      pharmacy_id: auth.activePharmacyId,
+      item_type: "stocked",
+      product_type: "single",
+      serial_tracking_enabled: false,
+      variation_values: [],
+      variation_skus: [],
+      pharmacy_id: effectivePharmacyId,
       branch_id: form.branch_id || auth.activeBranchId,
       opening_stock_branch_id: form.branch_id || auth.activeBranchId,
       barcodes: lineToBarcodeRows(form.barcodes),
-      variation_values: variationValues,
-      variation_skus: variationSkus,
       product_locations: pipeToArray(form.product_locations),
       units: unitRows,
       buy_price:
@@ -578,38 +638,29 @@ export function ItemCreateView({
       toast.error("اختر الوحدة الأساسية للصنف");
       return;
     }
-    if (form.product_type === "variable" && !form.variation_values.trim()) {
-      toast.error("قيم المتغيرات مطلوبة للمنتج المتغير");
-      return;
-    }
     setSaving(true);
     const requestPath = mode === "edit" && itemId ? `/api/items/${itemId}` : "/api/items";
     const requestMethod: "PATCH" | "POST" = mode === "edit" ? "PATCH" : "POST";
     const requestBody = buildPayload() as Record<string, unknown>;
     try {
-      const response = await fetch(requestPath, {
-          method: requestMethod,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBody),
-        },
-      );
-      const data = (await response.json().catch(() => ({}))) as {
-        item?: { id: string };
-        error?: string;
-      };
-      if (!response.ok) throw new Error(data.error ?? "فشل حفظ الصنف");
+      await apiRequest<{ item?: { id: string }; error?: string }>(requestPath, {
+        method: requestMethod,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+        timeoutMs: 25000,
+      });
       toast.success(
         mode === "edit"
           ? "تم تعديل الصنف بنجاح"
           : "تم إنشاء الصنف وإضافته للمخزون بنجاح",
       );
-      router.push("/dashboard/items");
+      router.push(listHref);
       router.refresh();
     } catch (error) {
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         await queueItemApiRequest({ path: requestPath, method: requestMethod, body: requestBody });
         toast.warning("تم حفظ الصنف محليًا وسيتم إرساله تلقائيًا عند عودة الإنترنت");
-        router.push("/dashboard/items");
+        router.push(listHref);
       } else {
         toast.error(error instanceof Error ? error.message : "فشل حفظ الصنف");
       }
@@ -636,8 +687,8 @@ export function ItemCreateView({
         className="page-container space-y-5 py-4 text-right sm:py-6"
       >
         <DashboardPageHeader
-          title={mode === "edit" ? "تعديل الصنف" : "إضافة صنف جديد"}
-          subtitle="ابدأ بالاسم والوحدة والسعر، ثم أكمل بيانات المخزون والصلاحية حسب احتياج الصنف."
+          title={mode === "edit" ? "تعديل الدواء أو الصنف الصيدلي" : duplicateFromId ? "إنشاء نسخة من صنف صيدلي" : "إضافة دواء أو صنف صيدلي"}
+          subtitle="سجّل البيانات الدوائية والعبوة والتشغيلة والصلاحية والتسعير بصورة مناسبة لعمل الصيدلية."
           icon={Package}
           actions={
             <Button
@@ -645,8 +696,8 @@ export function ItemCreateView({
               className="h-10 rounded-xl"
               asChild
             >
-              <Link href="/dashboard/items">
-                <ArrowRight className="size-4" /> الأصناف
+              <Link href={listHref}>
+                <ArrowRight className="size-4" /> الأدوية والأصناف
               </Link>
             </Button>
           }
@@ -683,11 +734,11 @@ export function ItemCreateView({
                 dir="ltr"
               />
             </FormField>
-            <FormField id="sku" label="SKU">
+            <FormField id="sku" label="كود الصنف الداخلي">
               <Input
                 value={form.sku}
                 onChange={(e) => set("sku", e.target.value)}
-                placeholder="اتركه فارغًا للتوليد عند الاستيراد"
+                placeholder="كود داخلي اختياري غير الباركود"
                 className="h-11 rounded-xl"
                 dir="ltr"
               />
@@ -765,7 +816,7 @@ export function ItemCreateView({
                   ))}
                 </NativeSelect>
               </FormField>
-              <FormField id="category" label="اسم المجموعة من ملف Excel">
+              <FormField id="category" label="التصنيف الدوائي">
                 <Input
                   value={form.category}
                   onChange={(e) => set("category", e.target.value)}
@@ -779,7 +830,7 @@ export function ItemCreateView({
                   className="h-11 rounded-xl"
                 />
               </FormField>
-              <FormField id="brand_id" label="الماركة">
+              <FormField id="brand_id" label="العلامة التجارية">
                 <NativeSelect
                   value={form.brand_id}
                   onChange={(e) => set("brand_id", e.target.value)}
@@ -815,35 +866,38 @@ export function ItemCreateView({
                     ))}
                 </NativeSelect>
               </FormField>
-              <FormField id="item_type" label="نوع الصنف الداخلي">
+              <FormField id="pharmacy_type" label="نوع الصنف الصيدلي">
                 <NativeSelect
-                  value={form.item_type}
-                  onChange={(e) => set("item_type", e.target.value)}
+                  value={form.pharmacy_type}
+                  onChange={(e) => set("pharmacy_type", e.target.value)}
                   className="h-11"
                 >
-                  {ITEM_TYPES.map((t) => (
-                    <NativeSelectOption key={t.value} value={t.value}>
-                      {t.label}
+                  {PHARMACY_ITEM_TYPES.map((type) => (
+                    <NativeSelectOption key={type.value} value={type.value}>
+                      {type.label}
                     </NativeSelectOption>
                   ))}
                 </NativeSelect>
               </FormField>
-              <FormField id="product_type" label="نوع المنتج">
-                <NativeSelect
-                  value={form.product_type}
-                  onChange={(e) => set("product_type", e.target.value)}
-                  className="h-11"
-                >
-                  <NativeSelectOption value="single">مفرد</NativeSelectOption>
-                  <NativeSelectOption value="variable">
-                    متغير
-                  </NativeSelectOption>
-                </NativeSelect>
+              <FormField id="therapeutic_class" label="المجموعة العلاجية">
+                <Input
+                  value={form.therapeutic_class}
+                  onChange={(e) => set("therapeutic_class", e.target.value)}
+                  placeholder="مثال: مسكن وخافض حرارة"
+                  className="h-11 rounded-xl"
+                />
               </FormField>
-              <FormField id="manufacturer_name" label="شركة/مصنع">
+              <FormField id="manufacturer_name" label="الشركة المنتجة">
                 <Input
                   value={form.manufacturer_name}
                   onChange={(e) => set("manufacturer_name", e.target.value)}
+                  className="h-11 rounded-xl"
+                />
+              </FormField>
+              <FormField id="manufacturer_country" label="بلد المنشأ">
+                <Input
+                  value={form.manufacturer_country}
+                  onChange={(e) => set("manufacturer_country", e.target.value)}
                   className="h-11 rounded-xl"
                 />
               </FormField>
@@ -898,37 +952,36 @@ export function ItemCreateView({
           </div>
         </AddItemSection>
 
-        {form.product_type === "variable" ? (
-          <AddItemSection title="المتغيرات" icon={<Package className="size-5" />}>
-            <div className="grid gap-3 md:grid-cols-3">
-              <FormField id="variation_name" label="اسم المتغير">
-                <Input
-                  value={form.variation_name}
-                  onChange={(e) => set("variation_name", e.target.value)}
-                  className="h-11 rounded-xl"
-                />
-              </FormField>
-              <FormField id="variation_values" label="قيم المتغير مفصولة بـ |">
-                <Textarea
-                  value={form.variation_values}
-                  onChange={(e) => set("variation_values", e.target.value)}
-                  placeholder="Small|Medium|Large"
-                  className="min-h-20 rounded-xl"
-                  dir="ltr"
-                />
-              </FormField>
-              <FormField id="variation_skus" label="أكواد المتغيرات مفصولة بـ |">
-                <Textarea
-                  value={form.variation_skus}
-                  onChange={(e) => set("variation_skus", e.target.value)}
-                  placeholder="SKU-S|SKU-M|SKU-L"
-                  className="min-h-20 rounded-xl"
-                  dir="ltr"
-                />
-              </FormField>
-            </div>
-          </AddItemSection>
-        ) : null}
+        <AddItemSection title="البيانات الدوائية" icon={<Package className="size-5" />}>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <FormField id="generic_name" label="الاسم العلمي / الجنيس">
+              <Input value={form.generic_name} onChange={(e) => set("generic_name", e.target.value)} className="h-11 rounded-xl" />
+            </FormField>
+            <FormField id="active_ingredient" label="المادة الفعالة">
+              <Input value={form.active_ingredient} onChange={(e) => set("active_ingredient", e.target.value)} placeholder="مثال: Paracetamol" className="h-11 rounded-xl" />
+            </FormField>
+            <FormField id="dosage_form" label="الشكل الدوائي">
+              <NativeSelect value={form.dosage_form} onChange={(e) => set("dosage_form", e.target.value)} className="h-11">
+                {DOSAGE_FORMS.map((formName) => <NativeSelectOption key={formName} value={formName}>{formName}</NativeSelectOption>)}
+              </NativeSelect>
+            </FormField>
+            <FormField id="strength" label="التركيز">
+              <Input value={form.strength} onChange={(e) => set("strength", e.target.value)} placeholder="مثال: 500 mg" className="h-11 rounded-xl" dir="ltr" />
+            </FormField>
+            <FormField id="package_size" label="حجم العبوة">
+              <Input value={form.package_size} onChange={(e) => set("package_size", e.target.value)} placeholder="مثال: 2 شريط × 10 أقراص" className="h-11 rounded-xl" />
+            </FormField>
+            <FormField id="route_of_administration" label="طريقة الاستخدام">
+              <Input value={form.route_of_administration} onChange={(e) => set("route_of_administration", e.target.value)} placeholder="فموي / موضعي / حقن" className="h-11 rounded-xl" />
+            </FormField>
+            <FormField id="registration_number" label="رقم التسجيل الدوائي">
+              <Input value={form.registration_number} onChange={(e) => set("registration_number", e.target.value)} className="h-11 rounded-xl" dir="ltr" />
+            </FormField>
+            <FormField id="storage_condition" label="شروط الحفظ">
+              <Input value={form.storage_condition} onChange={(e) => set("storage_condition", e.target.value)} placeholder="أقل من 30°م وبعيدًا عن الضوء" className="h-11 rounded-xl" />
+            </FormField>
+          </div>
+        </AddItemSection>
 
         <AddItemSection title="التسعير والضرائب" icon={<Package className="size-5" />}>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -1032,11 +1085,6 @@ export function ItemCreateView({
                 checked={form.not_for_sale}
                 onChange={(value) => set("not_for_sale", value)}
               />
-              <InventoryToggle
-                label="تفعيل رقم سيريال / IMEI"
-                checked={form.serial_tracking_enabled}
-                onChange={(value) => set("serial_tracking_enabled", value)}
-              />
             </div>
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <FormField id="min_stock" label="حد التنبيه">
@@ -1132,17 +1180,17 @@ export function ItemCreateView({
                 onChange={(value) => set("has_expiry", value)}
               />
               <InventoryToggle
-                label="تتبع Batch"
+                label="تتبع رقم التشغيلة"
                 checked={form.track_batch}
                 onChange={(value) => set("track_batch", value)}
               />
               <InventoryToggle
-                label="محدود / مراقب"
+                label="دواء مراقب / جدول"
                 checked={form.is_controlled}
                 onChange={(value) => set("is_controlled", value)}
               />
               <InventoryToggle
-                label="يتطلب روشتة"
+                label="يصرف بروشتة"
                 checked={form.requires_prescription}
                 onChange={(value) => set("requires_prescription", value)}
               />
@@ -1179,47 +1227,21 @@ export function ItemCreateView({
           </div>
         </AddItemSection>
 
-        <AddItemSection title="الوصف والحقول المخصصة" icon={<Package className="size-5" />}>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <FormField id="custom_field_1" label="حقل مخصص 1">
-              <Input
-                value={form.custom_field_1}
-                onChange={(e) => set("custom_field_1", e.target.value)}
-                className="h-11 rounded-xl"
-              />
-            </FormField>
-            <FormField id="custom_field_2" label="حقل مخصص 2">
-              <Input
-                value={form.custom_field_2}
-                onChange={(e) => set("custom_field_2", e.target.value)}
-                className="h-11 rounded-xl"
-              />
-            </FormField>
-            <FormField id="custom_field_3" label="حقل مخصص 3">
-              <Input
-                value={form.custom_field_3}
-                onChange={(e) => set("custom_field_3", e.target.value)}
-                className="h-11 rounded-xl"
-              />
-            </FormField>
-            <FormField id="custom_field_4" label="حقل مخصص 4">
-              <Input
-                value={form.custom_field_4}
-                onChange={(e) => set("custom_field_4", e.target.value)}
-                className="h-11 rounded-xl"
-              />
-            </FormField>
-            <FormField id="product_description" label="وصف الصنف" className="md:col-span-2">
+        <AddItemSection title="الاستخدام والتنبيهات الصيدلية" icon={<Package className="size-5" />}>
+          <div className="grid gap-3 md:grid-cols-2">
+            <FormField id="product_description" label="الاستخدامات أو وصف الصنف">
               <Textarea
                 value={form.product_description}
                 onChange={(e) => set("product_description", e.target.value)}
+                placeholder="الاستخدامات الأساسية أو وصف مختصر يظهر للصيدلي"
                 className="min-h-24 rounded-xl"
               />
             </FormField>
-            <FormField id="notes" label="ملاحظات داخلية" className="md:col-span-2">
+            <FormField id="notes" label="تنبيهات وملاحظات داخلية">
               <Textarea
                 value={form.notes}
                 onChange={(e) => set("notes", e.target.value)}
+                placeholder="تحذيرات صرف، بدائل، تعليمات تخزين أو ملاحظات للصيدلي"
                 className="min-h-24 rounded-xl"
               />
             </FormField>
@@ -1232,7 +1254,7 @@ export function ItemCreateView({
             className="h-11 rounded-xl"
             asChild
           >
-            <Link href="/dashboard/items">
+            <Link href={listHref}>
               <ArrowRight className="size-4" /> إلغاء
             </Link>
           </Button>
@@ -1246,7 +1268,7 @@ export function ItemCreateView({
             ) : (
               <Save className="size-4" />
             )}
-            {mode === "edit" ? "حفظ التعديل" : "حفظ الصنف"}
+            {mode === "edit" ? "حفظ التعديل" : "حفظ الصنف الصيدلي"}
           </Button>
         </div>
       </section>
@@ -1311,9 +1333,12 @@ function ItemImageUploader({
       <div className="flex items-start gap-3">
         <div className="grid size-20 shrink-0 place-items-center overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           {value ? (
+            // eslint-disable-next-line @next/next/no-img-element
             <img
               src={value}
               alt="صورة الصنف"
+              loading="lazy"
+              decoding="async"
               className="size-full object-cover"
             />
           ) : (
