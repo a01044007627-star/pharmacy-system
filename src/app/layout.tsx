@@ -5,6 +5,16 @@ import "./globals.css"
 export const metadata: Metadata = {
   title: "Logixa Pharmacy",
   description: "نظام إدارة الصيدليات المتكامل",
+  manifest: "/manifest.json",
+  themeColor: "#0b63a8",
+  icons: {
+    icon: [
+      { url: "/icon-192x192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512x512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [{ url: "/icon-192x192.png", sizes: "192x192", type: "image/png" }],
+  },
+  appleWebApp: { capable: true, statusBarStyle: "default", title: "Pharmacy" },
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

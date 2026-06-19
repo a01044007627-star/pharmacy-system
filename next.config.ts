@@ -1,13 +1,4 @@
 import type { NextConfig } from "next"
-import withSerwistInit from "@serwist/next"
-
-const enableGeneratedServiceWorker = process.env.NEXT_PUBLIC_ENABLE_PWA_SW === "true"
-
-const withSerwist = withSerwistInit({
-  swSrc: "src/sw.ts",
-  swDest: "public/sw.js",
-  disable: !enableGeneratedServiceWorker,
-})
 
 const nextConfig: NextConfig = {
   devIndicators: { position: "bottom-right" },
@@ -21,7 +12,12 @@ const nextConfig: NextConfig = {
         headers: [
           { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
           { key: "Service-Worker-Allowed", value: "/" },
+          { key: "Content-Type", value: "application/javascript; charset=utf-8" },
         ],
+      },
+      {
+        source: "/manifest.json",
+        headers: [{ key: "Cache-Control", value: "public, max-age=3600" }],
       },
     ]
   },
@@ -31,4 +27,4 @@ const nextConfig: NextConfig = {
   },
 }
 
-export default enableGeneratedServiceWorker ? withSerwist(nextConfig) : nextConfig
+export default nextConfig

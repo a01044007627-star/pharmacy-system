@@ -43,7 +43,9 @@ import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
 import { useNetwork, useSyncStatus } from "@/hooks/use-data-layer"
 import { queueApiRequest } from "@/lib/sync/api-mutations"
+import { localDB } from "@/lib/sync/local-db"
 import { syncManager } from "@/lib/sync/sync-manager"
+import { loadOfflineCashierCatalog, loadOfflineOpenShift } from "@/features/sales/lib/offline-cashier"
 import { useSound } from "@/hooks/use-sound"
 import { cn } from "@/lib/utils"
 import { numberValue, escapeHtml, labelFromMap } from "@/lib/helpers"
@@ -103,6 +105,7 @@ type RecentSale = {
 
 type CashierShift = {
   id: string
+  user_id?: string | null
   opened_at: string
   opening_balance: number
   expected_balance: number | null
@@ -318,6 +321,7 @@ export function CashierView() {
   const canPriceOverride = priceOverrideFeatureEnabled && (auth.isDeveloper || auth.can("sales:price-override"))
   const canSell = auth.isDeveloper || auth.can("sales:write")
   const pharmacyId = auth.activePharmacyId
+  const authUserId = auth.user?.id ?? null
   const branchId = cashierBranchId ?? auth.activeBranchId
   const activeCashierBranch = auth.branches.find((branch) => branch.id === branchId) ?? auth.activeBranch
   const selectableBranches = useMemo(() => {
@@ -411,20 +415,37 @@ export function CashierView() {
 
   const loadShift = useCallback(async () => {
     const params = shiftParams()
-    if (!params) return
+    if (!params || !pharmacyId || !branchId) return
     setShiftLoading(true)
     try {
       const response = await fetch(`/api/sales/cashier/shift?${params.toString()}`, { cache: "no-store" })
       const data = (await response.json().catch(() => ({}))) as ShiftResponse
       if (!response.ok) throw new Error(data.error ?? "فشل تحميل جلسة الكاشير")
-      setShift(data.openShift ?? null)
+      const nextShift = data.openShift ?? null
+      setShift(nextShift)
+      if (nextShift) {
+        await localDB.putTableRow("pharmacy_shifts", {
+          ...nextShift,
+          pharmacy_id: pharmacyId,
+          branch_id: branchId,
+          user_id: nextShift.user_id ?? authUserId,
+          status: "open",
+          updated_at: new Date().toISOString(),
+        }, true)
+      }
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل تحميل جلسة الكاشير")
-      setShift(null)
+      const cachedShift = await loadOfflineOpenShift({ pharmacyId, branchId, userId: authUserId })
+      if (cachedShift) {
+        setShift(cachedShift)
+        if (network.online) toast.warning("تعذر الاتصال بالخادم؛ تم فتح آخر وردية محفوظة على الجهاز")
+      } else {
+        setShift(null)
+        if (network.online) toast.error(error instanceof Error ? error.message : "فشل تحميل جلسة الكاشير")
+      }
     } finally {
       setShiftLoading(false)
     }
-  }, [shiftParams])
+  }, [authUserId, branchId, network.online, pharmacyId, shiftParams])
 
   const fetchProducts = useCallback(async (term = query) => {
     if (!pharmacyId || !branchId || !searchEnabled) return
@@ -443,12 +464,13 @@ export function CashierView() {
       setProducts(data.products ?? [])
       setRecentSales(data.recentSales ?? [])
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل تحميل بيانات الكاشير")
-      setProducts([])
+      const cachedProducts = await loadOfflineCashierCatalog({ pharmacyId, branchId, query: normalizedTerm, limit: normalizedTerm ? 80 : 60 })
+      setProducts(cachedProducts)
+      if (cachedProducts.length === 0 && network.online) toast.error(error instanceof Error ? error.message : "فشل تحميل بيانات الكاشير")
     } finally {
       setLoading(false)
     }
-  }, [barcodeSearchEnabled, branchId, pharmacyId, query, searchEnabled, searchMinChars])
+  }, [barcodeSearchEnabled, branchId, network.online, pharmacyId, query, searchEnabled, searchMinChars])
 
   const fetchCatalogProducts = useCallback(async () => {
     if (!pharmacyId || !branchId) return
@@ -477,12 +499,13 @@ export function CashierView() {
       setCatalogProducts(Array.from(new Map(allProducts.map((product) => [product.id, product])).values()))
       setRecentSales(latestSales)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل تحميل قائمة الأصناف")
-      setCatalogProducts([])
+      const cachedProducts = await loadOfflineCashierCatalog({ pharmacyId, branchId, limit: 5000 })
+      setCatalogProducts(cachedProducts)
+      if (cachedProducts.length === 0 && network.online) toast.error(error instanceof Error ? error.message : "فشل تحميل قائمة الأصناف")
     } finally {
       setCatalogLoading(false)
     }
-  }, [branchId, pharmacyId])
+  }, [branchId, network.online, pharmacyId])
 
   const loadPrintSettings = useCallback(async () => {
     if (!pharmacyId) return
@@ -644,7 +667,18 @@ export function CashierView() {
       })
       const data = (await response.json().catch(() => ({}))) as ShiftResponse & { alreadyOpen?: boolean }
       if (!response.ok) throw new Error(data.error ?? "فشل فتح جلسة الكاشير")
-      setShift(data.shift ?? null)
+      const nextShift = data.shift ?? null
+      setShift(nextShift)
+      if (nextShift) {
+        await localDB.putTableRow("pharmacy_shifts", {
+          ...nextShift,
+          pharmacy_id: pharmacyId,
+          branch_id: branchId,
+          user_id: nextShift.user_id ?? authUserId,
+          status: "open",
+          updated_at: new Date().toISOString(),
+        }, true)
+      }
       await auth.setActiveScope({ pharmacyId, branchId })
       setOpeningNotes("")
       play("shift-start", 0.45)
@@ -652,7 +686,15 @@ export function CashierView() {
       toast.success(data.alreadyOpen ? "تم استرجاع جلسة الكاشير المفتوحة" : "تم فتح جلسة الكاشير")
       window.setTimeout(() => searchInputRef.current?.focus(), 80)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل فتح جلسة الكاشير")
+      const cachedShift = await loadOfflineOpenShift({ pharmacyId, branchId, userId: authUserId })
+      if (cachedShift) {
+        setShift(cachedShift)
+        toast.warning("تم استرجاع الوردية المفتوحة المحفوظة على الجهاز")
+      } else if (!network.online || error instanceof TypeError) {
+        toast.error("فتح وردية جديدة لأول مرة يحتاج اتصالًا بالخادم. جهّز الجهاز للأوفلاين والوردية مفتوحة قبل انقطاع الإنترنت")
+      } else {
+        toast.error(error instanceof Error ? error.message : "فشل فتح جلسة الكاشير")
+      }
     } finally {
       setOpeningSession(false)
     }
@@ -670,12 +712,46 @@ export function CashierView() {
       })
       const data = (await response.json().catch(() => ({}))) as ShiftResponse
       if (!response.ok) throw new Error(data.error ?? "فشل إغلاق جلسة الكاشير")
+      await localDB.putTableRow("pharmacy_shifts", {
+        ...shift,
+        pharmacy_id: pharmacyId,
+        branch_id: branchId,
+        user_id: shift.user_id ?? authUserId,
+        status: "closed",
+        closing_balance: numberValue(entered),
+        closed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }, true)
       setShift(null)
       setLines([])
       play("shift-end", 0.45)
       toast.success("تم إغلاق جلسة الكاشير")
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل إغلاق جلسة الكاشير")
+      if (!network.online || error instanceof TypeError) {
+        await queueApiRequest({
+          path: "/api/sales/cashier/shift",
+          method: "PATCH",
+          body: { pharmacy_id: pharmacyId, branch_id: branchId, shift_id: shift.id, closing_balance: numberValue(entered) },
+          label: "إغلاق وردية الكاشير أوفلاين",
+        })
+        await localDB.putTableRow("pharmacy_shifts", {
+          ...shift,
+          pharmacy_id: pharmacyId,
+          branch_id: branchId,
+          user_id: shift.user_id ?? authUserId,
+          status: "closed",
+          closing_balance: numberValue(entered),
+          closed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }, false)
+        await syncManager.refreshPending()
+        setShift(null)
+        setLines([])
+        play("shift-end", 0.45)
+        toast.warning("تم إغلاق الوردية على الجهاز وستُرسل للخادم عند رجوع الإنترنت")
+      } else {
+        toast.error(error instanceof Error ? error.message : "فشل إغلاق جلسة الكاشير")
+      }
     }
   }
 

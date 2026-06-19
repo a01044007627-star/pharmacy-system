@@ -62,7 +62,7 @@ export function setSessionDashboardPayload(key: string, data: DashboardHomePaylo
 
 export async function getLocalDashboardPayload(key: string): Promise<DashboardHomePayload | null> {
   try {
-    const cached = await localDB.getCache(storageKey(key))
+    const cached = await localDB.getStaleCache(storageKey(key))
     if (!isValidPayload(cached)) return null
     setSessionDashboardPayload(key, cached)
     return cached

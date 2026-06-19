@@ -1,4 +1,5 @@
 {
+  "id": "/dashboard",
   "name": "Logixa Pharmacy",
   "short_name": "Pharmacy",
   "description": "نظام إدارة الصيدليات المتكامل - Logixa",
@@ -8,12 +9,18 @@
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#eaf6fb",
+  "background_color": "#eef6fb",
   "theme_color": "#0b63a8",
+  "categories": ["business", "medical", "productivity"],
   "icons": [
-    { "src": "/icon-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/icon-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+    { "src": "/icon-192x192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512x512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "الكاشير", "short_name": "الكاشير", "url": "/dashboard/sales/cashier", "icons": [{ "src": "/icon-192x192.png", "sizes": "192x192" }] },
+    { "name": "قائمة الأصناف", "short_name": "الأصناف", "url": "/dashboard/items", "icons": [{ "src": "/icon-192x192.png", "sizes": "192x192" }] },
+    { "name": "المزامنة", "short_name": "المزامنة", "url": "/dashboard/sync", "icons": [{ "src": "/icon-192x192.png", "sizes": "192x192" }] }
   ]
 }

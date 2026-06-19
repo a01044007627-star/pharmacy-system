@@ -1,47 +1,10 @@
 "use client"
 
 import { createClient } from "@/lib/supabase/client"
-import { localSQLite } from "./local-sqlite"
 import { localDB } from "./local-db"
 import { network } from "@/lib/network"
 
-type TableName =
-  | "pharmacy_items"
-  | "pharmacy_item_barcodes"
-  | "pharmacy_item_batches"
-  | "pharmacy_item_groups"
-  | "pharmacy_item_brands"
-  | "pharmacy_partners"
-  | "pharmacy_sales"
-  | "pharmacy_sale_lines"
-  | "pharmacy_purchases"
-  | "pharmacy_purchase_lines"
-  | "pharmacy_expenses"
-  | "pharmacy_expense_categories"
-  | "pharmacy_stock_balances"
-  | "pharmacy_stock_movements"
-  | "pharmacy_cash_registers"
-  | "pharmacy_register_transactions"
-  | "pharmacy_shifts"
-  | "pharmacy_payments"
-  | "pharmacy_orders"
-  | "pharmacy_coupons"
-  | "pharmacy_bundles"
-  | "pharmacy_daily_summary"
-  | "pharmacy_notifications"
-  | "pharmacy_employees"
-  | "pharmacy_attendance"
-  | "pharmacy_settings"
-  | "pharmacy_branches"
-  | "pharmacy_invoice_designs"
-  | "pharmacy_tax_rates"
-  | "pharmacy_tax_groups"
-  | "pharmacy_tax_group_members"
-  | "pharmacy_barcode_paper_settings"
-  | "pharmacy_receipt_printers"
-  | "pharmacy_notification_templates"
-  | "pharmacy_backups"
-  | string
+type TableName = string
 
 interface QueryOptions {
   columns?: string
@@ -53,374 +16,210 @@ interface QueryOptions {
 
 type WhereFilter = Record<string, unknown>
 
-function buildWhereClause(filter: WhereFilter): { sql: string; params: unknown[] } {
-  const clauses: string[] = []
-  const params: unknown[] = []
-  for (const [key, value] of Object.entries(filter)) {
-    if (value === null) {
-      clauses.push(`${key} IS NULL`)
-    } else if (Array.isArray(value)) {
-      const placeholders = value.map(() => "?").join(",")
-      clauses.push(`${key} IN (${placeholders})`)
-      params.push(...value)
-    } else {
-      clauses.push(`${key} = ?`)
-      params.push(value)
-    }
-  }
-  return { sql: clauses.join(" AND "), params }
+function getPharmacyId() {
+  try { return localStorage.getItem("active-pharmacy-id") } catch { return null }
 }
 
-async function getPharmacyId(): Promise<string | null> {
-  try {
-    return localStorage.getItem("active-pharmacy-id")
-  } catch {
-    return null
-  }
+function getBranchId() {
+  try { return localStorage.getItem("active-branch-id") } catch { return null }
 }
 
-async function getBranchId(): Promise<string | null> {
-  try {
-    return localStorage.getItem("active-branch-id")
-  } catch {
-    return null
-  }
-}
+function shouldScopeByPharmacy(table: TableName) { return table.startsWith("pharmacy_") }
+function hasExplicitPharmacyFilter(filter?: WhereFilter) { return Boolean(filter && Object.prototype.hasOwnProperty.call(filter, "pharmacy_id")) }
 
-function shouldScopeByPharmacy(table: TableName): boolean {
-  return table.startsWith("pharmacy_")
-}
-
-const STRICT_ONLINE_TABLES = new Set<TableName>([
-  "pharmacy_settings",
-  "pharmacy_branches",
-  "pharmacy_invoice_designs",
-  "pharmacy_tax_rates",
-  "pharmacy_tax_groups",
-  "pharmacy_tax_group_members",
-  "pharmacy_barcode_paper_settings",
-  "pharmacy_receipt_printers",
-  "pharmacy_notification_templates",
-  "pharmacy_backups",
-])
-
-function shouldUseStrictOnline(table: TableName): boolean {
-  return STRICT_ONLINE_TABLES.has(table)
-}
-
-function normalizeOnlineError(table: TableName, error: unknown): Error {
-  const message = error instanceof Error ? error.message : String(error || "فشل الاتصال بقاعدة البيانات")
-  return new Error(`فشل تنفيذ العملية على ${table}: ${message}`)
-}
-
-function hasExplicitPharmacyFilter(filter?: WhereFilter): boolean {
-  return Boolean(filter && Object.prototype.hasOwnProperty.call(filter, "pharmacy_id"))
-}
-
-function shouldInjectPharmacyId(table: TableName, record: Record<string, unknown>): boolean {
-  return shouldScopeByPharmacy(table) && !("pharmacy_id" in record)
-}
-
-function shouldInjectBranchId(table: TableName, record: Record<string, unknown>): boolean {
-  return table.startsWith("pharmacy_") && !("branch_id" in record) && [
-    "pharmacy_items",
-    "pharmacy_sales",
-    "pharmacy_purchases",
-    "pharmacy_expenses",
-    "pharmacy_stock_movements",
-    "pharmacy_cash_registers",
-    "pharmacy_shifts",
+function shouldInjectBranchId(table: TableName, record: Record<string, unknown>) {
+  return !Object.prototype.hasOwnProperty.call(record, "branch_id") && [
+    "pharmacy_items", "pharmacy_sales", "pharmacy_purchases", "pharmacy_expenses",
+    "pharmacy_stock_movements", "pharmacy_cash_registers", "pharmacy_shifts",
   ].includes(table)
 }
 
-async function withActiveScope(table: TableName, filter?: WhereFilter): Promise<WhereFilter | undefined> {
-  const pharmacyId = await getPharmacyId()
-  if (!pharmacyId || !shouldScopeByPharmacy(table) || hasExplicitPharmacyFilter(filter)) return filter
-  return { ...(filter ?? {}), pharmacy_id: filter?.pharmacy_id ?? pharmacyId }
+function withScopeFilter(table: TableName, filter?: WhereFilter): WhereFilter {
+  const pharmacyId = getPharmacyId()
+  if (!pharmacyId || !shouldScopeByPharmacy(table) || hasExplicitPharmacyFilter(filter)) return { ...(filter ?? {}) }
+  return { ...(filter ?? {}), pharmacy_id: pharmacyId }
 }
 
-async function withActiveScopePayload(table: TableName, record: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const pharmacyId = await getPharmacyId()
-  const branchId = await getBranchId()
+function withScopePayload(table: TableName, record: Record<string, unknown>) {
   const payload = { ...record }
-  if (pharmacyId && shouldInjectPharmacyId(table, payload)) payload.pharmacy_id = pharmacyId
+  const pharmacyId = getPharmacyId()
+  const branchId = getBranchId()
+  if (pharmacyId && shouldScopeByPharmacy(table) && !("pharmacy_id" in payload)) payload.pharmacy_id = pharmacyId
   if (branchId && shouldInjectBranchId(table, payload)) payload.branch_id = branchId
   return payload
 }
 
-function assertSameActivePharmacy(table: TableName, row: Record<string, unknown> | null, pharmacyId: string | null) {
-  if (!row || !pharmacyId || !shouldScopeByPharmacy(table)) return
-  if (row.pharmacy_id && row.pharmacy_id !== pharmacyId) {
-    throw new Error("غير مسموح بتعديل بيانات خارج الصيدلية النشطة")
-  }
+function sameValue(left: unknown, right: unknown): boolean {
+  if (Array.isArray(right)) return right.some((value) => sameValue(left, value))
+  if (right === null) return left === null || left === undefined
+  if (typeof left === "number" || typeof right === "number") return Number(left) === Number(right)
+  return String(left ?? "") === String(right ?? "")
 }
 
-async function onlineQuery<T>(
-  table: TableName,
-  filter?: WhereFilter,
-  opts?: QueryOptions,
-): Promise<T[]> {
+function matches(row: Record<string, unknown>, filter: WhereFilter) {
+  return Object.entries(filter).every(([key, value]) => value === undefined || sameValue(row[key], value))
+}
+
+function project<T>(row: Record<string, unknown>, columns?: string): T {
+  if (!columns || columns.trim() === "*") return row as T
+  const fields = columns.split(",").map((field) => field.trim()).filter((field) => /^[A-Za-z0-9_]+$/.test(field))
+  if (!fields.length) return row as T
+  return Object.fromEntries(fields.map((field) => [field, row[field]])) as T
+}
+
+async function onlineQuery<T>(table: TableName, filter?: WhereFilter, opts?: QueryOptions): Promise<T[]> {
   const supabase = createClient()
-  const pharmacyId = await getPharmacyId()
-
+  const scoped = withScopeFilter(table, filter)
   let query = supabase.from(table).select(opts?.columns ?? "*")
-
-  if (pharmacyId && shouldScopeByPharmacy(table) && !hasExplicitPharmacyFilter(filter)) {
-    query = query.eq("pharmacy_id", pharmacyId)
+  for (const [key, value] of Object.entries(scoped)) {
+    if (value === undefined) continue
+    if (Array.isArray(value)) query = query.in(key, value)
+    else query = value === null ? query.is(key, null) : query.eq(key, value)
   }
-
-  if (filter) {
-    for (const [key, value] of Object.entries(filter)) {
-      if (value === undefined) continue
-      query = value === null ? query.is(key, null) : query.eq(key, value)
-    }
-  }
-
-  if (opts?.order) {
-    query = query.order(opts.order, { ascending: opts?.ascending ?? true })
-  }
-  if (opts?.limit) query = query.limit(opts.limit)
-  if (opts?.offset) query = query.range(opts.offset, opts.offset + (opts.limit ?? 50) - 1)
-
-  const { data, error } = await query.throwOnError()
+  if (opts?.order) query = query.order(opts.order, { ascending: opts.ascending ?? true })
+  if (opts?.offset != null) query = query.range(opts.offset, opts.offset + (opts.limit ?? 50) - 1)
+  else if (opts?.limit) query = query.limit(opts.limit)
+  const { data, error } = await query
   if (error) throw error
-  return (data ?? []) as T[]
+  const rows = (data ?? []) as unknown as Record<string, unknown>[]
+  if (!opts?.columns || opts.columns === "*") await localDB.putTableRows(table, rows, true)
+  return rows as T[]
 }
 
 async function onlineGetById<T>(table: TableName, id: string): Promise<T | null> {
   const supabase = createClient()
-  const pharmacyId = await getPharmacyId()
   let query = supabase.from(table).select("*").eq("id", id)
+  const pharmacyId = getPharmacyId()
   if (pharmacyId && shouldScopeByPharmacy(table)) query = query.eq("pharmacy_id", pharmacyId)
   const { data, error } = await query.maybeSingle()
   if (error) throw error
+  if (data) await localDB.putTableRow(table, data as Record<string, unknown>, true)
   return (data ?? null) as T | null
 }
 
 async function onlineInsert<T>(table: TableName, record: Partial<T>): Promise<T> {
-  const supabase = createClient()
-  const payload = await withActiveScopePayload(table, record as Record<string, unknown>)
-  const { data, error } = await supabase.from(table).insert(payload).select().single()
+  const payload = withScopePayload(table, record as Record<string, unknown>)
+  const { data, error } = await createClient().from(table).insert(payload).select().single()
   if (error) throw error
+  await localDB.putTableRow(table, data as Record<string, unknown>, true)
   return data as T
 }
 
 async function onlineUpdate<T>(table: TableName, id: string, updates: Partial<T>): Promise<T> {
-  const supabase = createClient()
-  const pharmacyId = await getPharmacyId()
-  let query = supabase
-    .from(table)
-    .update({ ...updates, updated_at: new Date().toISOString() })
-    .eq("id", id)
+  const pharmacyId = getPharmacyId()
+  let query = createClient().from(table).update({ ...updates, updated_at: new Date().toISOString() }).eq("id", id)
   if (pharmacyId && shouldScopeByPharmacy(table)) query = query.eq("pharmacy_id", pharmacyId)
   const { data, error } = await query.select().single()
   if (error) throw error
+  await localDB.putTableRow(table, data as Record<string, unknown>, true)
   return data as T
 }
 
-async function onlineDelete(table: TableName, id: string): Promise<void> {
-  const supabase = createClient()
-  const pharmacyId = await getPharmacyId()
-  let query = supabase.from(table).delete().eq("id", id)
+async function onlineDelete(table: TableName, id: string) {
+  const pharmacyId = getPharmacyId()
+  let query = createClient().from(table).delete().eq("id", id)
   if (pharmacyId && shouldScopeByPharmacy(table)) query = query.eq("pharmacy_id", pharmacyId)
   const { error } = await query
   if (error) throw error
+  await localDB.deleteTableRow(table, id)
 }
 
-async function offlineQuery<T>(
-  table: TableName,
-  filter?: WhereFilter,
-  opts?: QueryOptions,
-): Promise<T[]> {
-  let sql = `SELECT ${opts?.columns ?? "*"} FROM ${table}`
-  const params: unknown[] = []
-  const scopedFilter = await withActiveScope(table, filter)
-
-  if (scopedFilter && Object.keys(scopedFilter).length > 0) {
-    const clause = buildWhereClause(scopedFilter)
-    sql += ` WHERE ${clause.sql}`
-    params.push(...clause.params)
-  }
-
+async function offlineQuery<T>(table: TableName, filter?: WhereFilter, opts?: QueryOptions): Promise<T[]> {
+  const scoped = withScopeFilter(table, filter)
+  let rows = (await localDB.getTableRows(table)).filter((row) => matches(row, scoped))
   if (opts?.order) {
-    sql += ` ORDER BY ${opts.order} ${opts?.ascending !== false ? "ASC" : "DESC"}`
+    const key = opts.order
+    const direction = opts.ascending === false ? -1 : 1
+    rows.sort((a, b) => String(a[key] ?? "").localeCompare(String(b[key] ?? ""), "ar", { numeric: true }) * direction)
   }
-  if (opts?.limit) sql += ` LIMIT ?`
-  if (opts?.limit) params.push(opts.limit)
-  if (opts?.offset) sql += ` OFFSET ?`
-  if (opts?.offset) params.push(opts.offset)
-
-  const rows = await localSQLite.query(sql, params)
-  return rows as T[]
+  const offset = Math.max(0, opts?.offset ?? 0)
+  rows = rows.slice(offset, opts?.limit ? offset + opts.limit : undefined)
+  return rows.map((row) => project<T>(row, opts?.columns))
 }
 
 async function offlineGetById<T>(table: TableName, id: string): Promise<T | null> {
-  return localSQLite.getById(table, id) as Promise<T | null>
+  const row = await localDB.getTableRow(table, id)
+  if (!row) return null
+  const pharmacyId = getPharmacyId()
+  if (pharmacyId && shouldScopeByPharmacy(table) && row.pharmacy_id && row.pharmacy_id !== pharmacyId) return null
+  return row as T
 }
 
 async function offlineInsert<T>(table: TableName, record: Partial<T>): Promise<T> {
-  const payload = await withActiveScopePayload(table, record as Record<string, unknown>)
-  await localSQLite.insert(table, payload)
-  await localDB.queueMutation({
-    id: crypto.randomUUID(),
-    table,
-    operation: "create",
-    data: payload,
-    created_at: new Date().toISOString(),
-  })
+  const payload = withScopePayload(table, record as Record<string, unknown>)
+  if (!payload.id) payload.id = crypto.randomUUID()
+  if (!payload.created_at) payload.created_at = new Date().toISOString()
+  payload.updated_at = new Date().toISOString()
+  await localDB.putTableRow(table, payload, false)
+  await localDB.queueMutation({ id: crypto.randomUUID(), table, operation: "create", data: payload, created_at: new Date().toISOString() })
   return payload as T
 }
 
 async function offlineUpdate<T>(table: TableName, id: string, updates: Partial<T>): Promise<T> {
-  const existing = await localSQLite.getById(table, id) as Record<string, unknown> | null
-  if (!existing) throw new Error(`Record ${id} not found in ${table}`)
-  assertSameActivePharmacy(table, existing, await getPharmacyId())
-
-  const updated = { ...existing, ...updates, updated_at: new Date().toISOString() }
-  await localSQLite.insert(table, updated as Record<string, unknown>)
-  await localDB.queueMutation({
-    id: crypto.randomUUID(),
-    table,
-    operation: "update",
-    data: updated,
-    created_at: new Date().toISOString(),
-  })
+  const existing = await offlineGetById<Record<string, unknown>>(table, id)
+  if (!existing) throw new Error(`السجل غير موجود محليًا في ${table}`)
+  const updated = { ...existing, ...updates, id, updated_at: new Date().toISOString() }
+  await localDB.putTableRow(table, updated, false)
+  await localDB.queueMutation({ id: crypto.randomUUID(), table, operation: "update", data: updated, created_at: new Date().toISOString() })
   return updated as T
 }
 
-async function offlineDelete(table: TableName, id: string): Promise<void> {
-  const existing = await localSQLite.getById(table, id) as Record<string, unknown> | null
-  assertSameActivePharmacy(table, existing, await getPharmacyId())
-  await localSQLite.delete(table, id)
-  await localDB.queueMutation({
-    id: crypto.randomUUID(),
-    table,
-    operation: "delete",
-    data: { id },
-    created_at: new Date().toISOString(),
-  })
+async function offlineDelete(table: TableName, id: string) {
+  const existing = await offlineGetById<Record<string, unknown>>(table, id)
+  if (!existing) return
+  await localDB.deleteTableRow(table, id)
+  await localDB.queueMutation({ id: crypto.randomUUID(), table, operation: "delete", data: { id, pharmacy_id: existing.pharmacy_id }, created_at: new Date().toISOString() })
 }
 
 export const dataLayer = {
   async query<T>(table: TableName, filter?: WhereFilter, opts?: QueryOptions): Promise<T[]> {
-    if (network.isOnline) {
-      try {
-        return await onlineQuery<T>(table, filter, opts)
-      } catch (error) {
-        if (shouldUseStrictOnline(table)) throw normalizeOnlineError(table, error)
-        /* fallback to offline */
-      }
+    if (await network.check()) {
+      try { return await onlineQuery<T>(table, filter, opts) } catch { /* use local */ }
     }
     return offlineQuery<T>(table, filter, opts)
   },
-
   async getById<T>(table: TableName, id: string): Promise<T | null> {
-    if (network.isOnline) {
-      try {
-        return await onlineGetById<T>(table, id)
-      } catch (error) {
-        if (shouldUseStrictOnline(table)) throw normalizeOnlineError(table, error)
-        /* fallback */
-      }
+    if (await network.check()) {
+      try { return await onlineGetById<T>(table, id) } catch { /* use local */ }
     }
     return offlineGetById<T>(table, id)
   },
-
   async insert<T>(table: TableName, record: Partial<T>): Promise<T> {
-    if (network.isOnline) {
-      try {
-        const result = await onlineInsert<T>(table, record)
-        return result
-      } catch (error) {
-        if (shouldUseStrictOnline(table)) throw normalizeOnlineError(table, error)
-        /* fallback */
-      }
+    if (await network.check()) {
+      try { return await onlineInsert<T>(table, record) } catch { /* queue local */ }
     }
     return offlineInsert<T>(table, record)
   },
-
   async update<T>(table: TableName, id: string, updates: Partial<T>): Promise<T> {
-    if (network.isOnline) {
-      try {
-        return await onlineUpdate<T>(table, id, updates)
-      } catch (error) {
-        if (shouldUseStrictOnline(table)) throw normalizeOnlineError(table, error)
-        /* fallback */
-      }
+    if (await network.check()) {
+      try { return await onlineUpdate<T>(table, id, updates) } catch { /* queue local */ }
     }
     return offlineUpdate<T>(table, id, updates)
   },
-
   async delete(table: TableName, id: string): Promise<void> {
-    if (network.isOnline) {
-      try {
-        await onlineDelete(table, id)
-        return
-      } catch (error) {
-        if (shouldUseStrictOnline(table)) throw normalizeOnlineError(table, error)
-        /* fallback */
-      }
+    if (await network.check()) {
+      try { await onlineDelete(table, id); return } catch { /* queue local */ }
     }
     await offlineDelete(table, id)
   },
-
-  async exists(table: TableName, filter: WhereFilter): Promise<boolean> {
-    const results = await this.query<Record<string, unknown>>(table, filter, { limit: 1 })
-    return results.length > 0
+  async exists(table: TableName, filter: WhereFilter) {
+    return (await this.query<Record<string, unknown>>(table, filter, { limit: 1 })).length > 0
   },
-
-  async count(table: TableName, filter?: WhereFilter): Promise<number> {
-    if (network.isOnline) {
+  async count(table: TableName, filter?: WhereFilter) {
+    if (await network.check()) {
       try {
-        const supabase = createClient()
-        let query = supabase.from(table).select("*", { count: "exact", head: true })
-        const pharmacyId = await getPharmacyId()
-        if (pharmacyId && shouldScopeByPharmacy(table)) query = query.eq("pharmacy_id", pharmacyId)
-        if (filter) {
-          for (const [key, value] of Object.entries(filter)) {
-            if (value === undefined) continue
-            query = value === null ? query.is(key, null) : query.eq(key, value)
-          }
+        let query = createClient().from(table).select("*", { count: "exact", head: true })
+        const scoped = withScopeFilter(table, filter)
+        for (const [key, value] of Object.entries(scoped)) {
+          if (value === undefined) continue
+          if (Array.isArray(value)) query = query.in(key, value)
+          else query = value === null ? query.is(key, null) : query.eq(key, value)
         }
         const { count, error } = await query
         if (error) throw error
         return count ?? 0
-      } catch (error) {
-        if (shouldUseStrictOnline(table)) throw normalizeOnlineError(table, error)
-        /* fallback */
-      }
+      } catch { /* local */ }
     }
-    const rows = await offlineQuery(table, filter)
-    return rows.length
-  },
-
-  async upsert<T extends Record<string, unknown>>(
-    table: TableName,
-    record: Partial<T>,
-    conflictColumn = "id",
-  ): Promise<T> {
-    const id = record[conflictColumn] as string | undefined
-    if (id) {
-      const existing = await this.getById<T>(table, id)
-      if (existing) {
-        return this.update<T>(table, id, record as Partial<T>)
-      }
-    }
-    return this.insert<T>(table, record)
-  },
-
-  async getLastSyncTime(table: TableName): Promise<string | null> {
-    return localSQLite.getLastSync(table)
-  },
-
-  get network() {
-    return {
-      get isOnline() {
-        return network.isOnline
-      },
-      subscribe: (l: (online: boolean) => void) => network.subscribe(l),
-      check: () => network.check(),
-      waitForOnline: (timeout?: number) => network.waitForOnline(timeout),
-    }
+    return (await offlineQuery<Record<string, unknown>>(table, filter)).length
   },
 }

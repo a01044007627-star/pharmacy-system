@@ -69,6 +69,7 @@ import {
 } from "@/features/inventory/lib/items-helpers"
 import { cacheItemsList, queueItemApiRequest, readCachedItemsList } from "@/features/inventory/lib/items-offline"
 import { apiRequest, isRequestAbort } from "@/lib/api-client"
+import { network } from "@/lib/network"
 
 type ColumnKey =
   | "select"
@@ -518,7 +519,7 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
       toast.success(messages[action])
       await loadItems()
     } catch (err) {
-      if (typeof navigator !== "undefined" && !navigator.onLine) {
+      if (!(await network.check())) {
         await queueItemApiRequest({
           path: "/api/items",
           method: "PATCH",
@@ -560,7 +561,7 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
       if (!response.ok) throw new Error(data.error ?? "فشل تحديث الحالة")
       toast.success(`تم تنفيذ الإجراء على ${(data.updated ?? 0).toLocaleString("ar-EG")} صنف`)
     } catch (err) {
-      if (typeof navigator !== "undefined" && !navigator.onLine) {
+      if (!(await network.check())) {
         await Promise.all(selectedItems.map((item) => queueItemApiRequest({
           path: "/api/items",
           method: "PATCH",

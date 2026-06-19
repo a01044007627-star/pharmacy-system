@@ -1,7 +1,7 @@
 "use client"
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { Toaster } from "sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { AuthProvider } from "@/contexts/auth-context"
@@ -10,6 +10,7 @@ import { NotificationProvider } from "@/contexts/notification-context"
 import { AppSettingsProvider } from "@/contexts/settings-context"
 import { SyncBootstrap } from "@/components/pwa/sync-bootstrap"
 import { KeyboardShortcuts } from "@/components/pwa/keyboard-shortcuts"
+import { PwaBootstrap } from "@/components/pwa/pwa-bootstrap"
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
@@ -21,18 +22,13 @@ export function Providers({ children }: { children: React.ReactNode }) {
       }),
   )
 
-  useEffect(() => {
-    if (typeof window === "undefined" || !("serviceWorker" in navigator) || process.env.NODE_ENV !== "production") return
-    navigator.serviceWorker.register("/sw.js").catch(() => undefined)
-  }, [])
-
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <AuthProvider>
           <BranchProvider>
             <AppSettingsProvider>
-              <NotificationProvider><SyncBootstrap /><KeyboardShortcuts />{children}</NotificationProvider>
+              <NotificationProvider><PwaBootstrap /><SyncBootstrap /><KeyboardShortcuts />{children}</NotificationProvider>
             </AppSettingsProvider>
           </BranchProvider>
           <Toaster richColors position="top-left" theme="light" />

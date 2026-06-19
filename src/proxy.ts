@@ -4,7 +4,7 @@ import { createServerClient } from "@supabase/ssr"
 import { ROUTES, AUTH_ROUTES } from "@/config/routes"
 import { isSuperAdmin, SUPER_ADMIN_ROLE } from "@/config/super-admin"
 
-const staticPaths = ["/_next/static", "/_next/image", "/favicon.ico", "/manifest.json", "/sounds", "/icons", "/pharmacy-hero.png", "/sw.js", "/sql-wasm.wasm"]
+const staticPaths = ["/_next/static", "/_next/image", "/favicon.ico", "/manifest.json", "/sounds", "/icons", "/pharmacy-hero.png", "/sw.js", "/sql-wasm.wasm", "/offline"]
 
 function hasSupabaseEnv() {
   return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
@@ -74,5 +74,5 @@ export async function proxy(request: NextRequest): Promise<Response> {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|manifest.json|sounds|icons|pharmacy-hero.png|sw.js|sql-wasm.wasm).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|manifest.json|sounds|icons|pharmacy-hero.png|sw.js|sql-wasm.wasm|offline).*)"],
 }

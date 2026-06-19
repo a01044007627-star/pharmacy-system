@@ -15,7 +15,7 @@ export async function cacheItemsList(query: string, payload: unknown) {
 }
 
 export async function readCachedItemsList<T>(query: string): Promise<T | null> {
-  return await localDB.getCache(`items:list:${keyPart(query)}`) as T | null
+  return await localDB.getStaleCache(`items:list:${keyPart(query)}`) as T | null
 }
 
 export async function cacheItemDetail(itemId: string, payload: unknown) {
@@ -23,7 +23,7 @@ export async function cacheItemDetail(itemId: string, payload: unknown) {
 }
 
 export async function readCachedItemDetail<T>(itemId: string): Promise<T | null> {
-  return await localDB.getCache(`items:detail:${itemId}`) as T | null
+  return await localDB.getStaleCache(`items:detail:${itemId}`) as T | null
 }
 
 export async function queueItemApiRequest(input: {

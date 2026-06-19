@@ -40,7 +40,8 @@ import type {
   LookupOption,
 } from "@/features/inventory/lib/items-types";
 import { cacheItemDetail, queueItemApiRequest, readCachedItemDetail } from "@/features/inventory/lib/items-offline";
-import { apiRequest, isRequestAbort } from "@/lib/api-client";
+import { apiRequest, isRequestAbort } from "@/lib/api-client"
+import { network } from "@/lib/network";
 
 type UploadResult = {
   serverData?: { url?: string | null };
@@ -657,7 +658,7 @@ export function ItemCreateView({
       router.push(listHref);
       router.refresh();
     } catch (error) {
-      if (typeof navigator !== "undefined" && !navigator.onLine) {
+      if (!(await network.check())) {
         await queueItemApiRequest({ path: requestPath, method: requestMethod, body: requestBody });
         toast.warning("تم حفظ الصنف محليًا وسيتم إرساله تلقائيًا عند عودة الإنترنت");
         router.push(listHref);
