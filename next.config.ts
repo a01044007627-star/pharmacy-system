@@ -26,6 +26,7 @@ const nextConfig: NextConfig = {
     ]
   },
   experimental: {
+    cpus: 2,
     optimizePackageImports: ["lucide-react", "date-fns", "@tanstack/react-query", "recharts"],
   },
 }

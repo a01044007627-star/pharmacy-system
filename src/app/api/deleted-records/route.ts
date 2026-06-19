@@ -25,29 +25,48 @@ export async function GET(request: Request) {
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
-    const table = clean(url.searchParams.get("table"))
-
+    const requestedTable = clean(url.searchParams.get("table"))
+    const selectedTables = requestedTable && TABLES.includes(requestedTable) ? [requestedTable] : TABLES
     const results: Record<string, unknown[]> = {}
 
-    if (table && TABLES.includes(table)) {
-      const { data } = await db.from(table).select("*").eq("pharmacy_id", pharmacyId).is("voided_at", null).limit(0)
-      results[table] = []
-      return NextResponse.json({ records: results, tables: [table] })
-    }
+    for (const table of selectedTables) {
+      if (table === "pharmacy_items") {
+        const { data: audits, error: auditError } = await db
+          .from("pharmacy_deleted_items_audit")
+          .select("id,item_id,item_snapshot,deleted_by,deleted_at,restored_by,restored_at")
+          .eq("pharmacy_id", pharmacyId)
+          .order("deleted_at", { ascending: false })
+          .limit(200)
+        if (auditError) throw auditError
+        results[table] = (audits ?? []).map((audit) => ({
+          ...(audit.item_snapshot && typeof audit.item_snapshot === "object" ? audit.item_snapshot as Record<string, unknown> : {}),
+          audit_id: audit.id,
+          item_id: audit.item_id,
+          deleted_by: audit.deleted_by,
+          deleted_at: audit.deleted_at,
+          restored_by: audit.restored_by,
+          restored_at: audit.restored_at,
+          deletion_state: audit.restored_at ? "restored" : "deleted",
+        }))
+        continue
+      }
 
-    for (const t of TABLES) {
-      try {
-        const hasDeleted = await db.from(t).select("id").eq("pharmacy_id", pharmacyId).not("deleted_at", "is", null).limit(5)
-        if (hasDeleted.data && hasDeleted.data.length > 0) {
-          const { data } = await db.from(t).select("*").eq("pharmacy_id", pharmacyId).not("deleted_at", "is", null).limit(50)
-          results[t] = data ?? []
-        }
-      } catch {
-        results[t] = []
+      const { data, error } = await db
+        .from(table)
+        .select("*")
+        .eq("pharmacy_id", pharmacyId)
+        .not("deleted_at", "is", null)
+        .order("deleted_at", { ascending: false })
+        .limit(100)
+      if (error) {
+        console.warn(`[deleted-records] ${table} skipped:`, error.message)
+        results[table] = []
+      } else {
+        results[table] = data ?? []
       }
     }
 
-    return NextResponse.json({ records: results, tables: TABLES })
+    return NextResponse.json({ records: results, tables: selectedTables })
   } catch (error) {
     console.error("deleted-records GET failed", error)
     const message = error instanceof Error ? error.message : "فشل تحميل السجلات المحذوفة"

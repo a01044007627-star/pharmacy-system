@@ -6,6 +6,7 @@ import { getServerAuthScope } from "@/lib/auth/session"
 import { scopeCan } from "@/lib/auth/server-permissions"
 import * as XLSX from "xlsx"
 import { addOpeningStock } from "@/lib/inventory/opening-stock"
+import { normalizeBarcode, normalizeItemName } from "@/features/inventory/lib/item-input"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
@@ -44,6 +45,7 @@ const CLIENT_TEMPLATE_HEADERS = [
   "PURCHASE PRICE (Including tax)",
   "PURCHASE PRICE (Excluding tax)",
   "PROFIT MARGIN",
+  "OLD SELLING PRICE",
   "SELLING PRICE",
   "OPENING STOCK",
   "OPENING STOCK LOCATION",
@@ -98,6 +100,7 @@ type NormalizedProductRow = {
   purchasePriceIncludingTax: number
   purchasePriceExcludingTax: number
   profitMargin: number
+  oldSellingPrice: number
   sellingPrice: number
   openingStock: number
   openingStockLocation: string
@@ -396,6 +399,7 @@ function normalizeProductRow(row: ExcelRow): NormalizedProductRow {
     purchasePriceIncludingTax: numberValue(valueOf(normalized, ["PURCHASE PRICE (Including tax)", "PURCHASE PRICE INCLUDING TAX", "purchase_price_including_tax"])),
     purchasePriceExcludingTax: numberValue(valueOf(normalized, ["PURCHASE PRICE (Excluding tax)", "PURCHASE PRICE EXCLUDING TAX", "purchase_price_excluding_tax", "سعر الشراء", "buy_price", "Buy Price"])),
     profitMargin: numberValue(valueOf(normalized, ["PROFIT MARGIN", "هامش الربح", "profit_margin"])),
+    oldSellingPrice: numberValue(valueOf(normalized, ["OLD SELLING PRICE", "PREVIOUS SELLING PRICE", "سعر البيع القديم", "old_sell_price"])),
     sellingPrice: numberValue(valueOf(normalized, ["SELLING PRICE", "سعر البيع", "sell_price", "Sell Price"])),
     openingStock: numberValue(valueOf(normalized, ["OPENING STOCK", "رصيد افتتاحي", "opening_stock", "Opening Stock"])),
     openingStockLocation: clean(valueOf(normalized, ["OPENING STOCK LOCATION", "فرع الرصيد الافتتاحي", "opening_stock_location"])),
@@ -557,7 +561,7 @@ function buildItemPayload(
     manufacturer_name: row.legacyManufacturer || row.brand || null,
     buy_price: buyPrice,
     sell_price: row.sellingPrice,
-    old_sell_price: 0,
+    old_sell_price: row.oldSellingPrice,
     manage_inventory: row.manageStock,
     not_for_sale: row.notForSelling,
     min_stock: row.alertQuantity,
@@ -615,7 +619,7 @@ function buildBarcodeRows(pharmacyId: string, itemId: string, row: NormalizedPro
     row.primaryBarcode,
     row.legacyBarcode,
     ...(row.productType === "single" ? row.variationSkus : []),
-  ].map(clean).filter((value) => value && looksLikeBarcode(value))))
+  ].map(normalizeBarcode).filter((value) => value && looksLikeBarcode(value))))
 
   return barcodeValues.map((barcode, barcodeIndex) => ({
     pharmacy_id: pharmacyId,
@@ -664,59 +668,23 @@ async function insertAuxiliaryRows(db: SupabaseClient, table: string, rows: Reco
   }
 }
 
+async function fetchAllRows<T>(buildQuery: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>) {
+  const rows: T[] = []
+  const pageSize = 1000
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await buildQuery(from, from + pageSize - 1)
+    if (error) throw new Error(error.message)
+    rows.push(...(data ?? []))
+    if (!data || data.length < pageSize) break
+  }
+  return rows
+}
+
 export async function GET() {
-  const worksheet = XLSX.utils.aoa_to_sheet([
-    [...CLIENT_TEMPLATE_HEADERS],
-    [
-      "Panadol Extra",
-      "GSK",
-      "شريط",
-      "شريط 10",
-      "علبة",
-      "شريط",
-      10,
-      "",
-      "",
-      "جاهز",
-      "",
-      "مسكنات",
-      "باراسيتامول",
-      "",
-      "C128",
-      1,
-      5,
-      24,
-      "months",
-      "14%",
-      "exclusive",
-      "single",
-      "",
-      "",
-      "",
-      11.4,
-      10,
-      20,
-      12,
-      100,
-      "الفرع الرئيسي",
-      "2028-12-31",
-      0,
-      0.05,
-      "A",
-      "1",
-      "3",
-      "https://example.com/image.png",
-      "وصف مختصر للصنف",
-      "",
-      "",
-      "",
-      "",
-      0,
-      "الفرع الرئيسي",
-    ],
-  ])
+  const worksheet = XLSX.utils.aoa_to_sheet([[...CLIENT_TEMPLATE_HEADERS]])
+  worksheet["!cols"] = CLIENT_TEMPLATE_HEADERS.map((header) => ({ wch: Math.min(Math.max(header.length + 3, 16), 55) }))
   const workbook = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(workbook, worksheet, "Items")
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Items_Ready")
   const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer
   return new NextResponse(new Uint8Array(buffer), {
     headers: {
@@ -739,7 +707,7 @@ export async function POST(request: Request) {
 
     const buffer = Buffer.from(await file.arrayBuffer())
     const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true, cellText: false, raw: true })
-    const sheetName = workbook.SheetNames[0]
+    const sheetName = workbook.SheetNames.find((name) => normalizeItemName(name) === normalizeItemName("Items_Ready")) ?? workbook.SheetNames[0]
     if (!sheetName) return NextResponse.json({ error: "ملف Excel فارغ" }, { status: 400 })
 
     const rows = XLSX.utils.sheet_to_json<ExcelRow>(workbook.Sheets[sheetName], { defval: "", raw: false })
@@ -752,27 +720,20 @@ export async function POST(request: Request) {
     const errors: ImportError[] = []
     const skipped: ImportError[] = []
 
-    const [groupsResult, brandsResult, branchesResult, skuResult, nameResult, barcodeResult] = await Promise.all([
-      db.from("pharmacy_item_groups").select("id,name").eq("pharmacy_id", pharmacyId),
-      db.from("pharmacy_item_brands").select("id,name").eq("pharmacy_id", pharmacyId),
-      db.from("pharmacy_branches").select("id,name,code,is_default").eq("pharmacy_id", pharmacyId).neq("status", "closed"),
-      db.from("pharmacy_items").select("sku").eq("pharmacy_id", pharmacyId),
-      db.from("pharmacy_items").select("name_ar").eq("pharmacy_id", pharmacyId).neq("status", "deleted"),
-      db.from("pharmacy_item_barcodes").select("barcode").eq("pharmacy_id", pharmacyId),
+    const [groups, brands, branches, existingItems, existingBarcodes, existingUnitBarcodes] = await Promise.all([
+      fetchAllRows<LookupRow>((from, to) => db.from("pharmacy_item_groups").select("id,name").eq("pharmacy_id", pharmacyId).range(from, to)),
+      fetchAllRows<LookupRow>((from, to) => db.from("pharmacy_item_brands").select("id,name").eq("pharmacy_id", pharmacyId).range(from, to)),
+      fetchAllRows<BranchLookupRow>((from, to) => db.from("pharmacy_branches").select("id,name,code,is_default").eq("pharmacy_id", pharmacyId).neq("status", "closed").range(from, to)),
+      fetchAllRows<{ sku?: string | null; name_ar: string }>((from, to) => db.from("pharmacy_items").select("sku,name_ar").eq("pharmacy_id", pharmacyId).neq("status", "deleted").range(from, to)),
+      fetchAllRows<{ barcode: string }>((from, to) => db.from("pharmacy_item_barcodes").select("barcode").eq("pharmacy_id", pharmacyId).range(from, to)),
+      fetchAllRows<{ barcode?: string | null }>((from, to) => db.from("pharmacy_item_units").select("barcode").eq("pharmacy_id", pharmacyId).not("barcode", "is", null).range(from, to)),
     ])
-    if (groupsResult.error) throw groupsResult.error
-    if (brandsResult.error) throw brandsResult.error
-    if (branchesResult.error) throw branchesResult.error
-    if (skuResult.error) throw skuResult.error
-    if (nameResult.error) throw nameResult.error
-    if (barcodeResult.error) throw barcodeResult.error
 
-    let groupMap = new Map(((groupsResult.data ?? []) as LookupRow[]).map((g) => [normalizeLookupKey(g.name), g.id]))
-    let brandMap = new Map(((brandsResult.data ?? []) as LookupRow[]).map((b) => [normalizeLookupKey(b.name), b.id]))
-    const branches = (branchesResult.data ?? []) as BranchLookupRow[]
-    const usedSkus = new Set(((skuResult.data ?? []) as Array<{ sku?: string | null }>).map((item) => clean(item.sku).toLowerCase()).filter(Boolean))
-    const usedNames = new Map(((nameResult.data ?? []) as Array<{ name_ar: string }>).map((item) => [normalizeLookupKey(item.name_ar), item.name_ar]))
-    const usedBarcodes = new Set(((barcodeResult.data ?? []) as Array<{ barcode: string }>).map((item) => clean(item.barcode).toLowerCase()).filter(Boolean))
+    let groupMap = new Map(groups.map((g) => [normalizeLookupKey(g.name), g.id]))
+    let brandMap = new Map(brands.map((b) => [normalizeLookupKey(b.name), b.id]))
+    const usedSkus = new Set(existingItems.map((item) => clean(item.sku).toLowerCase()).filter(Boolean))
+    const usedNames = new Map(existingItems.map((item) => [normalizeLookupKey(item.name_ar), item.name_ar]))
+    const usedBarcodes = new Set([...existingBarcodes, ...existingUnitBarcodes].map((item) => normalizeBarcode(item.barcode)).filter(Boolean))
 
     const normalizedRows: Array<Omit<PreparedImportRow, "itemPayload">> = []
 
@@ -785,6 +746,10 @@ export async function POST(request: Request) {
           errors.push({ row: rowNum, message: "NAME / اسم الصنف مطلوب" })
           continue
         }
+        if (/^[\d\s.,/+-]+$/.test(row.name)) {
+          errors.push({ row: rowNum, name: row.name, message: "اسم الصنف رقمي فقط ويحتاج مراجعة قبل الاستيراد" })
+          continue
+        }
 
         const nameKey = normalizeLookupKey(row.name)
         if (usedNames.has(nameKey)) {
@@ -793,12 +758,17 @@ export async function POST(request: Request) {
         }
         usedNames.set(nameKey, row.name)
 
-        const primaryBarcodeValue = clean(row.primaryBarcode).toLowerCase()
-        if (primaryBarcodeValue && usedBarcodes.has(primaryBarcodeValue)) {
-          skipped.push({ row: rowNum, name: row.name, message: `الباركود "${row.primaryBarcode}" مستخدم بالفعل لصنف آخر` })
+        const candidateBarcodes = Array.from(new Set([
+          row.primaryBarcode,
+          row.legacyBarcode,
+          ...(row.productType === "single" ? row.variationSkus : []),
+        ].map(normalizeBarcode).filter((value) => value && looksLikeBarcode(value))))
+        const duplicatedBarcode = candidateBarcodes.find((value) => usedBarcodes.has(value))
+        if (duplicatedBarcode) {
+          skipped.push({ row: rowNum, name: row.name, message: `الباركود "${duplicatedBarcode}" مستخدم بالفعل لصنف أو وحدة أخرى` })
           continue
         }
-        if (primaryBarcodeValue) usedBarcodes.add(primaryBarcodeValue)
+        candidateBarcodes.forEach((value) => usedBarcodes.add(value))
 
         let sku = row.sku
         if (sku) {

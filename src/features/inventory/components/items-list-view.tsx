@@ -67,6 +67,7 @@ import {
   unitCountLabel,
   unitEquationLabel,
 } from "@/features/inventory/lib/items-helpers"
+import { cacheItemsList, queueItemApiRequest, readCachedItemsList } from "@/features/inventory/lib/items-offline"
 
 type ColumnKey =
   | "select"
@@ -144,7 +145,7 @@ const DEFAULT_VISIBLE: ColumnKey[] = [
   "sku",
 ]
 
-const pageSizeOptions = [25, 50, 100, 200, 500, 1000, 100000]
+const pageSizeOptions = [25, 50, 100, 500, 1000, 100000]
 
 const itemTypeOptions = [
   { value: "all", label: "كل الأنواع" },
@@ -333,15 +334,45 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
       query.set("price", filters.price)
       query.set("stock", filters.stock)
       if (filters.notForSale) query.set("not_for_sale", "true")
-      const response = await fetch(`/api/items?${query.toString()}`, { cache: "no-store" })
+      const queryString = query.toString()
+      const response = await fetch(`/api/items?${queryString}`, { cache: "no-store" })
       const data = await response.json()
       if (!response.ok) throw new Error(data.error ?? "فشل تحميل الأصناف")
-      setPayload(data as ItemsPayload)
+      const nextPayload = data as ItemsPayload
+      setPayload(nextPayload)
       setSelectedIds(new Set())
+      await cacheItemsList(queryString, nextPayload)
     } catch (err) {
-      const message = err instanceof Error ? err.message : "فشل تحميل الأصناف"
-      setError(message)
-      toast.error(message)
+      const query = new URLSearchParams()
+      query.set("mode", mode)
+      query.set("pharmacy_id", pharmacyId)
+      query.set("branch_id", filters.branchId)
+      query.set("page", String(page))
+      query.set("page_size", String(pageSize))
+      query.set("sort_key", sort.key)
+      query.set("sort_dir", sort.dir)
+      if (debouncedSearch) query.set("search", debouncedSearch)
+      query.set("item_type", filters.itemType)
+      query.set("group_id", filters.groupId)
+      query.set("brand_id", filters.brandId)
+      query.set("manufacturer", filters.manufacturer)
+      query.set("unit", filters.unit)
+      query.set("sub_unit", filters.subUnit)
+      query.set("expiry", filters.expiry)
+      query.set("price", filters.price)
+      query.set("stock", filters.stock)
+      if (filters.notForSale) query.set("not_for_sale", "true")
+      const cached = await readCachedItemsList<ItemsPayload>(query.toString())
+      if (cached) {
+        setPayload(cached)
+        setSelectedIds(new Set())
+        setError(null)
+        toast.warning("تم عرض آخر نسخة محفوظة لأن الاتصال غير متاح")
+      } else {
+        const message = err instanceof Error ? err.message : "فشل تحميل الأصناف"
+        setError(message)
+        toast.error(message)
+      }
     } finally {
       setLoading(false)
     }
@@ -463,7 +494,17 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
       toast.success(messages[action])
       await loadItems()
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "فشل تعديل الصنف")
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        await queueItemApiRequest({
+          path: "/api/items",
+          method: "PATCH",
+          body: { item_id: item.id, action, pharmacy_id: selectedPharmacyId || auth.activePharmacyId },
+        })
+        setPayload((current) => current ? { ...current, items: current.items.filter((row) => row.id !== item.id) } : current)
+        toast.warning("تم حفظ العملية محليًا وستتم مزامنتها عند عودة الإنترنت")
+      } else {
+        toast.error(err instanceof Error ? err.message : "فشل تعديل الصنف")
+      }
     }
   }
 
@@ -485,25 +526,30 @@ export function ItemsListView({ mode = "active" }: { mode?: ItemsMode }) {
       return
     }
     setBulkBusy(true)
-    let success = 0
-    let failed = 0
-    for (const item of selectedItems) {
-      try {
-        const response = await fetch("/api/items", {
+    try {
+      const response = await fetch("/api/items/batch-status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ item_ids: selectedItems.map((item) => item.id), action, pharmacy_id: selectedPharmacyId || auth.activePharmacyId }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error ?? "فشل تحديث الحالة")
+      toast.success(`تم تنفيذ الإجراء على ${(data.updated ?? 0).toLocaleString("ar-EG")} صنف`)
+    } catch (err) {
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        await Promise.all(selectedItems.map((item) => queueItemApiRequest({
+          path: "/api/items",
           method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ item_id: item.id, action, pharmacy_id: selectedPharmacyId || auth.activePharmacyId }),
-        })
-        if (!response.ok) failed += 1
-        else success += 1
-      } catch {
-        failed += 1
+          body: { item_id: item.id, action, pharmacy_id: selectedPharmacyId || auth.activePharmacyId },
+        })))
+        setPayload((current) => current ? { ...current, items: current.items.filter((row) => !selectedIds.has(row.id)) } : current)
+        toast.warning("تم حفظ العمليات محليًا وستتم مزامنتها عند عودة الإنترنت")
+      } else {
+        toast.error(err instanceof Error ? err.message : "فشل تحديث الحالة للأصناف المحددة")
       }
     }
     setBulkBusy(false)
     setSelectedIds(new Set())
-    if (success) toast.success(`تم تنفيذ الإجراء على ${success.toLocaleString("ar-EG")} صنف`)
-    if (failed) toast.error(`فشل تنفيذ الإجراء على ${failed.toLocaleString("ar-EG")} صنف`)
     await loadItems()
   }
 

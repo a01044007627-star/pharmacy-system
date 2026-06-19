@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { AlertTriangle, Loader2, Plus, RefreshCw, Search } from "lucide-react"
+import { AlertTriangle, ChevronLeft, ChevronRight, Loader2, Plus, RefreshCw, Search } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { Badge } from "@/components/ui/badge"
@@ -40,21 +40,28 @@ export function DamagedStockView() {
   const [quantity, setQuantity] = useState("1")
   const [reason, setReason] = useState("تالف")
   const [notes, setNotes] = useState("")
+  const [page, setPage] = useState(1)
+  const [totalPages, setTotalPages] = useState(1)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
+      const params = new URLSearchParams({ page: String(page), page_size: "200" })
       const [recRes, itemRes] = await Promise.all([
-        fetch("/api/inventory/damaged", { cache: "no-store" }),
+        fetch(`/api/inventory/damaged?${params.toString()}`, { cache: "no-store" }),
         fetch(`/api/items?pharmacy_id=${auth.activePharmacyId}&branch_id=${auth.activeBranchId ?? "all"}`, { cache: "no-store" }),
       ])
       const [recData, itemData] = await Promise.all([recRes.json(), itemRes.json()]) as [Record<string, unknown>, Record<string, unknown>]
-      if (recRes.ok) setRecords((recData.records ?? []) as DamagedRecord[])
+      if (recRes.ok) {
+        setRecords((recData.records ?? []) as DamagedRecord[])
+        const pag = recData.pagination as { totalPages?: number } | undefined
+        setTotalPages(pag?.totalPages ?? 1)
+      }
       if (itemRes.ok) setItems((itemData.items ?? []) as PharmacyItemListRow[])
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "فشل التحميل")
     } finally { setLoading(false) }
-  }, [auth.activeBranchId, auth.activePharmacyId])
+  }, [auth.activeBranchId, auth.activePharmacyId, page])
 
   useEffect(() => { void load() }, [load])
 
@@ -122,22 +129,37 @@ export function DamagedStockView() {
             {loading ? <SkeletonRows count={4} /> : filteredRecords.length === 0 ? (
               <div className="p-6 text-center text-sm font-bold text-slate-500">لا توجد سجلات توالف.</div>
             ) : (
-              <div className="overflow-x-auto rounded-2xl border border-slate-200">
-                <Table className="min-w-[700px]">
-                  <TableHeader><TableRow>
-                    <TableHead className="text-right">الصنف</TableHead><TableHead className="text-center">الفرع</TableHead><TableHead className="text-center">الكمية</TableHead><TableHead className="text-center">السبب</TableHead><TableHead className="text-center">ملاحظات</TableHead><TableHead className="text-center">التاريخ</TableHead>
-                  </TableRow></TableHeader>
-                  <TableBody>{filteredRecords.map((rec) => (
-                    <TableRow key={rec.id}>
-                      <TableCell className="font-black">{rec.item?.name_ar ?? "—"}</TableCell>
-                      <TableCell className="text-center font-bold">{rec.branch?.name ?? "—"}</TableCell>
-                      <TableCell className="text-center font-black text-rose-600">{Number(rec.quantity).toLocaleString("ar-EG")}</TableCell>
-                      <TableCell className="text-center"><Badge variant="outline" className="bg-amber-50 text-amber-700 font-black">{rec.reason}</Badge></TableCell>
-                      <TableCell className="text-center text-sm text-slate-500">{rec.notes ?? "—"}</TableCell>
-                      <TableCell className="text-center text-xs font-bold">{new Date(rec.created_at).toLocaleString("ar-EG")}</TableCell>
-                    </TableRow>
-                  ))}</TableBody>
-                </Table>
+              <div>
+                <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                  <Table className="min-w-[700px]">
+                    <TableHeader><TableRow>
+                      <TableHead className="text-right">الصنف</TableHead><TableHead className="text-center">الفرع</TableHead><TableHead className="text-center">الكمية</TableHead><TableHead className="text-center">السبب</TableHead><TableHead className="text-center">ملاحظات</TableHead><TableHead className="text-center">التاريخ</TableHead>
+                    </TableRow></TableHeader>
+                    <TableBody>{filteredRecords.map((rec) => (
+                      <TableRow key={rec.id}>
+                        <TableCell className="font-black">{rec.item?.name_ar ?? "—"}</TableCell>
+                        <TableCell className="text-center font-bold">{rec.branch?.name ?? "—"}</TableCell>
+                        <TableCell className="text-center font-black text-rose-600">{Number(rec.quantity).toLocaleString("ar-EG")}</TableCell>
+                        <TableCell className="text-center"><Badge variant="outline" className="bg-amber-50 text-amber-700 font-black">{rec.reason}</Badge></TableCell>
+                        <TableCell className="text-center text-sm text-slate-500">{rec.notes ?? "—"}</TableCell>
+                        <TableCell className="text-center text-xs font-bold">{new Date(rec.created_at).toLocaleString("ar-EG")}</TableCell>
+                      </TableRow>
+                    ))}</TableBody>
+                  </Table>
+                </div>
+                {totalPages > 1 ? (
+                  <div className="flex items-center justify-between border-t border-slate-100 px-4 py-3">
+                    <span className="text-xs font-black text-slate-500">صفحة {page.toLocaleString("ar-EG")} من {totalPages.toLocaleString("ar-EG")}</span>
+                    <div className="flex gap-2">
+                      <Button variant="outline" size="sm" className="h-8 rounded-xl px-3 text-xs font-bold" disabled={page <= 1 || loading} onClick={() => setPage((v) => Math.max(1, v - 1))}>
+                        <ChevronRight className="size-3.5" /> السابق
+                      </Button>
+                      <Button variant="outline" size="sm" className="h-8 rounded-xl px-3 text-xs font-bold" disabled={page >= totalPages || loading} onClick={() => setPage((v) => Math.min(totalPages, v + 1))}>
+                        التالي <ChevronLeft className="size-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             )}
           </CardContent>

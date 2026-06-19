@@ -97,8 +97,8 @@ export async function GET(request: Request) {
 
     const summaryQuery = applyFilters(db
       .from("pharmacy_stock_movements")
-      .select("direction,quantity,total_value"))
-      .limit(10000)
+      .select("direction,quantity,total_value", { count: "exact", head: false }))
+      .limit(1000)
 
     const [{ data, error, count }, summaryResult] = await Promise.all([dbQuery, summaryQuery])
     if (error) throw error

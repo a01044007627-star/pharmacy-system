@@ -3,6 +3,10 @@ import type { LucideIcon } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
 
+export const dashboardInputClass = "h-10 rounded-xl border-slate-200 bg-white text-sm shadow-none focus-visible:border-brand focus-visible:ring-brand/15"
+export const dashboardSelectTriggerClass = "h-10 rounded-xl border-slate-200 bg-white text-sm shadow-none focus-visible:border-brand focus-visible:ring-brand/15"
+export const dashboardTextareaClass = "min-h-24 rounded-xl border-slate-200 bg-white text-sm shadow-none focus-visible:border-brand focus-visible:ring-brand/15"
+
 const dashboardPanelClass =
   "rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5"
 

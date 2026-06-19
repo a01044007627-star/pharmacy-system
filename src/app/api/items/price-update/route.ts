@@ -30,43 +30,35 @@ export async function PATCH(request: Request) {
     const now = new Date().toISOString()
 
     let updated = 0
-    if (keepOldPrice) {
+    const { data: rpcCount, error: rpcError } = await db.rpc("pharmacy_bulk_update_item_price", {
+      p_pharmacy_id: pharmacyId,
+      p_item_ids: itemIds,
+      p_mode: "fixed",
+      p_value: newSellPrice,
+      p_actor_id: scope.user.id,
+    })
+
+    if (!rpcError) {
+      updated = Number(rpcCount ?? 0)
+    } else if (/function .* does not exist|schema cache/i.test(rpcError.message)) {
       const { data: currentItems, error: fetchError } = await db
         .from("pharmacy_items")
-        .select("id, sell_price")
+        .select("id,sell_price")
         .in("id", itemIds)
         .eq("pharmacy_id", pharmacyId)
-
+        .neq("status", "deleted")
       if (fetchError) throw fetchError
-
-      if (currentItems && currentItems.length > 0) {
-        const updatePromises = currentItems.map(async (item) => {
-          const { error } = await db
-            .from("pharmacy_items")
-            .update({
-              sell_price: newSellPrice,
-              old_sell_price: Number(item.sell_price ?? 0),
-              updated_at: now,
-            })
-            .eq("id", item.id)
-            .eq("pharmacy_id", pharmacyId)
-          return !error
-        })
-        const results = await Promise.all(updatePromises)
-        updated = results.filter(Boolean).length
-      }
-    } else {
-      const { data, error } = await db
-        .from("pharmacy_items")
-        .update({
+      const results = await Promise.all((currentItems ?? []).map(async (item) => {
+        const { error } = await db.from("pharmacy_items").update({
           sell_price: newSellPrice,
+          ...(keepOldPrice ? { old_sell_price: Number(item.sell_price ?? 0) } : {}),
           updated_at: now,
-        })
-        .in("id", itemIds)
-        .eq("pharmacy_id", pharmacyId)
-        .select("id")
-      if (error) throw error
-      if (data) updated = data.length
+        }).eq("id", item.id).eq("pharmacy_id", pharmacyId)
+        return !error
+      }))
+      updated = results.filter(Boolean).length
+    } else {
+      throw rpcError
     }
 
     return NextResponse.json({ ok: true, updated })

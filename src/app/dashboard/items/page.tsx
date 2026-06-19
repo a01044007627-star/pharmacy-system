@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { Download, FileSpreadsheet, GitFork, Loader2, Package, ShieldCheck, Upload } from "lucide-react"
+import { Download, FileSpreadsheet, Loader2, Package, ShieldCheck, Upload } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { ItemsListView } from "@/features/inventory/components/items-list-view"
@@ -45,7 +45,7 @@ export default function ItemsPage() {
       </PageAccess>
       <div className="fixed bottom-6 left-6 z-40 flex flex-col gap-2">
         <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-lg backdrop-blur">
-          <Link href="/dashboard/items/variants" className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-indigo-50 px-3 text-xs font-black text-indigo-700 transition hover:bg-indigo-100"><GitFork className="size-4" /> المتغيرات</Link>
+          <Link href="/dashboard/items/variants" className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-indigo-50 px-3 text-xs font-black text-indigo-700 transition hover:bg-indigo-100"><Package className="size-4" /> المتغيرات</Link>
           <Link href="/dashboard/items/warranties" className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-amber-50 px-3 text-xs font-black text-amber-700 transition hover:bg-amber-100"><ShieldCheck className="size-4" /> الضمانات</Link>
         </div>
         <Dialog open={showImport} onOpenChange={setShowImport}>

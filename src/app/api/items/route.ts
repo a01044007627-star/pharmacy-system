@@ -7,6 +7,7 @@ import { scopeCan } from "@/lib/auth/server-permissions"
 import type { BranchOption, ItemBalanceRow, ItemBarcodeRow, ItemBatchRow, ItemSubUnitRow, LookupOption, PharmacyItemListRow } from "@/features/inventory/lib/items-types"
 import { addOpeningStock } from "@/lib/inventory/opening-stock"
 import { allSearchText, expiryState, isLowStock, isOutOfStock, numberValue, primaryBarcode, quantity } from "@/features/inventory/lib/items-helpers"
+import { normalizeBarcodeInputs, normalizeItemName, postgresErrorMessage } from "@/features/inventory/lib/item-input"
 
 function clean(s: unknown) { return String(s ?? "").trim() }
 
@@ -288,7 +289,7 @@ export async function GET(request: Request) {
     ])
 
     const page = asPositiveInt(url.searchParams.get("page"), 1, 100000)
-    const pageSize = asPositiveInt(url.searchParams.get("page_size"), 25, 100000)
+    const pageSize = asPositiveInt(url.searchParams.get("page_size"), 25, 1000)
     const sortKey = paramValue(url, "sort_key", "name")
     const sortDir = paramValue(url, "sort_dir", "asc")
     const search = clean(url.searchParams.get("search"))
@@ -305,8 +306,58 @@ export async function GET(request: Request) {
       notForSale: url.searchParams.get("not_for_sale") === "true",
     }
 
+    const [{ data: catalogData, error: catalogError }, { data: optionData, error: optionError }] = await Promise.all([
+      db.rpc("pharmacy_items_catalog", {
+        p_pharmacy_id: pharmacyId,
+        p_branch_id: branchId,
+        p_mode: mode,
+        p_search: search,
+        p_item_type: filters.itemType,
+        p_group_id: filters.groupId,
+        p_brand_id: filters.brandId,
+        p_manufacturer: filters.manufacturer,
+        p_unit: filters.unit,
+        p_sub_unit: filters.subUnit,
+        p_expiry: filters.expiry,
+        p_price: filters.price,
+        p_stock: filters.stock,
+        p_not_for_sale: filters.notForSale,
+        p_sort_key: sortKey,
+        p_sort_dir: sortDir,
+        p_page: page,
+        p_page_size: pageSize,
+      }),
+      db.rpc("pharmacy_item_filter_options", {
+        p_pharmacy_id: pharmacyId,
+        p_branch_id: branchId,
+        p_mode: mode,
+      }),
+    ])
+
+    if (!catalogError && catalogData && typeof catalogData === "object") {
+      const catalog = catalogData as Record<string, unknown>
+      const options = !optionError && optionData && typeof optionData === "object"
+        ? optionData as Record<string, unknown>
+        : {}
+      return NextResponse.json({
+        ...catalog,
+        itemsLoaded: Array.isArray(catalog.items) ? catalog.items.length : 0,
+        groups,
+        brands,
+        branches,
+        manufacturers: Array.isArray(options.manufacturers) ? options.manufacturers : [],
+        units: Array.isArray(options.units) ? options.units : [],
+        subUnits: Array.isArray(options.subUnits) ? options.subUnits : [],
+        pharmacyId,
+        branchId,
+      })
+    }
+    if (catalogError && !/function .* does not exist|schema cache/i.test(catalogError.message)) {
+      console.warn("[api/items] catalogue RPC failed; using compatibility path:", catalogError.message)
+    }
+
     const hasComplex = hasComplexFilter(filters)
-    const buffer = hasComplex ? pageSize * 5 : pageSize
+    const buffer = hasComplex ? Math.max(pageSize * 5, 500) : pageSize
     const rangeFrom = (page - 1) * pageSize
     const rangeTo = rangeFrom + buffer - 1
 
@@ -441,18 +492,22 @@ export async function POST(request: Request) {
       .eq("name_ar", nameAr)
       .neq("status", "deleted")
       .maybeSingle()
-    if (existingName) return NextResponse.json({ error: `يوجد صنف بنفس الاسم: ${existingName.name_ar}` }, { status: 409 })
+    if (existingName && normalizeItemName(existingName.name_ar) === normalizeItemName(nameAr)) return NextResponse.json({ error: `يوجد صنف بنفس الاسم: ${existingName.name_ar}` }, { status: 409 })
 
-    const barcodes = Array.isArray(body.barcodes) ? body.barcodes as Array<{ barcode: string; is_primary?: boolean }> : []
-    const incomingBarcodes = barcodes.map((b) => clean(b.barcode)).filter(Boolean)
-    if (incomingBarcodes.length > 0) {
-      const { data: existingBarcodes } = await db
-        .from("pharmacy_item_barcodes")
-        .select("barcode")
-        .eq("pharmacy_id", pharmacyId)
-        .in("barcode", incomingBarcodes)
-      if (existingBarcodes && existingBarcodes.length > 0) {
-        return NextResponse.json({ error: `الباركودات التالية مستخدمة بالفعل: ${existingBarcodes.map((b) => b.barcode).join("، ")}` }, { status: 409 })
+    const rawBarcodes = Array.isArray(body.barcodes) ? body.barcodes as Array<{ barcode?: unknown; is_primary?: boolean }> : []
+    const rawUnits = Array.isArray(body.units) ? body.units as Array<Record<string, unknown>> : []
+    const normalizedRelations = normalizeBarcodeInputs(rawBarcodes, rawUnits)
+    if (normalizedRelations.duplicates.length > 0) {
+      return NextResponse.json({ error: `الباركود مكرر داخل الصنف: ${normalizedRelations.duplicates.join("، ")}` }, { status: 409 })
+    }
+    if (normalizedRelations.all.length > 0) {
+      const [{ data: existingBarcodes }, { data: existingUnitBarcodes }] = await Promise.all([
+        db.from("pharmacy_item_barcodes").select("barcode,item_id").eq("pharmacy_id", pharmacyId).in("barcode", normalizedRelations.all),
+        db.from("pharmacy_item_units").select("barcode,item_id").eq("pharmacy_id", pharmacyId).in("barcode", normalizedRelations.all),
+      ])
+      const used = [...(existingBarcodes ?? []), ...(existingUnitBarcodes ?? [])].map((row) => row.barcode).filter(Boolean)
+      if (used.length > 0) {
+        return NextResponse.json({ error: `الباركودات التالية مستخدمة بالفعل: ${used.join("، ")}` }, { status: 409 })
       }
     }
 
@@ -526,47 +581,30 @@ export async function POST(request: Request) {
     if (!item) return NextResponse.json({ error: "فشل إنشاء الصنف" }, { status: 500 })
     createdItemId = item.id as string
 
-    const barcodesInput = Array.isArray(body.barcodes) ? body.barcodes as Array<{ barcode: string; is_primary?: boolean }> : []
-    if (barcodesInput.length > 0) {
-      const seenBarcodes = new Set<string>()
-      const barcodeRows = barcodesInput
-        .map((barcode, index) => ({
-          pharmacy_id: pharmacyId,
-          item_id: item.id,
-          barcode: clean(barcode.barcode),
-          is_primary: barcode.is_primary ?? index === 0,
-        }))
-        .filter((barcode) => {
-          if (!barcode.barcode || seenBarcodes.has(barcode.barcode)) return false
-          seenBarcodes.add(barcode.barcode)
-          return true
-        })
-        .map((barcode, index) => ({ ...barcode, is_primary: index === 0 }))
-      if (barcodeRows.length > 0) {
-        const { error: barcodeError } = await db.from("pharmacy_item_barcodes").insert(barcodeRows)
-        if (barcodeError) throw barcodeError
+    const relationResult = await db.rpc("pharmacy_replace_item_relations", {
+      p_pharmacy_id: pharmacyId,
+      p_item_id: item.id,
+      p_barcodes: normalizedRelations.barcodes,
+      p_units: normalizedRelations.units,
+      p_variants: null,
+    })
+    if (relationResult.error) {
+      if (/function .* does not exist|schema cache/i.test(relationResult.error.message)) {
+        if (normalizedRelations.barcodes.length > 0) {
+          const { error: barcodeError } = await db.from("pharmacy_item_barcodes").insert(
+            normalizedRelations.barcodes.map((row) => ({ ...row, pharmacy_id: pharmacyId, item_id: item.id })),
+          )
+          if (barcodeError) throw barcodeError
+        }
+        if (normalizedRelations.units.length > 0) {
+          const { error: unitError } = await db.from("pharmacy_item_units").insert(
+            normalizedRelations.units.map((row) => ({ ...row, pharmacy_id: pharmacyId, item_id: item.id })),
+          )
+          if (unitError) throw unitError
+        }
+      } else {
+        throw relationResult.error
       }
-    }
-
-    const manualUnits = Array.isArray(body.units) ? body.units as Array<{ unit_name?: string; factor?: number; barcode?: string; sell_price?: number; is_base?: boolean; main_unit?: string; sub_unit?: string; qty_per_main_unit?: number; unit_raw?: string }> : []
-    const unitRows = manualUnits
-      .map((unit) => ({
-        pharmacy_id: pharmacyId,
-        item_id: item.id,
-        unit_name: clean(unit.unit_name),
-        factor: Math.max(0.001, Number(unit.factor) || 1),
-        barcode: clean(unit.barcode) || null,
-        sell_price: Number.isFinite(Number(unit.sell_price)) ? Number(unit.sell_price) : null,
-        is_base: Boolean(unit.is_base),
-        main_unit: clean(unit.main_unit) || null,
-        sub_unit: clean(unit.sub_unit) || null,
-        qty_per_main_unit: Math.max(0, Number(unit.qty_per_main_unit) || 0),
-        unit_raw: clean(unit.unit_raw) || null,
-      }))
-      .filter((unit) => unit.unit_name)
-    if (unitRows.length > 0) {
-      const { error: unitError } = await db.from("pharmacy_item_units").insert(unitRows)
-      if (unitError) throw unitError
     }
 
     const variationValues = Array.isArray(body.variation_values) ? body.variation_values.map(clean).filter(Boolean) : []
@@ -606,16 +644,11 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error("items POST failed", error)
     if (createdItemId && cleanupDb) {
-      const { error: cleanupError } = await cleanupDb.from("pharmacy_items").delete().eq("id", createdItemId)
+      const { error: cleanupError } = await cleanupDb.from("pharmacy_items").update({ status: "deleted", deleted_at: new Date().toISOString(), delete_reason: "automatic rollback after failed item creation" }).eq("id", createdItemId)
       if (cleanupError) console.error("items POST cleanup failed", cleanupError)
     }
-    const rawMessage = error instanceof Error ? error.message : "فشل إنشاء الصنف"
-    const message = /pharmacy_items_pharmacy_id_sku_key|duplicate key.*sku/i.test(rawMessage)
-      ? "كود SKU مستخدم بالفعل لصنف آخر"
-      : /pharmacy_item_barcodes.*barcode|duplicate key.*barcode/i.test(rawMessage)
-        ? "أحد الباركودات مستخدم بالفعل لصنف آخر"
-        : rawMessage
-    return NextResponse.json({ error: message }, { status: 400 })
+    const message = postgresErrorMessage(error, "فشل إنشاء الصنف")
+    return NextResponse.json({ error: message }, { status: /مستخدم بالفعل|مكرر/.test(message) ? 409 : 400 })
   }
 }
 

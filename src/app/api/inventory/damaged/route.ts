@@ -12,18 +12,45 @@ function clean(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
 }
 
-export async function GET() {
+function safeNumber(value: unknown, fallback: number, min: number, max: number) {
+  const parsed = Math.trunc(Number(value))
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback
+}
+
+export async function GET(request: Request) {
   try {
-    const scope = await getServerAuthScope()
+    const url = new URL(request.url)
+    const scope = await getServerAuthScope({
+      requestedPharmacyId: clean(url.searchParams.get("pharmacy_id")) || null,
+      requestedBranchId: clean(url.searchParams.get("branch_id")) || null,
+    })
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
     if (!scopeCan(scope, "inventory:read")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
 
+    const page = safeNumber(url.searchParams.get("page"), 1, 1, 100000)
+    const pageSize = safeNumber(url.searchParams.get("page_size"), 200, 10, 500)
+    const offset = (page - 1) * pageSize
+
     const supabase = await createClient()
     const db = getDbClient() ?? supabase
-    const { data, error } = await db.from("pharmacy_damaged_stock").select("*,item:pharmacy_items(id,name_ar,sku,unit),branch:pharmacy_branches(id,name,code)").eq("pharmacy_id", scope.activePharmacyId).order("created_at", { ascending: false }).limit(200)
+
+    const { data, error, count } = await db
+      .from("pharmacy_damaged_stock")
+      .select("*,item:pharmacy_items(id,name_ar,sku,unit),branch:pharmacy_branches(id,name,code)", { count: "exact" })
+      .eq("pharmacy_id", scope.activePharmacyId)
+      .order("created_at", { ascending: false })
+      .range(offset, offset + pageSize - 1)
+
     if (error) throw error
-    return NextResponse.json({ records: data ?? [] })
+
+    const total = count ?? 0
+    const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+    return NextResponse.json({
+      records: data ?? [],
+      pagination: { page, pageSize, total, totalPages },
+    })
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "فشل تحميل التوالف" }, { status: 500 })
   }

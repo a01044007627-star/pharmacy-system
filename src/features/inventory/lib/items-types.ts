@@ -74,8 +74,12 @@ export type PharmacyItemListRow = {
   manage_inventory?: boolean | null
   not_for_sale?: boolean | null
   min_stock?: number | string | null
+  max_stock?: number | string | null
   opening_stock?: number | string | null
   has_expiry?: boolean | null
+  track_batch?: boolean | null
+  is_controlled?: boolean | null
+  requires_prescription?: boolean | null
   expiry_date?: string | null
   image_url?: string | null
   barcode_type?: string | null

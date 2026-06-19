@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Package, RefreshCw, Search } from "lucide-react"
+import { ChevronLeft, ChevronRight, Package, RefreshCw, Search } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { DashboardPageHeader } from "@/components/shared/page-ui"
@@ -23,9 +23,12 @@ type BalanceRow = {
   branch: { id: string; name: string; code: string | null } | null
 }
 
+type Pagination = { page: number; pageSize: number; total: number; totalPages: number }
+
 type ResponseData = {
   records?: BalanceRow[]
   summary?: { total_items: number; total_quantity: number; out_of_stock: number }
+  pagination?: Pagination
   error?: string
 }
 
@@ -33,9 +36,11 @@ export function StockBalancesView() {
   const auth = useAuth()
   const [rows, setRows] = useState<BalanceRow[]>([])
   const [summary, setSummary] = useState({ total_items: 0, total_quantity: 0, out_of_stock: 0 })
+  const [pagination, setPagination] = useState<Pagination>({ page: 1, pageSize: 200, total: 0, totalPages: 1 })
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState("")
   const [branchId, setBranchId] = useState("all")
+  const [page, setPage] = useState(1)
 
   const canChooseAllBranches = auth.isDeveloper || auth.isOwner || ["owner", "admin"].includes(auth.role)
 
@@ -46,7 +51,8 @@ export function StockBalancesView() {
       const params = new URLSearchParams({
         pharmacy_id: auth.activePharmacyId,
         branch_id: branchId,
-        limit: "500",
+        page: String(page),
+        page_size: "200",
       })
       if (query) params.set("query", query)
       const response = await fetch(`/api/inventory/stock-balances?${params.toString()}`, { cache: "no-store" })
@@ -54,15 +60,18 @@ export function StockBalancesView() {
       if (!response.ok) throw new Error(data.error ?? "فشل تحميل الأرصدة")
       setRows(data.records ?? [])
       setSummary(data.summary ?? { total_items: 0, total_quantity: 0, out_of_stock: 0 })
+      if (data.pagination) setPagination(data.pagination)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "فشل تحميل الأرصدة")
     } finally { setLoading(false) }
-  }, [auth.activePharmacyId, branchId, query])
+  }, [auth.activePharmacyId, branchId, page, query])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => void load(), 300)
     return () => window.clearTimeout(timeout)
   }, [load])
+
+  useEffect(() => { setPage(1) }, [query, branchId])
 
   const cards = useMemo(() => [
     { label: "عدد الأصناف", value: summary.total_items.toLocaleString("ar-EG"), tone: "text-slate-950" },
@@ -144,6 +153,21 @@ export function StockBalancesView() {
               </TableBody>
             </Table>
           )}
+          {pagination.total > pagination.pageSize ? (
+            <div className="flex items-center justify-between border-t border-slate-100 px-4 py-3">
+              <span className="text-xs font-black text-slate-500">
+                {(pagination.page - 1) * pagination.pageSize + 1}-{Math.min(pagination.page * pagination.pageSize, pagination.total).toLocaleString("ar-EG")} من {pagination.total.toLocaleString("ar-EG")} — صفحة {pagination.page.toLocaleString("ar-EG")} / {pagination.totalPages.toLocaleString("ar-EG")}
+              </span>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" className="h-8 rounded-xl px-3 text-xs font-bold" disabled={page <= 1 || loading} onClick={() => setPage((v) => Math.max(1, v - 1))}>
+                  <ChevronRight className="size-3.5" /> السابق
+                </Button>
+                <Button variant="outline" size="sm" className="h-8 rounded-xl px-3 text-xs font-bold" disabled={page >= pagination.totalPages || loading} onClick={() => setPage((v) => Math.min(pagination.totalPages, v + 1))}>
+                  التالي <ChevronLeft className="size-3.5" />
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </Card>
       </section>
     </PageAccess>

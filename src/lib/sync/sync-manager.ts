@@ -4,6 +4,7 @@ import { localDB } from "./local-db"
 import { localSQLite } from "./local-sqlite"
 import { createClient } from "@/lib/supabase/client"
 import { network } from "@/lib/network"
+import { API_MUTATION_TABLE } from "@/features/inventory/lib/items-offline"
 
 export interface SyncStatus {
   isSyncing: boolean
@@ -96,7 +97,16 @@ export class SyncManager {
             data: Record<string, unknown>
           }
 
-          if (operation === "create") {
+          if (table === API_MUTATION_TABLE) {
+            const apiRequest = data as unknown as { path: string; method: "POST" | "PATCH" | "DELETE"; body: Record<string, unknown> }
+            const response = await fetch(apiRequest.path, {
+              method: apiRequest.method,
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(apiRequest.body),
+            })
+            const payload = await response.json().catch(() => ({})) as { error?: string }
+            if (!response.ok) throw new Error(payload.error ?? "فشل مزامنة عملية الصنف")
+          } else if (operation === "create") {
             const { error } = await supabase.from(table).insert(data)
             if (error) throw error
           } else if (operation === "update") {

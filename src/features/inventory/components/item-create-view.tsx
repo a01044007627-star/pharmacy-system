@@ -39,6 +39,7 @@ import type {
   BranchOption,
   LookupOption,
 } from "@/features/inventory/lib/items-types";
+import { cacheItemDetail, queueItemApiRequest, readCachedItemDetail } from "@/features/inventory/lib/items-offline";
 
 type UploadResult = {
   serverData?: { url?: string | null };
@@ -377,20 +378,28 @@ export function ItemCreateView({
 
   useEffect(() => {
     if (mode !== "edit" || !itemId) return;
+    const currentItemId = itemId;
     let cancelled = false;
     async function loadItem() {
       setLoading(true);
       try {
-        const response = await fetch(`/api/items/${itemId}`, {
+        const response = await fetch(`/api/items/${currentItemId}`, {
           cache: "no-store",
         });
         const data = (await response
           .json()
           .catch(() => ({}))) as ItemApiResponse;
         if (!response.ok) throw new Error(data.error ?? "فشل تحميل الصنف");
+        await cacheItemDetail(currentItemId, data);
         if (!cancelled) setForm(formFromApi(data));
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "فشل تحميل الصنف");
+        const cached = await readCachedItemDetail<ItemApiResponse>(currentItemId);
+        if (cached) {
+          if (!cancelled) setForm(formFromApi(cached));
+          toast.warning("تم تحميل آخر نسخة محفوظة للصنف بدون إنترنت");
+        } else {
+          toast.error(error instanceof Error ? error.message : "فشل تحميل الصنف");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -574,13 +583,14 @@ export function ItemCreateView({
       return;
     }
     setSaving(true);
+    const requestPath = mode === "edit" && itemId ? `/api/items/${itemId}` : "/api/items";
+    const requestMethod: "PATCH" | "POST" = mode === "edit" ? "PATCH" : "POST";
+    const requestBody = buildPayload() as Record<string, unknown>;
     try {
-      const response = await fetch(
-        mode === "edit" && itemId ? `/api/items/${itemId}` : "/api/items",
-        {
-          method: mode === "edit" ? "PATCH" : "POST",
+      const response = await fetch(requestPath, {
+          method: requestMethod,
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(buildPayload()),
+          body: JSON.stringify(requestBody),
         },
       );
       const data = (await response.json().catch(() => ({}))) as {
@@ -596,7 +606,13 @@ export function ItemCreateView({
       router.push("/dashboard/items");
       router.refresh();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل حفظ الصنف");
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        await queueItemApiRequest({ path: requestPath, method: requestMethod, body: requestBody });
+        toast.warning("تم حفظ الصنف محليًا وسيتم إرساله تلقائيًا عند عودة الإنترنت");
+        router.push("/dashboard/items");
+      } else {
+        toast.error(error instanceof Error ? error.message : "فشل حفظ الصنف");
+      }
     } finally {
       setSaving(false);
     }

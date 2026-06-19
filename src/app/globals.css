@@ -228,7 +228,7 @@
   }
   .page-header {
     @apply flex min-w-0 flex-col gap-3 rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:p-5;
-    box-shadow: 0 8px 24px color-mix(in srgb, var(--brand) 6%, transparent);
+    box-shadow: 0 8px 24px rgba(11, 99, 168, 0.08);
   }
   .heading-xl {
     @apply text-xl font-black tracking-tight text-slate-950 sm:text-2xl lg:text-3xl;
@@ -357,3 +357,22 @@
 textarea {
   resize: none;
 }
+
+
+/* Stable sRGB fallbacks for old Chromium/Windows 7 clients. */
+.auth-legacy-card {
+  box-shadow: 0 20px 45px rgba(15, 23, 42, 0.08);
+}
+.auth-legacy-hero {
+  background-color: #0b63a8;
+  background-image: linear-gradient(135deg, #0b63a8 0%, #07558f 55%, #0a4d7a 100%);
+  color: #ffffff;
+}
+.auth-legacy-image { opacity: 0.35; }
+.auth-legacy-icon {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
+}
+.auth-legacy-copy { color: rgba(255, 255, 255, 0.86); }
+.auth-legacy-features { color: rgba(255, 255, 255, 0.76); }
+.auth-legacy-dot { background: rgba(255, 255, 255, 0.68); }
