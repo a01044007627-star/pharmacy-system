@@ -897,23 +897,115 @@ export async function POST(request: Request) {
       errors.push({ row: 0, message: `تم استيراد الأصناف، لكن فشل حفظ بعض المتغيرات: ${error instanceof Error ? error.message : "خطأ غير متوقع"}` })
     }
 
-    for (const { item, prepared } of insertedBySku.values()) {
-      if (prepared.row.openingStock <= 0 || !prepared.row.manageStock) continue
-      try {
-        await addOpeningStock(db, {
-          pharmacyId,
-          itemId: item.id,
-          branchId: prepared.branchId,
-          actorId: scope.user.id,
-          quantity: prepared.row.openingStock,
-          unitPrice: item.buy_price,
-          unit: item.unit,
-          expiryDate: prepared.row.expiryDate,
-          trackBatch: Boolean(item.track_batch),
-          hasExpiry: Boolean(item.has_expiry),
+    try {
+      const batchRows = []
+      for (const { item, prepared } of insertedBySku.values()) {
+        if (prepared.row.openingStock <= 0 || !prepared.row.manageStock) continue
+        const quantity = prepared.row.openingStock
+        const expiryDate = prepared.row.expiryDate
+        const shouldCreateBatch = Boolean(item.track_batch || item.has_expiry || expiryDate)
+        if (shouldCreateBatch) {
+          batchRows.push({
+            pharmacy_id: pharmacyId,
+            item_id: item.id,
+            branch_id: prepared.branchId,
+            batch_number: "OPENING",
+            expiry_date: expiryDate || null,
+            quantity,
+            remaining_quantity: quantity,
+            unit: item.unit || null,
+            cost_price: item.buy_price || 0,
+            source_type: "opening_stock",
+            source_id: item.id,
+          })
+        }
+      }
+
+      const batchMap = new Map<string, string>()
+      if (batchRows.length > 0) {
+        for (const chunk of chunkArray(batchRows, AUX_IMPORT_BATCH_SIZE)) {
+          const { data, error } = await db
+            .from("pharmacy_item_batches")
+            .insert(chunk)
+            .select("id, item_id")
+          if (error) throw error
+          if (data) {
+            for (const row of data as Array<{ id: string; item_id: string }>) {
+              batchMap.set(row.item_id, row.id)
+            }
+          }
+        }
+      }
+
+      const balanceRows = []
+      const movementRows = []
+      const nowStr = new Date().toISOString()
+      for (const { item, prepared } of insertedBySku.values()) {
+        if (prepared.row.openingStock <= 0 || !prepared.row.manageStock) continue
+        const quantity = prepared.row.openingStock
+        const unitPrice = item.buy_price || 0
+
+        balanceRows.push({
+          pharmacy_id: pharmacyId,
+          item_id: item.id,
+          branch_id: prepared.branchId,
+          quantity,
+          updated_at: nowStr,
         })
-      } catch (error) {
-        errors.push({ row: prepared.rowNum, sku: item.sku, name: item.name_ar, message: `تم إنشاء الصنف لكن فشل تسجيل الرصيد الافتتاحي: ${error instanceof Error ? error.message : "خطأ غير متوقع"}` })
+
+        movementRows.push({
+          pharmacy_id: pharmacyId,
+          item_id: item.id,
+          batch_id: batchMap.get(item.id) || null,
+          branch_id: prepared.branchId,
+          direction: "in",
+          quantity,
+          unit_price: unitPrice,
+          total_value: Number((quantity * unitPrice).toFixed(2)),
+          movement_type: "opening_stock",
+          source_table: "pharmacy_items",
+          source_id: item.id,
+          created_by: scope.user.id || null,
+        })
+      }
+
+      if (balanceRows.length > 0) {
+        for (const chunk of chunkArray(balanceRows, AUX_IMPORT_BATCH_SIZE)) {
+          const { error } = await db
+            .from("pharmacy_stock_balances")
+            .upsert(chunk, { onConflict: "pharmacy_id,item_id,branch_id" })
+          if (error) throw error
+        }
+      }
+
+      if (movementRows.length > 0) {
+        for (const chunk of chunkArray(movementRows, AUX_IMPORT_BATCH_SIZE)) {
+          const { error } = await db
+            .from("pharmacy_stock_movements")
+            .insert(chunk)
+          if (error) throw error
+        }
+      }
+    } catch (bulkError) {
+      console.warn("Bulk opening stock insert failed, falling back to row-by-row:", bulkError)
+      for (const { item, prepared } of insertedBySku.values()) {
+        if (prepared.row.openingStock <= 0 || !prepared.row.manageStock) continue
+        try {
+          await addOpeningStock(db, {
+            pharmacyId,
+            itemId: item.id,
+            branchId: prepared.branchId,
+            actorId: scope.user.id,
+            quantity: prepared.row.openingStock,
+            unitPrice: item.buy_price,
+            unit: item.unit,
+            expiryDate: prepared.row.expiryDate,
+            trackBatch: Boolean(item.track_batch),
+            hasExpiry: Boolean(item.has_expiry),
+          })
+        } catch (error) {
+          errors.push({ row: prepared.rowNum, sku: item.sku, name: item.name_ar, message: `تم إنشاء الصنف لكن فشل تسجيل الرصيد الافتتاحي: ${error instanceof Error ? error.message : "خطأ غير متوقع"}` })
+        }
       }
     }
 

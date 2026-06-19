@@ -30,14 +30,43 @@ export async function PATCH(request: Request) {
     const now = new Date().toISOString()
 
     let updated = 0
-    for (const itemId of itemIds) {
-      const updateData: Record<string, unknown> = { sell_price: newSellPrice, updated_at: now }
-      if (keepOldPrice) {
-        const { data: current } = await db.from("pharmacy_items").select("sell_price").eq("id", itemId).eq("pharmacy_id", pharmacyId).maybeSingle()
-        if (current) updateData.old_sell_price = Number(current.sell_price ?? 0)
+    if (keepOldPrice) {
+      const { data: currentItems, error: fetchError } = await db
+        .from("pharmacy_items")
+        .select("id, sell_price")
+        .in("id", itemIds)
+        .eq("pharmacy_id", pharmacyId)
+
+      if (fetchError) throw fetchError
+
+      if (currentItems && currentItems.length > 0) {
+        const updatePromises = currentItems.map(async (item) => {
+          const { error } = await db
+            .from("pharmacy_items")
+            .update({
+              sell_price: newSellPrice,
+              old_sell_price: Number(item.sell_price ?? 0),
+              updated_at: now,
+            })
+            .eq("id", item.id)
+            .eq("pharmacy_id", pharmacyId)
+          return !error
+        })
+        const results = await Promise.all(updatePromises)
+        updated = results.filter(Boolean).length
       }
-      const { error } = await db.from("pharmacy_items").update(updateData).eq("id", itemId).eq("pharmacy_id", pharmacyId)
-      if (!error) updated++
+    } else {
+      const { data, error } = await db
+        .from("pharmacy_items")
+        .update({
+          sell_price: newSellPrice,
+          updated_at: now,
+        })
+        .in("id", itemIds)
+        .eq("pharmacy_id", pharmacyId)
+        .select("id")
+      if (error) throw error
+      if (data) updated = data.length
     }
 
     return NextResponse.json({ ok: true, updated })
