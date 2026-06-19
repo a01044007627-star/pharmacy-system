@@ -15,7 +15,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
-import { downloadCsv } from "@/lib/csv-utils"
+import { downloadCsv as saveCsv } from "@/lib/csv-utils"
 import { cn } from "@/lib/utils"
 
 type PurchaseRow = {
@@ -44,12 +44,12 @@ function statusLabel(value: string) {
   return "غير مدفوعة"
 }
 
-function downloadCsv(rows: PurchaseRow[]) {
+function exportPurchasesCsv(rows: PurchaseRow[]) {
   const data = [
     ["رقم الفاتورة", "المورد", "الفرع", "الإجمالي", "المدفوع", "المتبقي", "التاريخ"],
     ...rows.map((row) => [row.purchase_number, row.supplier_name, row.branch?.name ?? "", String(row.total), String(row.paid_amount), String(row.due_amount), row.purchase_date]),
   ]
-  downloadCsv("المشتريات.csv", data)
+  saveCsv("المشتريات.csv", data)
 }
 
 export function PurchasesListView() {
@@ -113,7 +113,7 @@ export function PurchasesListView() {
           actions={(
             <>
               <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()}><RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث</Button>
-              <Button variant="outline" className="h-10 rounded-xl" disabled={!rows.length} onClick={() => downloadCsv(rows)}><Download className="size-4" /> تصدير</Button>
+              <Button variant="outline" className="h-10 rounded-xl" disabled={!rows.length} onClick={() => exportPurchasesCsv(rows)}><Download className="size-4" /> تصدير</Button>
               {(auth.isDeveloper || auth.can("purchases:write")) ? (
                 <Button className="h-10 rounded-xl" render={<Link href="/dashboard/purchases/new" />}><Plus className="size-4" /> فاتورة شراء</Button>
               ) : null}

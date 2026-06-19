@@ -18,7 +18,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
 import { cn } from "@/lib/utils"
-import { downloadCsv } from "@/lib/csv-utils"
+import { downloadCsv as saveCsv } from "@/lib/csv-utils"
 import { PartnerFormDialog } from "./partner-form-dialog"
 
 type PartnerRow = {
@@ -62,12 +62,12 @@ function typeLabel(value: string) {
   }
 }
 
-function downloadCsv(rows: PartnerRow[], label: string) {
+function exportPartnersCsv(rows: PartnerRow[], label: string) {
   const data = [
     ["الاسم", "النوع", "الهاتف", "البريد", "الرصيد", "حد الائتمان", "الحالة", "تاريخ الإنشاء"],
-    ...rows.map((row) => [row.name, typeLabel(row.type), row.phone, row.email, String(row.balance), String(row.credit_limit), row.status === "active" ? "نشط" : "غير نشط", new Date(row.created_at).toLocaleDateString("ar-EG")]),
+    ...rows.map((row) => [row.name, typeLabel(row.type), row.phone ?? "", row.email ?? "", String(row.balance), String(row.credit_limit), row.status === "active" ? "نشط" : "غير نشط", new Date(row.created_at).toLocaleDateString("ar-EG")]),
   ]
-  downloadCsv(`${label}.csv`, data)
+  saveCsv(`${label}.csv`, data)
 }
 
 type PartnersListViewProps = {
@@ -214,7 +214,7 @@ export function PartnersListView({ partnerType }: PartnersListViewProps) {
           actions={(
             <>
               <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()}><RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث</Button>
-              <Button variant="outline" className="h-10 rounded-xl" disabled={!rows.length} onClick={() => downloadCsv(rows, label)}><Download className="size-4" /> تصدير</Button>
+              <Button variant="outline" className="h-10 rounded-xl" disabled={!rows.length} onClick={() => exportPartnersCsv(rows, label)}><Download className="size-4" /> تصدير</Button>
               {canWrite ? (
                 <>
                   <Button className="h-10 rounded-xl" onClick={() => setQuickOpen((value) => !value)}><Plus className="size-4" /> إضافة سريعة</Button>

@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
-import { downloadCsv } from "@/lib/csv-utils"
+import { downloadCsv as saveCsv } from "@/lib/csv-utils"
 import { cn } from "@/lib/utils"
 
 type SummaryRow = {
@@ -47,10 +47,10 @@ type ReportData = {
   error?: string
 }
 
-function downloadCsv(rows: SummaryRow[]) {
+function exportProfitLossCsv(rows: SummaryRow[]) {
   const header = ["التاريخ", "المبيعات", "الأرباح", "المشتريات", "المصروفات", "صافي الربح"]
   const data = [header, ...rows.map((r) => [r.date, String(r.sales_total), String(r.sales_profit), String(r.purchases_total), String(r.expenses_total), String(r.net_profit)])]
-  downloadCsv("تقرير_الأرباح_والخسائر.csv", data)
+  saveCsv("تقرير_الأرباح_والخسائر.csv", data)
 }
 
 export function ProfitLossView() {
@@ -131,7 +131,7 @@ export function ProfitLossView() {
               <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()} disabled={loading}>
                 <RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث
               </Button>
-              <Button variant="outline" className="h-10 rounded-xl" onClick={() => downloadCsv(daily)} disabled={!data}>
+              <Button variant="outline" className="h-10 rounded-xl" onClick={() => exportProfitLossCsv(daily)} disabled={!data}>
                 <Download className="size-4" /> تصدير CSV
               </Button>
             </>

@@ -14,7 +14,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
-import { downloadCsv } from "@/lib/csv-utils"
+import { downloadCsv as saveCsv } from "@/lib/csv-utils"
 import { cn } from "@/lib/utils"
 
 type CustomerRow = {
@@ -33,10 +33,10 @@ type ReportData = {
   error?: string
 }
 
-function downloadCsv(customers: CustomerRow[]) {
+function exportCustomerActivityCsv(customers: CustomerRow[]) {
   const header = ["الترتيب", "اسم العميل", "رقم الهاتف", "إجمالي المشتريات", "عدد الفواتير", "المدفوع", "المتبقي"]
   const data = [header, ...customers.map((r) => [String(r.rank), r.customer_name, r.customer_phone, String(r.total_sales), String(r.transaction_count), String(r.total_paid), String(r.total_due)])]
-  downloadCsv("تقرير_نشاط_العملاء.csv", data)
+  saveCsv("تقرير_نشاط_العملاء.csv", data)
 }
 
 export function CustomerActivityView() {
@@ -110,7 +110,7 @@ export function CustomerActivityView() {
               <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()} disabled={loading}>
                 <RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث
               </Button>
-              <Button variant="outline" className="h-10 rounded-xl" onClick={() => downloadCsv(customers)} disabled={customers.length === 0}>
+              <Button variant="outline" className="h-10 rounded-xl" onClick={() => exportCustomerActivityCsv(customers)} disabled={customers.length === 0}>
                 <Download className="size-4" /> تصدير CSV
               </Button>
             </>

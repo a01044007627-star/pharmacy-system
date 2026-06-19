@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
-import { downloadCsv } from "@/lib/csv-utils"
+import { downloadCsv as saveCsv } from "@/lib/csv-utils"
 import { cn } from "@/lib/utils"
 
 type TaxRateRow = {
@@ -30,7 +30,7 @@ type ReportData = {
   error?: string
 }
 
-function downloadCsv(summary: ReportData["summary"], taxRates: TaxRateRow[]) {
+function exportTaxSummaryCsv(summary: ReportData["summary"], taxRates: TaxRateRow[]) {
   const lines = [
     ["البيان", "القيمة"],
     ["عدد الفواتير", String(summary.total_sales_count)],
@@ -42,7 +42,7 @@ function downloadCsv(summary: ReportData["summary"], taxRates: TaxRateRow[]) {
     ["شريحة الضريبة", "المعدل", "الضريبة المقدرة", "نشط"],
     ...taxRates.map((r) => [r.tax_name, `${r.tax_rate}%`, String(r.estimated_tax), r.is_active ? "نعم" : "لا"]),
   ]
-  downloadCsv("تقرير_الضرائب.csv", lines)
+  saveCsv("تقرير_الضرائب.csv", lines)
 }
 
 export function TaxSummaryView() {
@@ -113,7 +113,7 @@ export function TaxSummaryView() {
               <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()} disabled={loading}>
                 <RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث
               </Button>
-              <Button variant="outline" className="h-10 rounded-xl" onClick={() => downloadCsv(summary!, taxRates)} disabled={!data}>
+              <Button variant="outline" className="h-10 rounded-xl" onClick={() => exportTaxSummaryCsv(summary!, taxRates)} disabled={!data}>
                 <Download className="size-4" /> تصدير CSV
               </Button>
             </>

@@ -14,7 +14,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
-import { downloadCsv } from "@/lib/csv-utils"
+import { downloadCsv as saveCsv } from "@/lib/csv-utils"
 import { cn } from "@/lib/utils"
 
 type MovementRow = {
@@ -61,12 +61,12 @@ function directionLabel(dir: string) {
   return "تسوية"
 }
 
-function downloadCsv(rows: MovementRow[]) {
+function exportMovementsCsv(rows: MovementRow[]) {
   const data = [
     ["التاريخ", "الصنف", "SKU", "الفرع", "الاتجاه", "الكمية", "سعر الوحدة", "القيمة", "نوع الحركة", "المصدر"],
     ...rows.map((row) => [row.created_at, row.item?.name_ar ?? "", row.item?.sku ?? "", row.branch?.name ?? "", directionLabel(row.direction), String(row.quantity), String(row.unit_price), String(row.total_value), movementTypeLabel(row.movement_type), row.source_table ?? ""]),
   ]
-  downloadCsv("حركة_المخزون.csv", data)
+  saveCsv("حركة_المخزون.csv", data)
 }
 
 export function StockMovementsView() {
@@ -137,7 +137,7 @@ export function StockMovementsView() {
 icon={ArrowRight}
           actions={(
             <>
-              <Button variant="outline" className="h-10 rounded-xl" onClick={() => downloadCsv(rows)} disabled={!rows.length}>
+              <Button variant="outline" className="h-10 rounded-xl" onClick={() => exportMovementsCsv(rows)} disabled={!rows.length}>
                 <Download className="size-4" /> تصدير الصفحة
               </Button>
               <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()} disabled={loading}>

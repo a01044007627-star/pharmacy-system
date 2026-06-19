@@ -17,7 +17,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
-import { downloadCsv } from "@/lib/csv-utils"
+import { downloadCsv as saveCsv } from "@/lib/csv-utils"
 import { cn } from "@/lib/utils"
 
 type ExpenseRow = {
@@ -244,12 +244,12 @@ export function ExpensesListView() {
     }
   }
 
-  function downloadCsv() {
+  function exportExpensesCsv() {
     const data = [
       ["العنوان", "التصنيف", "الفرع", "المبلغ", "الضريبة", "الإجمالي", "طريقة الدفع", "المدفوع لـ", "التاريخ"],
       ...rows.map((row) => [row.title, row.category_name ?? "", row.branch?.name ?? "", String(row.amount), String(row.tax_amount), String(row.total), row.payment_method, row.paid_to ?? "", row.expense_date]),
     ]
-    downloadCsv("المصروفات.csv", data)
+    saveCsv("المصروفات.csv", data)
   }
 
   const cards = useMemo(() => [
@@ -270,7 +270,7 @@ export function ExpensesListView() {
           actions={(
             <>
               <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()}><RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث</Button>
-              <Button variant="outline" className="h-10 rounded-xl" disabled={!rows.length} onClick={() => downloadCsv()}><Download className="size-4" /> تصدير</Button>
+              <Button variant="outline" className="h-10 rounded-xl" disabled={!rows.length} onClick={exportExpensesCsv}><Download className="size-4" /> تصدير</Button>
               <Dialog open={catOpen} onOpenChange={setCatOpen}>
                 <DialogTrigger render={<Button variant="outline" className="h-10 rounded-xl"><Plus className="size-4" /> تصنيف</Button>} />
                 <DialogContent className="sm:max-w-md">

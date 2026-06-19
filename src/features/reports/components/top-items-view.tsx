@@ -14,7 +14,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
-import { downloadCsv } from "@/lib/csv-utils"
+import { downloadCsv as saveCsv } from "@/lib/csv-utils"
 import { cn } from "@/lib/utils"
 
 type ItemRow = {
@@ -41,10 +41,10 @@ const rankBadgeClass = [
   "border-orange-200 bg-orange-50 text-orange-700",
 ]
 
-function downloadCsv(items: ItemRow[]) {
+function exportTopItemsCsv(items: ItemRow[]) {
   const header = ["الترتيب", "اسم الصنف", "الكمية", "الإيرادات", "التكلفة", "الربح", "عدد المعاملات", "نسبة الربح"]
   const data = [header, ...items.map((r) => [String(r.rank), r.item_name, String(r.quantity_sold), String(r.total_revenue), String(r.total_cost), String(r.total_profit), String(r.transaction_count), `${r.margin.toFixed(1)}%`])]
-  downloadCsv("تقرير_أفضل_الأصناف.csv", data)
+  saveCsv("تقرير_أفضل_الأصناف.csv", data)
 }
 
 export function TopItemsView() {
@@ -109,7 +109,7 @@ export function TopItemsView() {
               <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()} disabled={loading}>
                 <RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث
               </Button>
-              <Button variant="outline" className="h-10 rounded-xl" onClick={() => downloadCsv(items)} disabled={items.length === 0}>
+              <Button variant="outline" className="h-10 rounded-xl" onClick={() => exportTopItemsCsv(items)} disabled={items.length === 0}>
                 <Download className="size-4" /> تصدير CSV
               </Button>
             </>

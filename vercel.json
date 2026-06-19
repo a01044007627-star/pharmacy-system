@@ -1,7 +1,7 @@
 {
   "buildCommand": "npm run build",
   "devCommand": "npm run dev",
-  "installCommand": "node scripts/vercel-install.mjs",
+  "installCommand": "npm ci --include=dev --no-audit --no-fund",
   "framework": "nextjs",
   "regions": [
     "iad1"

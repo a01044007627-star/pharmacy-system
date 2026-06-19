@@ -45,8 +45,8 @@
 }
 
 :root {
-  --font-cairo: "Cairo", "Segoe UI", Tahoma, Arial, sans-serif;
-  --font-sans: var(--font-cairo);
+  --font-arabic: Tahoma, "Segoe UI", Arial, sans-serif;
+  --font-sans: var(--font-arabic);
   --font-geist-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
   /*
    * Tailwind 4 ships its palette as OKLCH. Chrome 109 (the last Chrome
@@ -178,6 +178,10 @@
   --brand-subtle: #e4f6f3;
   --brand-muted: #effaf8;
   --dashboard-bg: #f2f7f7;
+  --home-sales: #167fa3;
+  --home-purchases: #d5b800;
+  --home-inventory: #1db4c3;
+  --home-admin: #4b80ed;
 }
 
 @layer base {
@@ -280,6 +284,28 @@
 .dashboard-clean-ui {
     font-feature-settings: "rlig" 1, "calt" 1;
     letter-spacing: 0;
+  }
+
+  .home-group-label {
+    color: var(--group-ink);
+    border-color: var(--group-border);
+    background: var(--group-soft);
+    box-shadow: 0 8px 18px var(--group-shadow);
+  }
+
+  .home-group-line {
+    background: var(--group-ink);
+  }
+
+  .home-action-tile {
+    color: #fff;
+    border-color: var(--group-border);
+    background-color: var(--group-main);
+    box-shadow: 0 12px 22px var(--group-shadow-strong);
+  }
+
+  .home-action-tile:hover {
+    box-shadow: 0 16px 28px var(--group-shadow-strong);
   }
 }
 

@@ -13,7 +13,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
-import { downloadCsv } from "@/lib/csv-utils"
+import { downloadCsv as saveCsv } from "@/lib/csv-utils"
 import { cn } from "@/lib/utils"
 
 type DailyRow = {
@@ -28,11 +28,11 @@ type ReportData = {
   error?: string
 }
 
-function downloadCsv(daily: DailyRow[], summary: ReportData["summary"]) {
+function exportSalesReportCsv(daily: DailyRow[], summary: ReportData["summary"]) {
   const header = ["التاريخ", "عدد الفواتير", "الإجمالي"]
   const rows = daily.map((d) => [d.date, String(d.count), String(d.total)])
   const footer = ["الإجمالي", String(summary.sales_count), String(summary.total_sales)]
-  downloadCsv("تقرير_المبيعات.csv", [header, ...rows, footer])
+  saveCsv("تقرير_المبيعات.csv", [header, ...rows, footer])
 }
 
 export function SalesReportView() {
@@ -107,7 +107,7 @@ export function SalesReportView() {
               <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()} disabled={loading}>
                 <RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث
               </Button>
-              <Button variant="outline" className="h-10 rounded-xl" onClick={() => downloadCsv(daily, summary!)} disabled={!data}>
+              <Button variant="outline" className="h-10 rounded-xl" onClick={() => exportSalesReportCsv(daily, summary!)} disabled={!data}>
                 <Download className="size-4" /> تصدير CSV
               </Button>
             </>

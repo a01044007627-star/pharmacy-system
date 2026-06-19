@@ -804,7 +804,7 @@ export function CashierView() {
     const safeRows = invoice.lines.map((line) => `
       <tr>
         <td><strong>${escapeHtml(line.name_ar)}</strong><small>${escapeHtml(primaryProductBarcode(line))}</small></td>
-        <td>${escapeHtml(line.quantity)}</td>
+        <td>${escapeHtml(String(line.quantity))}</td>
         <td>${escapeHtml(money(line.unit_price, currency))}</td>
         <td>${escapeHtml(money(line.quantity * line.unit_price - line.discount, currency))}</td>
       </tr>`).join("")

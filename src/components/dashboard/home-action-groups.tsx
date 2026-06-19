@@ -1,5 +1,6 @@
 "use client"
 
+import type { CSSProperties } from "react"
 import Link from "next/link"
 import type { LucideIcon } from "lucide-react"
 import {
@@ -51,42 +52,33 @@ const iconMap: Record<string, LucideIcon> = {
 
 const groupToneMap = {
   sales: {
-    label: "border-[#b8d8ea] bg-[#edf8ff] text-[#075985] shadow-[#075985]/12",
-    line: "bg-[#075985]",
-    lineGradient: "linear-gradient(to bottom, #0b76a6, #075985)",
-    tile: "border-[#0b5b7b]/25 bg-[#0a6f8f] text-white shadow-[#07364c]/22",
-    tileGradient: "linear-gradient(to bottom right, #0b5b7b, #0a6f8f, #07364c)",
-    shine: "bg-white/12",
-    badge: "bg-[#e0f2fe] text-[#075985] ring-[#bae6fd]",
+    main: "#167fa3", ink: "#075985", soft: "#edf8ff",
+    border: "#b8d8ea", shadow: "rgba(7, 89, 133, 0.14)", strongShadow: "rgba(7, 54, 76, 0.24)",
   },
   purchases: {
-    label: "border-[#e7d6a8] bg-[#fff7df] text-[#6b4b00] shadow-[#6b4b00]/10",
-    line: "bg-[#6f540c]",
-    lineGradient: "linear-gradient(to bottom, #8a6a10, #5f4708)",
-    tile: "border-[#8b6a15]/25 bg-[#8a6810] text-white shadow-[#4d3908]/22",
-    tileGradient: "linear-gradient(to bottom right, #78580c, #9a7514, #4d3908)",
-    shine: "bg-white/12",
-    badge: "bg-[#fef3c7] text-[#79560a] ring-[#fde68a]",
+    main: "#d5b800", ink: "#785f00", soft: "#fff8d9",
+    border: "#ead88b", shadow: "rgba(120, 95, 0, 0.14)", strongShadow: "rgba(99, 77, 0, 0.23)",
   },
   inventory: {
-    label: "border-[#b9eadf] bg-[#ecfdf5] text-[#047857] shadow-[#047857]/10",
-    line: "bg-[#08705a]",
-    lineGradient: "linear-gradient(to bottom, #189e90, #0d8879)",
-    tile: "border-[#189e90]/25 bg-[#189e90] text-white shadow-[#064e3b]/22",
-    tileGradient: "linear-gradient(to bottom right, #189e90, #26aea0, #138578)",
-    shine: "bg-white/12",
-    badge: "bg-[#d1fae5] text-[#047857] ring-[#a7f3d0]",
+    main: "#1db4c3", ink: "#087b86", soft: "#e9fbfc",
+    border: "#afe7eb", shadow: "rgba(8, 123, 134, 0.14)", strongShadow: "rgba(6, 92, 100, 0.23)",
   },
   admin: {
-    label: "border-[#bfd0ff] bg-[#eef3ff] text-[#1e3a8a] shadow-[#1e3a8a]/10",
-    line: "bg-[#1e43a8]",
-    lineGradient: "linear-gradient(to bottom, #1d4ed8, #1e3a8a)",
-    tile: "border-[#1e3a8a]/25 bg-[#243f94] text-white shadow-[#172554]/22",
-    tileGradient: "linear-gradient(to bottom right, #1e3a8a, #2746a0, #172554)",
-    shine: "bg-white/12",
-    badge: "bg-[#dbeafe] text-[#1e3a8a] ring-[#bfdbfe]",
+    main: "#4b80ed", ink: "#234da9", soft: "#eef3ff",
+    border: "#bfd0ff", shadow: "rgba(35, 77, 169, 0.14)", strongShadow: "rgba(23, 55, 122, 0.23)",
   },
 } as const
+
+function toneStyle(tone: (typeof groupToneMap)[keyof typeof groupToneMap]) {
+  return {
+    "--group-main": tone.main,
+    "--group-ink": tone.ink,
+    "--group-soft": tone.soft,
+    "--group-border": tone.border,
+    "--group-shadow": tone.shadow,
+    "--group-shadow-strong": tone.strongShadow,
+  } as CSSProperties
+}
 
 function getDisplayName(user: ReturnType<typeof useAuth>["user"], profile: ReturnType<typeof useAuth>["profile"]) {
   const rawName = profile?.full_name
@@ -146,19 +138,17 @@ export function HomeActionGroups() {
           const tone = groupToneMap[group.tone]
 
           return (
-            <div key={group.title} className="min-w-0">
+            <div key={group.title} className="min-w-0" style={toneStyle(tone)}>
               <div className="mb-0 flex flex-col items-center">
                 <div
                   className={cn(
-                    "relative z-10 rounded-2xl border px-7 py-3 text-center text-lg font-black leading-none shadow-lg ring-1 ring-white/70",
-                    tone.label,
+                    "home-group-label relative z-10 rounded-xl border px-7 py-3 text-center text-lg font-black leading-none ring-1 ring-white/70",
                   )}
                 >
                   {group.title}
                 </div>
                 <div
-                  className={cn("h-9 w-1 rounded-b-full shadow-sm", tone.line)}
-                  style={{ backgroundImage: tone.lineGradient }}
+                  className="home-group-line h-9 w-1 rounded-b-full shadow-sm"
                 />
               </div>
 
@@ -172,17 +162,15 @@ export function HomeActionGroups() {
                       key={`${group.title}-${item.title}`}
                       href={item.href}
                       className={cn(
-                        "group relative overflow-hidden rounded-xl border p-5 shadow-md transition duration-200 hover:-translate-y-0.5 hover:shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-dashboard-bg",
-                        tone.tile,
+                        "home-action-tile group relative overflow-hidden rounded-lg border p-5 transition duration-200 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-dashboard-bg",
                         isWide ? "col-span-2" : "col-span-1",
                       )}
-                      style={{ backgroundImage: tone.tileGradient }}
                     >
                       <span
                         aria-hidden="true"
                         className={cn(
                           "absolute -bottom-10 -left-10 size-28 rounded-full opacity-0 transition duration-300 group-hover:scale-125 group-hover:opacity-100",
-                          tone.shine,
+                          "bg-white/15",
                         )}
                       />
                       <span aria-hidden="true" className="absolute inset-x-0 top-0 h-px bg-white/35" />
