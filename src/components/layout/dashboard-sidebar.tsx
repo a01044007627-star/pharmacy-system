@@ -376,7 +376,7 @@ const DashboardSidebar = memo(function DashboardSidebar({ open, onOpenChange, co
       />
       <aside
         className={cn(
-          "fixed inset-y-0 right-0 z-50 flex w-[280px] flex-col border-l border-sidebar-border bg-white shadow-xl transition-transform duration-200 ease-in-out lg:shadow-none",
+          "fixed inset-y-0 right-0 z-50 flex w-[280px] flex-col border-l border-sidebar-border bg-sidebar shadow-xl transition-transform duration-200 ease-in-out lg:shadow-none",
           collapsed ? "lg:translate-x-full" : "lg:translate-x-0",
           open ? "translate-x-0" : "translate-x-full",
         )}
@@ -412,7 +412,7 @@ const DashboardSidebar = memo(function DashboardSidebar({ open, onOpenChange, co
         </nav>
 
         <div className="border-t border-sidebar-border p-3">
-          <div className="flex h-12 items-center gap-2.5 rounded-2xl border border-slate-200 bg-slate-50 px-2.5">
+          <div className="flex h-12 items-center gap-2.5 rounded-2xl border border-sidebar-border/60 bg-white shadow-xs px-2.5">
             <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-white text-slate-600 shadow-sm">
               <Store className="size-4" />
             </span>
@@ -481,7 +481,7 @@ function SidebarNavItem({
             "group flex h-11 w-full items-center gap-2.5 rounded-2xl px-2.5 text-[14px] font-black transition-all duration-200",
             active
               ? "bg-brand text-white shadow-md"
-              : "bg-slate-50 text-slate-700 hover:bg-brand-muted hover:text-brand active:scale-[0.99]",
+              : "bg-white border border-sidebar-border/50 text-slate-700 shadow-xs hover:bg-brand-muted hover:text-brand active:scale-[0.99]",
           )}
         >
           {Icon && (
@@ -509,7 +509,7 @@ function SidebarNavItem({
           "group flex h-11 w-full items-center gap-2.5 rounded-2xl px-2.5 text-[14px] font-black transition-all duration-200",
           active
             ? "bg-brand text-white shadow-md"
-            : "bg-slate-50 text-slate-700 hover:bg-brand-muted hover:text-brand active:scale-[0.99]",
+            : "bg-white border border-sidebar-border/50 text-slate-700 shadow-xs hover:bg-brand-muted hover:text-brand active:scale-[0.99]",
         )}
       >
         {Icon && (
