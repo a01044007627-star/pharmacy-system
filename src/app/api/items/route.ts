@@ -345,6 +345,29 @@ export async function POST(request: Request) {
     const pharmacyId = scope.activePharmacyId
     const nameAr = clean(body.name_ar)
     if (!nameAr) return NextResponse.json({ error: "اسم الصنف مطلوب" }, { status: 400 })
+
+    const { data: existingName } = await db
+      .from("pharmacy_items")
+      .select("id, name_ar")
+      .eq("pharmacy_id", pharmacyId)
+      .eq("name_ar", nameAr)
+      .neq("status", "deleted")
+      .maybeSingle()
+    if (existingName) return NextResponse.json({ error: `يوجد صنف بنفس الاسم: ${existingName.name_ar}` }, { status: 409 })
+
+    const barcodes = Array.isArray(body.barcodes) ? body.barcodes as Array<{ barcode: string; is_primary?: boolean }> : []
+    const incomingBarcodes = barcodes.map((b) => clean(b.barcode)).filter(Boolean)
+    if (incomingBarcodes.length > 0) {
+      const { data: existingBarcodes } = await db
+        .from("pharmacy_item_barcodes")
+        .select("barcode")
+        .eq("pharmacy_id", pharmacyId)
+        .in("barcode", incomingBarcodes)
+      if (existingBarcodes && existingBarcodes.length > 0) {
+        return NextResponse.json({ error: `الباركودات التالية مستخدمة بالفعل: ${existingBarcodes.map((b) => b.barcode).join("، ")}` }, { status: 409 })
+      }
+    }
+
     const baseUnit = clean(body.unit) || clean(body.sub_unit) || "وحدة"
 
     const itemData: Record<string, unknown> = {

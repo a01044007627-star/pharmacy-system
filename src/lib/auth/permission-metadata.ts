@@ -27,7 +27,8 @@ export const permissionGroups: Array<{ id: string; label: string; permissions: P
     id: "inventory",
     label: "الأصناف والمخزون",
     permissions: [
-      "inventory:read", "inventory:create", "inventory:update", "inventory:delete", "inventory:restore", "inventory:stocktake", "inventory:opening-stock.write", "items:view-cost", "items:view-profit", "items:export", "items:print",
+      "inventory:read", "inventory:create", "inventory:update", "inventory:delete", "inventory:restore", "inventory:archive", "inventory:stocktake", "inventory:opening-stock.write", "inventory:transfer.write", "inventory:damaged.write", "inventory:barcode.print",
+      "items:view-cost", "items:view-profit", "items:export", "items:print", "items:ledger.read", "items:price-groups.write",
     ],
   },
   {
@@ -84,6 +85,12 @@ export const permissionLabels: Partial<Record<Permission, string>> = {
   "items:view-profit": "عرض الربح",
   "items:export": "تصدير الأصناف",
   "items:print": "طباعة الأصناف",
+  "items:ledger.read": "دفتر الأستاذ للأصناف",
+  "items:price-groups.write": "إدارة مجموعات الأسعار",
+  "inventory:transfer.write": "تحويل مخزني",
+  "inventory:damaged.write": "تسجيل هالك وتالف",
+  "inventory:barcode.print": "طباعة الباركود",
+  "inventory:archive": "أرشفة الأصناف",
   "sales:read": "قراءة المبيعات",
   "sales:write": "تنفيذ بيع",
   "sales:void": "إلغاء فاتورة",

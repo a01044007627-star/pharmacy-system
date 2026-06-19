@@ -91,6 +91,8 @@ const pathPermissions: Array<{ prefix: string; permission: Permission | null }> 
   { prefix: "/dashboard/items/units", permission: "inventory:write" },
   { prefix: "/dashboard/items/barcode", permission: "inventory:barcode.print" },
   { prefix: "/dashboard/items/price-update", permission: "inventory:update" },
+  { prefix: "/dashboard/items/variants", permission: "inventory:update" },
+  { prefix: "/dashboard/items/warranties", permission: "inventory:update" },
   { prefix: "/dashboard/items/alternatives", permission: "inventory:update" },
   { prefix: "/dashboard/items/price-groups", permission: "items:price-groups.write" },
   { prefix: "/dashboard/items", permission: "inventory:read" },

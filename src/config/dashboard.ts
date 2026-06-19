@@ -37,6 +37,8 @@ export const sidebarItems = [
       { title: "الوحدات", href: "/dashboard/items/units" },
       { title: "الباركود", href: "/dashboard/items/barcode" },
       { title: "تحديث الأسعار", href: "/dashboard/items/price-update" },
+      { title: "المتغيرات", href: "/dashboard/items/variants" },
+      { title: "الضمانات", href: "/dashboard/items/warranties" },
       { title: "بدائل الأصناف", href: "/dashboard/items/alternatives" },
       { title: "مجموعات الأسعار", href: "/dashboard/items/price-groups" },
       { title: "محذوفات الأصناف", href: "/dashboard/items/deleted" },

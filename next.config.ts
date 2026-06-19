@@ -11,7 +11,6 @@ const withSerwist = withSerwistInit({
 
 const nextConfig: NextConfig = {
   devIndicators: { position: "bottom-right" },
-  turbopack: {},
   outputFileTracingExcludes: {
     "/*": ["**/*.wasm", "**/*.map", "**/node_modules/sharp/**"],
   },

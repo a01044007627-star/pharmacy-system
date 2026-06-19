@@ -752,21 +752,27 @@ export async function POST(request: Request) {
     const errors: ImportError[] = []
     const skipped: ImportError[] = []
 
-    const [groupsResult, brandsResult, branchesResult, skuResult] = await Promise.all([
+    const [groupsResult, brandsResult, branchesResult, skuResult, nameResult, barcodeResult] = await Promise.all([
       db.from("pharmacy_item_groups").select("id,name").eq("pharmacy_id", pharmacyId),
       db.from("pharmacy_item_brands").select("id,name").eq("pharmacy_id", pharmacyId),
       db.from("pharmacy_branches").select("id,name,code,is_default").eq("pharmacy_id", pharmacyId).neq("status", "closed"),
       db.from("pharmacy_items").select("sku").eq("pharmacy_id", pharmacyId),
+      db.from("pharmacy_items").select("name_ar").eq("pharmacy_id", pharmacyId).neq("status", "deleted"),
+      db.from("pharmacy_item_barcodes").select("barcode").eq("pharmacy_id", pharmacyId),
     ])
     if (groupsResult.error) throw groupsResult.error
     if (brandsResult.error) throw brandsResult.error
     if (branchesResult.error) throw branchesResult.error
     if (skuResult.error) throw skuResult.error
+    if (nameResult.error) throw nameResult.error
+    if (barcodeResult.error) throw barcodeResult.error
 
     let groupMap = new Map(((groupsResult.data ?? []) as LookupRow[]).map((g) => [normalizeLookupKey(g.name), g.id]))
     let brandMap = new Map(((brandsResult.data ?? []) as LookupRow[]).map((b) => [normalizeLookupKey(b.name), b.id]))
     const branches = (branchesResult.data ?? []) as BranchLookupRow[]
     const usedSkus = new Set(((skuResult.data ?? []) as Array<{ sku?: string | null }>).map((item) => clean(item.sku).toLowerCase()).filter(Boolean))
+    const usedNames = new Map(((nameResult.data ?? []) as Array<{ name_ar: string }>).map((item) => [normalizeLookupKey(item.name_ar), item.name_ar]))
+    const usedBarcodes = new Set(((barcodeResult.data ?? []) as Array<{ barcode: string }>).map((item) => clean(item.barcode).toLowerCase()).filter(Boolean))
 
     const normalizedRows: Array<Omit<PreparedImportRow, "itemPayload">> = []
 
@@ -779,6 +785,20 @@ export async function POST(request: Request) {
           errors.push({ row: rowNum, message: "NAME / اسم الصنف مطلوب" })
           continue
         }
+
+        const nameKey = normalizeLookupKey(row.name)
+        if (usedNames.has(nameKey)) {
+          skipped.push({ row: rowNum, name: row.name, message: `اسم الصنف "${row.name}" مطابق لصنف موجود "${usedNames.get(nameKey)}"` })
+          continue
+        }
+        usedNames.set(nameKey, row.name)
+
+        const primaryBarcodeValue = clean(row.primaryBarcode).toLowerCase()
+        if (primaryBarcodeValue && usedBarcodes.has(primaryBarcodeValue)) {
+          skipped.push({ row: rowNum, name: row.name, message: `الباركود "${row.primaryBarcode}" مستخدم بالفعل لصنف آخر` })
+          continue
+        }
+        if (primaryBarcodeValue) usedBarcodes.add(primaryBarcodeValue)
 
         let sku = row.sku
         if (sku) {
