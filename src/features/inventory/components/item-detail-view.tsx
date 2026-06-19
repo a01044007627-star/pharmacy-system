@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
-import { ArrowRight, Edit, ExternalLink, Loader2, Package, ShieldCheck, GitBranch } from "lucide-react"
+import { ArrowRight, Edit, ExternalLink, Loader2, Package, ShieldCheck, GitFork } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { DashboardPageHeader } from "@/components/shared/page-ui"
@@ -92,7 +92,7 @@ export function ItemDetailView({ itemId }: { itemId: string }) {
           actions={
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" className="h-10 rounded-xl" render={<Link href="/dashboard/items" />}><ArrowRight className="size-4" /> الأصناف</Button>
-              <Button variant="outline" className="h-10 rounded-xl" render={<Link href={`/dashboard/items/variants`} />}><GitBranch className="size-4" /> المتغيرات</Button>
+              <Button variant="outline" className="h-10 rounded-xl" render={<Link href={`/dashboard/items/variants`} />}><GitFork className="size-4" /> المتغيرات</Button>
               <Button variant="outline" className="h-10 rounded-xl" render={<Link href={`/dashboard/items/warranties`} />}><ShieldCheck className="size-4" /> الضمانات</Button>
               <Button className="h-10 rounded-xl" render={<Link href={`/dashboard/items/${itemId}/edit`} />}><Edit className="size-4" /> تعديل</Button>
             </div>

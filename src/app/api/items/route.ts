@@ -61,6 +61,32 @@ function paramValue(url: URL, key: string, fallback = "all") {
   return clean(url.searchParams.get(key)) || fallback
 }
 
+function sanitizeSearch(value: string) {
+  return value.replace(/[%_,()\-.]/g, " ").replace(/\s+/g, " ").trim()
+}
+
+const SQL_SORT_MAP: Record<string, string> = {
+  name: "name_ar",
+  manufacturer: "manufacturer_name",
+  group: "group_id",
+  brand: "brand_id",
+  subCategory: "sub_category",
+  productType: "product_type",
+  tax: "tax_percent",
+  weight: "weight",
+  branch: "branch_id",
+  unit: "unit",
+  sku: "sku",
+  status: "status",
+  sellPrice: "sell_price",
+  buyPrice: "buy_price",
+  oldSellPrice: "old_sell_price",
+}
+
+function hasComplexFilter(filters: Record<string, string>) {
+  return filters.expiry !== "all" || filters.price !== "all" || filters.stock !== "all" || filters.subUnit !== "all"
+}
+
 function priceChanged(item: PharmacyItemListRow) {
   const oldPrice = numberValue(item.old_sell_price)
   const currentPrice = numberValue(item.sell_price)
@@ -142,35 +168,59 @@ function sortItems(items: PharmacyItemListRow[], sortKey: string, sortDir: strin
   })
 }
 
-async function fetchItemsInPages(
+async function fetchItemPage(
   db: SupabaseClient,
   pharmacyId: string,
   branchId: string | null,
   mode: "active" | "deleted",
+  options: {
+    search?: string
+    itemType?: string
+    groupId?: string
+    brandId?: string
+    manufacturer?: string
+    unit?: string
+    notForSale?: boolean
+    sortSql?: string
+    sortDir?: string
+    rangeFrom: number
+    rangeTo: number
+  },
 ) {
-  const pageSize = 1000
-  const maxRows = mode === "deleted" ? 10000 : 30000
-  const result: PharmacyItemListRow[] = []
+  let query = db
+    .from("pharmacy_items")
+    .select("*", { count: "exact", head: false })
+    .eq("pharmacy_id", pharmacyId)
 
-  for (let from = 0; from < maxRows; from += pageSize) {
-    let query = db
-      .from("pharmacy_items")
-      .select("*")
-      .eq("pharmacy_id", pharmacyId)
+  query = applyBranchScope(query, branchId)
+  query = mode === "deleted" ? query.eq("status", "deleted") : query.neq("status", "deleted")
 
-    query = applyBranchScope(query, branchId)
-    query = mode === "deleted" ? query.eq("status", "deleted") : query.neq("status", "deleted")
-    query = query.order("updated_at", { ascending: false }).range(from, from + pageSize - 1)
-
-    const { data, error } = await query
-    if (error) throw error
-
-    const page = (data ?? []) as PharmacyItemListRow[]
-    result.push(...page)
-    if (page.length < pageSize) break
+  if (options.search) {
+    const q = sanitizeSearch(options.search)
+    if (q) {
+      query = query.or(
+        `name_ar.ilike.%${q}%,name_en.ilike.%${q}%,sku.ilike.%${q}%,search_text.ilike.%${q}%`,
+      )
+    }
   }
+  if (options.itemType && options.itemType !== "all") query = query.eq("item_type", options.itemType)
+  if (options.groupId && options.groupId !== "all") query = query.eq("group_id", options.groupId)
+  if (options.brandId && options.brandId !== "all") query = query.eq("brand_id", options.brandId)
+  if (options.manufacturer && options.manufacturer !== "all") query = query.eq("manufacturer_name", options.manufacturer)
+  if (options.unit && options.unit !== "all") query = query.eq("unit", options.unit)
+  if (options.notForSale) query = query.eq("not_for_sale", true)
 
-  return result
+  const sortCol = (options.sortSql && SQL_SORT_MAP[options.sortSql]) ? SQL_SORT_MAP[options.sortSql] : "name_ar"
+  query = query.order(sortCol, { ascending: options.sortDir !== "desc" })
+  query = query.range(options.rangeFrom, options.rangeTo)
+
+  const { data, error, count } = await query
+  if (error) throw error
+
+  return {
+    items: (data ?? []) as PharmacyItemListRow[],
+    count: count ?? 0,
+  }
 }
 
 async function fetchRelatedByItemIds<T = Record<string, unknown>>(
@@ -237,9 +287,44 @@ export async function GET(request: Request) {
       ),
     ])
 
-    const baseItems = await fetchItemsInPages(db, pharmacyId, branchId, mode)
-    const itemIds = baseItems.map((item) => item.id)
+    const page = asPositiveInt(url.searchParams.get("page"), 1, 100000)
+    const pageSize = asPositiveInt(url.searchParams.get("page_size"), 25, 1000)
+    const sortKey = paramValue(url, "sort_key", "name")
+    const sortDir = paramValue(url, "sort_dir", "asc")
+    const search = clean(url.searchParams.get("search"))
+    const filters = {
+      itemType: paramValue(url, "item_type"),
+      groupId: paramValue(url, "group_id"),
+      brandId: paramValue(url, "brand_id"),
+      manufacturer: paramValue(url, "manufacturer"),
+      unit: paramValue(url, "unit"),
+      subUnit: paramValue(url, "sub_unit"),
+      expiry: paramValue(url, "expiry"),
+      price: paramValue(url, "price"),
+      stock: paramValue(url, "stock"),
+      notForSale: url.searchParams.get("not_for_sale") === "true",
+    }
 
+    const hasComplex = hasComplexFilter(filters)
+    const buffer = hasComplex ? pageSize * 5 : pageSize
+    const rangeFrom = (page - 1) * pageSize
+    const rangeTo = rangeFrom + buffer - 1
+
+    const { items: rawItems, count: sqlCount } = await fetchItemPage(db, pharmacyId, branchId, mode, {
+      search: search.toLowerCase(),
+      itemType: filters.itemType,
+      groupId: filters.groupId,
+      brandId: filters.brandId,
+      manufacturer: filters.manufacturer,
+      unit: filters.unit,
+      notForSale: filters.notForSale,
+      sortSql: SQL_SORT_MAP[sortKey] ? sortKey : undefined,
+      sortDir,
+      rangeFrom,
+      rangeTo,
+    })
+
+    const itemIds = rawItems.map((item) => item.id)
     const [barcodes, subUnits, batches, balances] = itemIds.length > 0
       ? await Promise.all([
           fetchRelatedByItemIds<(ItemBarcodeRow & { item_id: string })>(
@@ -279,7 +364,7 @@ export async function GET(request: Request) {
     const batchesByItem = mapByItemId(batches)
     const balancesByItem = mapByItemId(balances)
 
-    const items = baseItems.map((item) => ({
+    const items = rawItems.map((item) => ({
       ...item,
       group: item.group_id ? groupMap.get(item.group_id) ?? null : null,
       brand: item.brand_id ? brandMap.get(item.brand_id) ?? null : null,
@@ -290,14 +375,17 @@ export async function GET(request: Request) {
       balances: balancesByItem.get(item.id) ?? [],
     })) satisfies PharmacyItemListRow[]
 
-    const page = asPositiveInt(url.searchParams.get("page"), 1, 100000)
-    const pageSize = asPositiveInt(url.searchParams.get("page_size"), 25, 1000)
-    const filteredItems = applyListFilters(items, url, branchId)
-    const sortedItems = sortItems(filteredItems, paramValue(url, "sort_key", "name"), paramValue(url, "sort_dir", "asc"), branchId)
-    const itemsTotal = sortedItems.length
+    const filteredItems = hasComplex
+      ? applyListFilters(items, url, branchId)
+      : items
+
+    const sortedItems = sortItems(filteredItems, sortKey, sortDir, branchId)
+    const itemsTotal = hasComplex
+      ? sortedItems.length
+      : sqlCount
     const totalPages = Math.max(1, Math.ceil(itemsTotal / pageSize))
     const currentPage = Math.min(page, totalPages)
-    const pageItems = sortedItems.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+    const pageItems = sortedItems.slice(0, pageSize)
     const summary = {
       lowStock: filteredItems.filter((item) => isLowStock(item, branchId)).length,
       outOfStock: filteredItems.filter((item) => isOutOfStock(item, branchId)).length,
@@ -308,7 +396,7 @@ export async function GET(request: Request) {
     return NextResponse.json({
       items: pageItems,
       itemsTotal,
-      itemsLoaded: items.length,
+      itemsLoaded: rawItems.length,
       page: currentPage,
       pageSize,
       totalPages,
@@ -316,8 +404,8 @@ export async function GET(request: Request) {
       groups,
       brands,
       branches,
-      manufacturers: uniqueStrings(baseItems.map((item) => item.manufacturer_name)),
-      units: uniqueStrings(baseItems.map((item) => item.unit)),
+      manufacturers: uniqueStrings(rawItems.map((item) => item.manufacturer_name)),
+      units: uniqueStrings(rawItems.map((item) => item.unit)),
       subUnits: uniqueStrings(subUnits.map((unit) => unit.unit_name)),
       pharmacyId,
       branchId,
