@@ -238,7 +238,7 @@ const ROLE_PERMISSIONS: Record<MedicalRole, Permission[]> = {
   ],
   pharmacist: [
     "pharmacy:read", "branches:read",
-    "sales:read", "sales:write",
+    "sales:read", "sales:write", "sales:discount",
     "purchases:read",
     "inventory:read", "inventory:write", "inventory:create", "inventory:update", "inventory:stocktake", "inventory:opening-stock.write", "inventory:barcode.print",
     "items:print", "items:ledger.read",

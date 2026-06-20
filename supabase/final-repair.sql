@@ -1623,3 +1623,1906 @@ CREATE INDEX IF NOT EXISTS idx_pharmacy_attendance_date_employee
 
 NOTIFY pgrst, 'reload schema';
 COMMIT;
+
+
+-- ===== CASHIER REPAIR SOURCE: 20260618005000_cashier_atomic_fefo_security.sql =====
+-- Atomic cashier sale v2:
+-- - validates the open shift
+-- - applies permissions server-side
+-- - deducts stock safely under row locks
+-- - consumes the nearest valid expiry batches first (FEFO)
+-- - updates the cashier shift in the same transaction
+
+ALTER TABLE public.pharmacy_sales
+  ADD COLUMN IF NOT EXISTS client_request_id TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pharmacy_sales_client_request
+  ON public.pharmacy_sales(pharmacy_id, client_request_id)
+  WHERE client_request_id IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION public.create_cashier_sale_v2(
+  p_pharmacy_id UUID,
+  p_branch_id UUID,
+  p_shift_id UUID,
+  p_actor_id UUID,
+  p_client_request_id TEXT,
+  p_customer_name TEXT,
+  p_payment_method TEXT,
+  p_paid_amount NUMERIC,
+  p_invoice_discount NUMERIC,
+  p_tax_total NUMERIC,
+  p_shipping_fee NUMERIC,
+  p_rounding_adj NUMERIC,
+  p_notes TEXT,
+  p_coupon_code TEXT DEFAULT NULL,
+  p_patient_name TEXT DEFAULT NULL,
+  p_doctor_name TEXT DEFAULT NULL,
+  p_prescription_number TEXT DEFAULT NULL,
+  p_lines JSONB DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+DECLARE
+  v_actor_id UUID := COALESCE(auth.uid(), p_actor_id);
+  v_sale public.pharmacy_sales%ROWTYPE;
+  v_shift public.pharmacy_shifts%ROWTYPE;
+  v_item public.pharmacy_items%ROWTYPE;
+  v_batch public.pharmacy_item_batches%ROWTYPE;
+  v_coupon public.pharmacy_coupons%ROWTYPE;
+  v_line JSONB;
+  v_quantity NUMERIC;
+  v_remaining_quantity NUMERIC;
+  v_alloc_quantity NUMERIC;
+  v_unit_price NUMERIC;
+  v_line_discount NUMERIC;
+  v_remaining_discount NUMERIC;
+  v_alloc_discount NUMERIC;
+  v_line_total NUMERIC;
+  v_subtotal NUMERIC := 0;
+  v_line_discounts NUMERIC := 0;
+  v_invoice_discount NUMERIC := 0;
+  v_coupon_discount NUMERIC := 0;
+  v_tax_total NUMERIC := GREATEST(COALESCE(p_tax_total, 0), 0);
+  v_shipping_fee NUMERIC := GREATEST(COALESCE(p_shipping_fee, 0), 0);
+  v_rounding_adj NUMERIC := COALESCE(p_rounding_adj, 0);
+  v_total NUMERIC;
+  v_paid NUMERIC;
+  v_due NUMERIC;
+  v_invoice_number TEXT;
+  v_can_discount BOOLEAN;
+  v_can_override_price BOOLEAN;
+  v_has_batches BOOLEAN;
+  v_method TEXT := COALESCE(NULLIF(BTRIM(p_payment_method), ''), 'cash');
+  v_cash_paid NUMERIC := 0;
+  v_card_paid NUMERIC := 0;
+BEGIN
+  IF v_actor_id IS NULL THEN
+    RAISE EXCEPTION 'يجب تسجيل الدخول أولاً';
+  END IF;
+
+  IF NOT public.user_has_permission(p_pharmacy_id, 'sales:write', v_actor_id) THEN
+    RAISE EXCEPTION 'ليست لديك صلاحية تنفيذ البيع';
+  END IF;
+
+  IF NOT public.has_branch_access(p_pharmacy_id, p_branch_id, v_actor_id) THEN
+    RAISE EXCEPTION 'ليست لديك صلاحية على هذا الفرع';
+  END IF;
+
+  IF p_client_request_id IS NULL OR length(BTRIM(p_client_request_id)) < 8 THEN
+    RAISE EXCEPTION 'معرف عملية البيع غير صالح';
+  END IF;
+
+  SELECT *
+    INTO v_sale
+  FROM public.pharmacy_sales
+  WHERE pharmacy_id = p_pharmacy_id
+    AND client_request_id = p_client_request_id
+  LIMIT 1;
+
+  IF FOUND THEN
+    RETURN jsonb_build_object(
+      'sale', to_jsonb(v_sale),
+      'lines', COALESCE((
+        SELECT jsonb_agg(to_jsonb(sale_line) ORDER BY sale_line.created_at, sale_line.id)
+        FROM public.pharmacy_sale_lines sale_line
+        WHERE sale_line.sale_id = v_sale.id
+      ), '[]'::jsonb),
+      'duplicate', true
+    );
+  END IF;
+
+  SELECT *
+    INTO v_shift
+  FROM public.pharmacy_shifts
+  WHERE id = p_shift_id
+    AND pharmacy_id = p_pharmacy_id
+    AND branch_id = p_branch_id
+    AND user_id = v_actor_id
+    AND status = 'open'
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'جلسة الكاشير غير مفتوحة أو انتهت';
+  END IF;
+
+  IF p_lines IS NULL OR jsonb_typeof(p_lines) <> 'array' OR jsonb_array_length(p_lines) = 0 THEN
+    RAISE EXCEPTION 'أضف صنفاً واحداً على الأقل';
+  END IF;
+
+  v_can_discount := public.user_has_permission(p_pharmacy_id, 'sales:discount', v_actor_id);
+  v_can_override_price := public.user_has_permission(p_pharmacy_id, 'sales:price-override', v_actor_id);
+
+  FOR v_line IN SELECT value FROM jsonb_array_elements(p_lines)
+  LOOP
+    SELECT *
+      INTO v_item
+    FROM public.pharmacy_items
+    WHERE id = (v_line->>'item_id')::UUID
+      AND pharmacy_id = p_pharmacy_id
+      AND status = 'active'
+      AND COALESCE(not_for_sale, false) = false
+      AND (branch_id IS NULL OR branch_id = p_branch_id)
+    FOR SHARE;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'يوجد صنف غير صالح للبيع';
+    END IF;
+
+    v_quantity := COALESCE((v_line->>'quantity')::NUMERIC, 0);
+    IF v_quantity <= 0 THEN
+      RAISE EXCEPTION 'كمية البيع غير صحيحة للصنف %', v_item.name_ar;
+    END IF;
+
+    v_unit_price := CASE
+      WHEN v_can_override_price
+        THEN GREATEST(COALESCE((v_line->>'unit_price')::NUMERIC, v_item.sell_price), 0)
+      ELSE v_item.sell_price
+    END;
+    v_line_discount := CASE
+      WHEN v_can_discount
+        THEN GREATEST(COALESCE((v_line->>'discount')::NUMERIC, 0), 0)
+      ELSE 0
+    END;
+    v_line_discount := LEAST(v_line_discount, v_quantity * v_unit_price);
+    v_subtotal := v_subtotal + (v_quantity * v_unit_price);
+    v_line_discounts := v_line_discounts + v_line_discount;
+  END LOOP;
+
+  IF v_can_discount THEN
+    v_invoice_discount := GREATEST(COALESCE(p_invoice_discount, 0), 0);
+  END IF;
+  v_invoice_discount := LEAST(v_invoice_discount, GREATEST(v_subtotal - v_line_discounts, 0));
+
+  -- Coupon validation
+  IF p_coupon_code IS NOT NULL AND length(BTRIM(p_coupon_code)) > 0 THEN
+    SELECT * INTO v_coupon
+    FROM public.pharmacy_coupons
+    WHERE pharmacy_id = p_pharmacy_id
+      AND code = UPPER(BTRIM(p_coupon_code))
+      AND is_active = true
+      AND (max_uses = 0 OR used_count < max_uses)
+      AND (valid_from IS NULL OR valid_from <= now())
+      AND (valid_until IS NULL OR valid_until >= now());
+
+    IF FOUND THEN
+      IF v_subtotal - v_line_discounts < v_coupon.min_purchase THEN
+        RAISE EXCEPTION 'الطلب لا يستوفي الحد الأدنى للشراء للكوبون (%)', v_coupon.code;
+      END IF;
+
+      v_coupon_discount := CASE
+        WHEN v_coupon.discount_type = 'percentage'
+          THEN round((v_subtotal - v_line_discounts) * v_coupon.discount_value / 100, 2)
+        ELSE v_coupon.discount_value
+      END;
+      v_coupon_discount := LEAST(v_coupon_discount, GREATEST(v_subtotal - v_line_discounts - v_invoice_discount, 0));
+    ELSE
+      RAISE EXCEPTION 'الكوبون غير صالح أو منتهي الصلاحية';
+    END IF;
+  END IF;
+
+  v_total := GREATEST(v_subtotal - v_line_discounts - v_invoice_discount - v_coupon_discount + v_tax_total + v_shipping_fee + v_rounding_adj, 0);
+  v_paid := LEAST(v_total, GREATEST(COALESCE(p_paid_amount, v_total), 0));
+  v_due := GREATEST(v_total - v_paid, 0);
+  v_invoice_number := 'S-' || to_char(clock_timestamp(), 'YYYYMMDD-HH24MISS-MS')
+    || '-' || upper(substr(replace(p_client_request_id, '-', ''), 1, 6));
+
+  INSERT INTO public.pharmacy_sales (
+    pharmacy_id, branch_id, shift_id, invoice_number, client_request_id,
+    customer_name, patient_name, doctor_name, prescription_number,
+    status, payment_status, payment_method,
+    subtotal, discount_total, tax_total, total, paid_amount, due_amount,
+    shipping_fee, rounding_adj, notes, coupon_id, coupon_discount, coupon_code, created_by
+  )
+  VALUES (
+    p_pharmacy_id, p_branch_id, p_shift_id, v_invoice_number, p_client_request_id,
+    COALESCE(NULLIF(BTRIM(p_customer_name), ''), 'زبون نقدي'),
+    NULLIF(BTRIM(p_patient_name), ''), NULLIF(BTRIM(p_doctor_name), ''), NULLIF(BTRIM(p_prescription_number), ''),
+    'invoice',
+    CASE WHEN v_paid >= v_total THEN 'paid' WHEN v_paid > 0 THEN 'partial' ELSE 'unpaid' END,
+    v_method,
+    round(v_subtotal, 2),
+    round(v_line_discounts + v_invoice_discount + v_coupon_discount, 2),
+    round(v_tax_total, 2),
+    round(v_total, 2),
+    round(v_paid, 2),
+    round(v_due, 2),
+    round(v_shipping_fee, 2),
+    round(v_rounding_adj, 2),
+    NULLIF(BTRIM(p_notes), ''),
+    CASE WHEN v_coupon.id IS NOT NULL THEN v_coupon.id ELSE NULL END,
+    round(v_coupon_discount, 2),
+    CASE WHEN v_coupon.id IS NOT NULL THEN UPPER(BTRIM(p_coupon_code)) ELSE NULL END,
+    v_actor_id
+  )
+  RETURNING * INTO v_sale;
+
+  FOR v_line IN SELECT value FROM jsonb_array_elements(p_lines)
+  LOOP
+    SELECT *
+      INTO v_item
+    FROM public.pharmacy_items
+    WHERE id = (v_line->>'item_id')::UUID
+      AND pharmacy_id = p_pharmacy_id;
+
+    v_quantity := (v_line->>'quantity')::NUMERIC;
+    v_unit_price := CASE
+      WHEN v_can_override_price
+        THEN GREATEST(COALESCE((v_line->>'unit_price')::NUMERIC, v_item.sell_price), 0)
+      ELSE v_item.sell_price
+    END;
+    v_line_discount := CASE
+      WHEN v_can_discount
+        THEN GREATEST(COALESCE((v_line->>'discount')::NUMERIC, 0), 0)
+      ELSE 0
+    END;
+    v_line_discount := LEAST(v_line_discount, v_quantity * v_unit_price);
+
+    IF v_item.manage_inventory THEN
+      UPDATE public.pharmacy_stock_balances
+      SET quantity = quantity - v_quantity,
+          updated_at = now()
+      WHERE pharmacy_id = p_pharmacy_id
+        AND branch_id = p_branch_id
+        AND item_id = v_item.id
+        AND quantity >= v_quantity;
+
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'الكمية غير كافية للصنف: %', v_item.name_ar;
+      END IF;
+    END IF;
+
+    v_remaining_quantity := v_quantity;
+    v_remaining_discount := v_line_discount;
+    SELECT EXISTS (
+      SELECT 1
+      FROM public.pharmacy_item_batches batch_row
+      WHERE batch_row.pharmacy_id = p_pharmacy_id
+        AND (batch_row.branch_id = p_branch_id OR batch_row.branch_id IS NULL)
+        AND batch_row.item_id = v_item.id
+        AND batch_row.remaining_quantity > 0
+    ) INTO v_has_batches;
+
+    FOR v_batch IN
+      SELECT batch_row.*
+      FROM public.pharmacy_item_batches batch_row
+      WHERE batch_row.pharmacy_id = p_pharmacy_id
+        AND (batch_row.branch_id = p_branch_id OR batch_row.branch_id IS NULL)
+        AND batch_row.item_id = v_item.id
+        AND batch_row.remaining_quantity > 0
+        AND (batch_row.expiry_date IS NULL OR batch_row.expiry_date >= CURRENT_DATE)
+      ORDER BY batch_row.expiry_date ASC NULLS LAST, batch_row.created_at ASC, batch_row.id ASC
+      FOR UPDATE
+    LOOP
+      EXIT WHEN v_remaining_quantity <= 0;
+      v_alloc_quantity := LEAST(v_remaining_quantity, v_batch.remaining_quantity);
+      v_alloc_discount := CASE
+        WHEN v_alloc_quantity = v_remaining_quantity THEN v_remaining_discount
+        ELSE LEAST(v_remaining_discount, round(v_line_discount * (v_alloc_quantity / v_quantity), 2))
+      END;
+      v_line_total := GREATEST(v_alloc_quantity * v_unit_price - v_alloc_discount, 0);
+
+      INSERT INTO public.pharmacy_sale_lines (
+        pharmacy_id, sale_id, item_id, batch_id, item_name, barcode, unit,
+        quantity, unit_price, purchase_price, discount, net_total
+      )
+      VALUES (
+        p_pharmacy_id, v_sale.id, v_item.id, v_batch.id, v_item.name_ar,
+        NULLIF(BTRIM(v_line->>'barcode'), ''),
+        COALESCE(NULLIF(BTRIM(v_line->>'unit'), ''), v_item.unit, 'unit'),
+        v_alloc_quantity, v_unit_price, v_item.buy_price, v_alloc_discount, round(v_line_total, 2)
+      );
+
+      UPDATE public.pharmacy_item_batches
+      SET remaining_quantity = remaining_quantity - v_alloc_quantity,
+          updated_at = now()
+      WHERE id = v_batch.id;
+
+      INSERT INTO public.pharmacy_stock_movements (
+        pharmacy_id, branch_id, item_id, batch_id, direction, quantity,
+        unit_price, total_value, movement_type, source_table, source_id, created_by
+      )
+      VALUES (
+        p_pharmacy_id, p_branch_id, v_item.id, v_batch.id, 'out', v_alloc_quantity,
+        v_unit_price, round(v_line_total, 2), 'sale', 'pharmacy_sales', v_sale.id, v_actor_id
+      );
+
+      v_remaining_quantity := v_remaining_quantity - v_alloc_quantity;
+      v_remaining_discount := GREATEST(v_remaining_discount - v_alloc_discount, 0);
+    END LOOP;
+
+    IF v_remaining_quantity > 0 AND v_has_batches AND (v_item.track_batch OR v_item.has_expiry) THEN
+      RAISE EXCEPTION 'لا توجد تشغيلة صالحة بكمية كافية للصنف: %', v_item.name_ar;
+    END IF;
+
+    IF v_remaining_quantity > 0 THEN
+      v_line_total := GREATEST(v_remaining_quantity * v_unit_price - v_remaining_discount, 0);
+
+      INSERT INTO public.pharmacy_sale_lines (
+        pharmacy_id, sale_id, item_id, item_name, barcode, unit,
+        quantity, unit_price, purchase_price, discount, net_total
+      )
+      VALUES (
+        p_pharmacy_id, v_sale.id, v_item.id, v_item.name_ar,
+        NULLIF(BTRIM(v_line->>'barcode'), ''),
+        COALESCE(NULLIF(BTRIM(v_line->>'unit'), ''), v_item.unit, 'unit'),
+        v_remaining_quantity, v_unit_price, v_item.buy_price, v_remaining_discount, round(v_line_total, 2)
+      );
+
+      INSERT INTO public.pharmacy_stock_movements (
+        pharmacy_id, branch_id, item_id, direction, quantity,
+        unit_price, total_value, movement_type, source_table, source_id, created_by
+      )
+      VALUES (
+        p_pharmacy_id, p_branch_id, v_item.id, 'out', v_remaining_quantity,
+        v_unit_price, round(v_line_total, 2), 'sale', 'pharmacy_sales', v_sale.id, v_actor_id
+      );
+    END IF;
+
+    -- Auto-log controlled drug dispense
+    IF v_item.is_controlled THEN
+      INSERT INTO public.pharmacy_controlled_drugs_log (
+        pharmacy_id, item_id, branch_id, action, quantity,
+        patient_name, doctor_name, prescription_number, notes,
+        created_by, created_at
+      ) VALUES (
+        p_pharmacy_id, v_item.id, p_branch_id, 'dispensed',
+        (v_line->>'quantity')::NUMERIC,
+        NULLIF(BTRIM(p_patient_name), ''), NULLIF(BTRIM(p_doctor_name), ''),
+        NULLIF(BTRIM(p_prescription_number), ''),
+        'صرف: ' || v_sale.invoice_number,
+        v_actor_id, now()
+      );
+    END IF;
+  END LOOP;
+
+  -- Auto-create/link prescription
+  IF NULLIF(BTRIM(p_prescription_number), '') IS NOT NULL OR NULLIF(BTRIM(p_patient_name), '') IS NOT NULL THEN
+    DECLARE
+      v_prescription_id UUID;
+    BEGIN
+      SELECT id INTO v_prescription_id
+      FROM public.pharmacy_prescriptions
+      WHERE pharmacy_id = p_pharmacy_id
+        AND patient_name = COALESCE(NULLIF(BTRIM(p_patient_name), ''), COALESCE(NULLIF(BTRIM(p_customer_name), ''), 'زبون نقدي'))
+        AND status = 'open'
+        AND sale_id IS NULL
+      LIMIT 1;
+
+      IF NOT FOUND THEN
+        INSERT INTO public.pharmacy_prescriptions (
+          pharmacy_id, branch_id, sale_id,
+          patient_name, doctor_name, diagnosis,
+          status, notes, created_by,
+          dispensed_by, dispensed_at
+        ) VALUES (
+          p_pharmacy_id, p_branch_id, v_sale.id,
+          COALESCE(NULLIF(BTRIM(p_patient_name), ''), COALESCE(NULLIF(BTRIM(p_customer_name), ''), 'زبون نقدي')),
+          NULLIF(BTRIM(p_doctor_name), ''),
+          NULLIF(BTRIM(p_prescription_number), ''),
+          'dispensed', v_sale.invoice_number,
+          v_actor_id, v_actor_id, now()
+        );
+      ELSE
+        UPDATE public.pharmacy_prescriptions
+        SET status = 'dispensed',
+            sale_id = v_sale.id,
+            doctor_name = COALESCE(NULLIF(BTRIM(p_doctor_name), ''), doctor_name),
+            dispensed_by = v_actor_id,
+            dispensed_at = now(),
+            updated_at = now()
+        WHERE id = v_prescription_id;
+      END IF;
+    END;
+  END IF;
+
+  v_cash_paid := CASE WHEN v_method = 'cash' THEN v_paid ELSE 0 END;
+  v_card_paid := CASE WHEN v_method IN ('card', 'wallet', 'mixed') THEN v_paid ELSE 0 END;
+
+  UPDATE public.pharmacy_shifts
+  SET cash_sales = COALESCE(cash_sales, 0) + v_cash_paid,
+      card_sales = COALESCE(card_sales, 0) + v_card_paid,
+      credit_sales = COALESCE(credit_sales, 0) + v_due,
+      total_collected = COALESCE(total_collected, 0) + v_paid,
+      expected_balance = COALESCE(opening_balance, 0) + COALESCE(cash_sales, 0) + v_cash_paid - COALESCE(total_expenses, 0),
+      updated_at = now()
+  WHERE id = p_shift_id;
+
+  IF v_coupon.id IS NOT NULL THEN
+    UPDATE public.pharmacy_coupons
+    SET used_count = used_count + 1,
+        updated_at = now()
+    WHERE id = v_coupon.id;
+  END IF;
+
+  RETURN jsonb_build_object(
+    'sale', to_jsonb(v_sale),
+    'lines', COALESCE((
+      SELECT jsonb_agg(to_jsonb(sale_line) ORDER BY sale_line.created_at, sale_line.id)
+      FROM public.pharmacy_sale_lines sale_line
+      WHERE sale_line.sale_id = v_sale.id
+    ), '[]'::jsonb),
+    'duplicate', false
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.create_cashier_sale_v2(
+  UUID, UUID, UUID, UUID, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB
+) FROM PUBLIC;
+
+GRANT EXECUTE ON FUNCTION public.create_cashier_sale_v2(
+  UUID, UUID, UUID, UUID, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB
+) TO authenticated, service_role;
+
+CREATE OR REPLACE FUNCTION public.void_cashier_sale(
+  p_pharmacy_id UUID,
+  p_sale_id UUID,
+  p_actor_id UUID,
+  p_reason TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+DECLARE
+  v_actor_id UUID := COALESCE(auth.uid(), p_actor_id);
+  v_sale public.pharmacy_sales%ROWTYPE;
+  v_line public.pharmacy_sale_lines%ROWTYPE;
+  v_item public.pharmacy_items%ROWTYPE;
+  v_cash_paid NUMERIC := 0;
+  v_card_paid NUMERIC := 0;
+BEGIN
+  IF v_actor_id IS NULL THEN
+    RAISE EXCEPTION 'يجب تسجيل الدخول أولاً';
+  END IF;
+
+  IF NOT public.user_has_permission(p_pharmacy_id, 'sales:void', v_actor_id) THEN
+    RAISE EXCEPTION 'ليست لديك صلاحية إلغاء المبيعات';
+  END IF;
+
+  SELECT *
+    INTO v_sale
+  FROM public.pharmacy_sales
+  WHERE id = p_sale_id
+    AND pharmacy_id = p_pharmacy_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'فاتورة البيع غير موجودة';
+  END IF;
+
+  IF v_sale.voided_at IS NOT NULL OR v_sale.status IN ('void', 'cancelled') THEN
+    RETURN jsonb_build_object('ok', true, 'duplicate', true, 'sale', to_jsonb(v_sale));
+  END IF;
+
+  IF NOT public.has_branch_access(p_pharmacy_id, v_sale.branch_id, v_actor_id) THEN
+    RAISE EXCEPTION 'ليست لديك صلاحية على فرع الفاتورة';
+  END IF;
+
+  FOR v_line IN
+    SELECT *
+    FROM public.pharmacy_sale_lines
+    WHERE sale_id = p_sale_id
+      AND pharmacy_id = p_pharmacy_id
+    ORDER BY created_at, id
+    FOR UPDATE
+  LOOP
+    SELECT *
+      INTO v_item
+    FROM public.pharmacy_items
+    WHERE id = v_line.item_id
+      AND pharmacy_id = p_pharmacy_id;
+
+    IF FOUND AND v_item.manage_inventory THEN
+      INSERT INTO public.pharmacy_stock_balances (
+        pharmacy_id, branch_id, item_id, quantity, updated_at
+      )
+      VALUES (
+        p_pharmacy_id, v_sale.branch_id, v_line.item_id, v_line.quantity, now()
+      )
+      ON CONFLICT (pharmacy_id, item_id, branch_id)
+      DO UPDATE SET
+        quantity = public.pharmacy_stock_balances.quantity + EXCLUDED.quantity,
+        updated_at = now();
+    END IF;
+
+    IF v_line.batch_id IS NOT NULL THEN
+      UPDATE public.pharmacy_item_batches
+      SET remaining_quantity = remaining_quantity + v_line.quantity,
+          updated_at = now()
+      WHERE id = v_line.batch_id
+        AND pharmacy_id = p_pharmacy_id;
+    END IF;
+
+    INSERT INTO public.pharmacy_stock_movements (
+      pharmacy_id, branch_id, item_id, batch_id, direction, quantity,
+      unit_price, total_value, movement_type, source_table, source_id, created_by
+    )
+    VALUES (
+      p_pharmacy_id, v_sale.branch_id, v_line.item_id, v_line.batch_id,
+      'in', v_line.quantity, v_line.unit_price, v_line.net_total,
+      'sale_void', 'pharmacy_sales', v_sale.id, v_actor_id
+    );
+  END LOOP;
+
+  UPDATE public.pharmacy_sales
+  SET status = 'void',
+      voided_at = now(),
+      voided_by = v_actor_id,
+      void_reason = COALESCE(NULLIF(BTRIM(p_reason), ''), 'إلغاء فاتورة بيع'),
+      updated_at = now()
+  WHERE id = p_sale_id
+  RETURNING * INTO v_sale;
+
+  v_cash_paid := CASE WHEN v_sale.payment_method = 'cash' THEN v_sale.paid_amount ELSE 0 END;
+  v_card_paid := CASE WHEN v_sale.payment_method IN ('card', 'wallet', 'mixed') THEN v_sale.paid_amount ELSE 0 END;
+
+  IF v_sale.shift_id IS NOT NULL THEN
+    UPDATE public.pharmacy_shifts
+    SET cash_sales = GREATEST(COALESCE(cash_sales, 0) - v_cash_paid, 0),
+        card_sales = GREATEST(COALESCE(card_sales, 0) - v_card_paid, 0),
+        credit_sales = GREATEST(COALESCE(credit_sales, 0) - COALESCE(v_sale.due_amount, 0), 0),
+        total_collected = GREATEST(COALESCE(total_collected, 0) - COALESCE(v_sale.paid_amount, 0), 0),
+        expected_balance = COALESCE(opening_balance, 0)
+          + GREATEST(COALESCE(cash_sales, 0) - v_cash_paid, 0)
+          - COALESCE(total_expenses, 0),
+        difference = CASE
+          WHEN status = 'closed' AND closing_balance IS NOT NULL THEN
+            closing_balance - (
+              COALESCE(opening_balance, 0)
+              + GREATEST(COALESCE(cash_sales, 0) - v_cash_paid, 0)
+              - COALESCE(total_expenses, 0)
+            )
+          ELSE difference
+        END,
+        updated_at = now()
+    WHERE id = v_sale.shift_id
+      AND pharmacy_id = p_pharmacy_id;
+  END IF;
+
+  RETURN jsonb_build_object('ok', true, 'duplicate', false, 'sale', to_jsonb(v_sale));
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.void_cashier_sale(UUID, UUID, UUID, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.void_cashier_sale(UUID, UUID, UUID, TEXT) TO authenticated, service_role;
+
+
+-- ===== CASHIER REPAIR SOURCE: 20260621001000_full_operational_closure.sql =====
+BEGIN;
+
+-- Full operational closure for patients, loyalty and accounting.
+-- The migration is additive/idempotent and preserves all existing tenant data.
+
+ALTER TABLE public.pharmacy_patients
+  ADD COLUMN IF NOT EXISTS client_request_id UUID;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_patients_client_request
+  ON public.pharmacy_patients(pharmacy_id, client_request_id)
+  WHERE client_request_id IS NOT NULL;
+
+ALTER TABLE public.pharmacy_sales
+  ADD COLUMN IF NOT EXISTS patient_id UUID REFERENCES public.pharmacy_patients(id) ON DELETE SET NULL;
+
+ALTER TABLE public.pharmacy_prescriptions
+  ADD COLUMN IF NOT EXISTS patient_record_id UUID REFERENCES public.pharmacy_patients(id) ON DELETE SET NULL;
+
+ALTER TABLE public.pharmacy_loyalty_transactions
+  ADD COLUMN IF NOT EXISTS source_table TEXT,
+  ADD COLUMN IF NOT EXISTS source_id UUID,
+  ADD COLUMN IF NOT EXISTS balance_after INTEGER,
+  ADD COLUMN IF NOT EXISTS notes TEXT,
+  ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL;
+
+CREATE TABLE IF NOT EXISTS public.pharmacy_patient_visits (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pharmacy_id UUID NOT NULL REFERENCES public.pharmacies(id) ON DELETE CASCADE,
+  branch_id UUID REFERENCES public.pharmacy_branches(id) ON DELETE SET NULL,
+  patient_id UUID NOT NULL REFERENCES public.pharmacy_patients(id) ON DELETE CASCADE,
+  visit_type TEXT NOT NULL DEFAULT 'manual'
+    CHECK (visit_type IN ('sale','sale_return','prescription','consultation','medication_review','manual','other')),
+  reference_table TEXT,
+  reference_id UUID,
+  visit_date TIMESTAMPTZ NOT NULL DEFAULT now(),
+  total_amount NUMERIC(14,2) NOT NULL DEFAULT 0,
+  notes TEXT,
+  created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_patient_visits_patient_date
+  ON public.pharmacy_patient_visits(pharmacy_id, patient_id, visit_date DESC);
+CREATE INDEX IF NOT EXISTS idx_patient_visits_reference
+  ON public.pharmacy_patient_visits(pharmacy_id, reference_table, reference_id)
+  WHERE reference_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_patient_visits_unique_reference
+  ON public.pharmacy_patient_visits(pharmacy_id, patient_id, visit_type, reference_table, reference_id)
+  WHERE reference_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sales_patient_date
+  ON public.pharmacy_sales(pharmacy_id, patient_id, sale_date DESC)
+  WHERE patient_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_prescriptions_patient_record
+  ON public.pharmacy_prescriptions(pharmacy_id, patient_record_id, created_at DESC)
+  WHERE patient_record_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_loyalty_transactions_source
+  ON public.pharmacy_loyalty_transactions(pharmacy_id, partner_id, source_table, source_id, type)
+  WHERE source_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_journal_entries_source
+  ON public.pharmacy_journal_entries(pharmacy_id, source_table, source_id)
+  WHERE source_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_financial_movements_source
+  ON public.pharmacy_financial_movements(pharmacy_id, source_table, source_id, category)
+  WHERE source_id IS NOT NULL;
+
+ALTER TABLE public.pharmacy_patient_visits ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS patient_visits_select ON public.pharmacy_patient_visits;
+DROP POLICY IF EXISTS patient_visits_insert ON public.pharmacy_patient_visits;
+DROP POLICY IF EXISTS patient_visits_update ON public.pharmacy_patient_visits;
+DROP POLICY IF EXISTS patient_visits_delete ON public.pharmacy_patient_visits;
+CREATE POLICY patient_visits_select ON public.pharmacy_patient_visits
+  FOR SELECT USING (public.has_pharmacy_access(pharmacy_id));
+CREATE POLICY patient_visits_insert ON public.pharmacy_patient_visits
+  FOR INSERT WITH CHECK (public.user_has_permission(pharmacy_id, 'crm:write'));
+CREATE POLICY patient_visits_update ON public.pharmacy_patient_visits
+  FOR UPDATE USING (public.user_has_permission(pharmacy_id, 'crm:write'))
+  WITH CHECK (public.user_has_permission(pharmacy_id, 'crm:write'));
+CREATE POLICY patient_visits_delete ON public.pharmacy_patient_visits
+  FOR DELETE USING (public.user_has_permission(pharmacy_id, 'crm:write'));
+
+DROP TRIGGER IF EXISTS trg_pharmacy_patient_visits_updated_at ON public.pharmacy_patient_visits;
+CREATE TRIGGER trg_pharmacy_patient_visits_updated_at
+  BEFORE UPDATE ON public.pharmacy_patient_visits
+  FOR EACH ROW EXECUTE FUNCTION public.touch_updated_at();
+
+CREATE OR REPLACE FUNCTION public.next_patient_code(p_pharmacy_id UUID)
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_next INTEGER;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_pharmacy_id::TEXT || ':patient-code', 0));
+  SELECT COALESCE(MAX(NULLIF(regexp_replace(code, '[^0-9]', '', 'g'), '')::INTEGER), 0) + 1
+    INTO v_next
+  FROM public.pharmacy_patients
+  WHERE pharmacy_id = p_pharmacy_id;
+  RETURN 'PAT-' || lpad(v_next::TEXT, 5, '0');
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.create_pharmacy_patient_v1(
+  p_pharmacy_id UUID,
+  p_actor_id UUID,
+  p_payload JSONB
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+DECLARE
+  v_actor UUID := COALESCE(auth.uid(), p_actor_id);
+  v_partner public.pharmacy_partners%ROWTYPE;
+  v_patient public.pharmacy_patients%ROWTYPE;
+  v_name TEXT := NULLIF(BTRIM(p_payload->>'name'), '');
+  v_phone TEXT := NULLIF(BTRIM(p_payload->>'phone'), '');
+  v_email TEXT := NULLIF(BTRIM(p_payload->>'email'), '');
+  v_birth DATE;
+  v_existing UUID;
+  v_patient_id UUID := COALESCE(NULLIF(BTRIM(p_payload->>'client_request_id'), '')::UUID, gen_random_uuid());
+BEGIN
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'يجب تسجيل الدخول أولاً'; END IF;
+  IF NOT public.user_has_permission(p_pharmacy_id, 'crm:write', v_actor) THEN
+    RAISE EXCEPTION 'ليست لديك صلاحية إضافة مرضى';
+  END IF;
+  IF v_name IS NULL THEN RAISE EXCEPTION 'اسم المريض مطلوب'; END IF;
+
+  SELECT id INTO v_existing FROM public.pharmacy_patients
+  WHERE pharmacy_id=p_pharmacy_id AND client_request_id=v_patient_id LIMIT 1;
+  IF v_existing IS NOT NULL THEN
+    RETURN jsonb_build_object(
+      'patient', (SELECT to_jsonb(p) FROM public.pharmacy_patients p WHERE p.id=v_existing),
+      'partner', (SELECT to_jsonb(pr) FROM public.pharmacy_partners pr JOIN public.pharmacy_patients p ON p.partner_id=pr.id WHERE p.id=v_existing),
+      'duplicate', true
+    );
+  END IF;
+
+  IF NULLIF(BTRIM(COALESCE(p_payload->>'date_of_birth', p_payload->>'birth_date')), '') IS NOT NULL THEN
+    v_birth := COALESCE(p_payload->>'date_of_birth', p_payload->>'birth_date')::DATE;
+    IF v_birth > CURRENT_DATE THEN RAISE EXCEPTION 'تاريخ الميلاد لا يمكن أن يكون في المستقبل'; END IF;
+  END IF;
+
+  IF NULLIF(BTRIM(p_payload->>'id_number'), '') IS NOT NULL THEN
+    SELECT id INTO v_existing
+    FROM public.pharmacy_patients
+    WHERE pharmacy_id = p_pharmacy_id
+      AND id_number = BTRIM(p_payload->>'id_number')
+      AND status <> 'archived'
+    LIMIT 1;
+    IF v_existing IS NOT NULL THEN RAISE EXCEPTION 'يوجد مريض بنفس رقم الهوية'; END IF;
+  END IF;
+
+  IF v_phone IS NOT NULL THEN
+    SELECT id INTO v_existing
+    FROM public.pharmacy_patients
+    WHERE pharmacy_id = p_pharmacy_id
+      AND regexp_replace(COALESCE(phone,''), '[^0-9]', '', 'g') = regexp_replace(v_phone, '[^0-9]', '', 'g')
+      AND lower(BTRIM(name)) = lower(v_name)
+      AND status <> 'archived'
+    LIMIT 1;
+    IF v_existing IS NOT NULL THEN RAISE EXCEPTION 'المريض مسجل بالفعل بنفس الاسم والهاتف'; END IF;
+  END IF;
+
+  INSERT INTO public.pharmacy_partners (
+    pharmacy_id, type, name, phone, email, address, notes, status
+  ) VALUES (
+    p_pharmacy_id, 'customer', v_name, v_phone, v_email,
+    NULLIF(BTRIM(p_payload->>'address'), ''),
+    NULLIF(BTRIM(p_payload->>'notes'), ''), 'active'
+  ) RETURNING * INTO v_partner;
+
+  INSERT INTO public.pharmacy_patients (
+    id, client_request_id, pharmacy_id, partner_id, code, name, phone, email, address, gender,
+    date_of_birth, age, id_number, blood_type, allergies, chronic_diseases,
+    current_medications, medical_history, surgical_history, family_history,
+    emergency_contact_name, emergency_contact_phone, insurance_company,
+    insurance_policy_number, insurance_expiry_date, notes, status, created_by
+  ) VALUES (
+    v_patient_id, v_patient_id, p_pharmacy_id, v_partner.id, public.next_patient_code(p_pharmacy_id), v_name,
+    v_phone, v_email, NULLIF(BTRIM(p_payload->>'address'), ''),
+    CASE WHEN p_payload->>'gender' IN ('male','female') THEN p_payload->>'gender' ELSE NULL END,
+    v_birth,
+    CASE WHEN v_birth IS NOT NULL THEN date_part('year', age(CURRENT_DATE, v_birth))::INTEGER ELSE NULL END,
+    NULLIF(BTRIM(p_payload->>'id_number'), ''),
+    CASE WHEN p_payload->>'blood_type' IN ('A+','A-','B+','B-','AB+','AB-','O+','O-') THEN p_payload->>'blood_type' ELSE NULL END,
+    CASE WHEN jsonb_typeof(p_payload->'allergies') = 'array' THEN p_payload->'allergies' ELSE '[]'::JSONB END,
+    CASE WHEN jsonb_typeof(p_payload->'chronic_diseases') = 'array' THEN p_payload->'chronic_diseases' ELSE '[]'::JSONB END,
+    CASE WHEN jsonb_typeof(p_payload->'current_medications') = 'array' THEN p_payload->'current_medications' ELSE '[]'::JSONB END,
+    NULLIF(BTRIM(p_payload->>'medical_history'), ''),
+    NULLIF(BTRIM(p_payload->>'surgical_history'), ''),
+    NULLIF(BTRIM(p_payload->>'family_history'), ''),
+    NULLIF(BTRIM(p_payload->>'emergency_contact_name'), ''),
+    NULLIF(BTRIM(p_payload->>'emergency_contact_phone'), ''),
+    NULLIF(BTRIM(p_payload->>'insurance_company'), ''),
+    NULLIF(BTRIM(p_payload->>'insurance_policy_number'), ''),
+    CASE WHEN NULLIF(BTRIM(p_payload->>'insurance_expiry_date'), '') IS NULL THEN NULL ELSE (p_payload->>'insurance_expiry_date')::DATE END,
+    NULLIF(BTRIM(p_payload->>'notes'), ''), 'active', v_actor
+  ) RETURNING * INTO v_patient;
+
+  RETURN jsonb_build_object('patient', to_jsonb(v_patient), 'partner', to_jsonb(v_partner));
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.ensure_default_pharmacy_accounts(p_pharmacy_id UUID)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  INSERT INTO public.pharmacy_chart_of_accounts(pharmacy_id, code, name, type, is_active, sort_order)
+  VALUES
+    (p_pharmacy_id, '1010', 'الخزينة والنقدية', 'asset', true, 10),
+    (p_pharmacy_id, '1020', 'البنوك والبطاقات والمحافظ', 'asset', true, 20),
+    (p_pharmacy_id, '1100', 'ذمم العملاء', 'asset', true, 30),
+    (p_pharmacy_id, '1200', 'مخزون الأدوية والأصناف', 'asset', true, 40),
+    (p_pharmacy_id, '2010', 'ذمم الموردين', 'liability', true, 50),
+    (p_pharmacy_id, '3010', 'رأس المال والأرصدة الافتتاحية', 'equity', true, 60),
+    (p_pharmacy_id, '4010', 'إيرادات المبيعات', 'income', true, 70),
+    (p_pharmacy_id, '4020', 'مردودات وخصومات المبيعات', 'income', true, 80),
+    (p_pharmacy_id, '5010', 'تكلفة البضاعة المباعة', 'expense', true, 90),
+    (p_pharmacy_id, '5020', 'المصروفات التشغيلية', 'expense', true, 100)
+  ON CONFLICT (pharmacy_id, code) DO UPDATE
+    SET name = EXCLUDED.name, type = EXCLUDED.type, is_active = true, updated_at = now();
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.post_sale_accounting_v1(
+  p_pharmacy_id UUID,
+  p_sale_id UUID,
+  p_actor_id UUID DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_sale public.pharmacy_sales%ROWTYPE;
+  v_entry_id UUID;
+  v_cash UUID; v_bank UUID; v_receivable UUID; v_inventory UUID; v_revenue UUID; v_cogs UUID;
+  v_paid NUMERIC; v_due NUMERIC; v_cost NUMERIC; v_debit_account UUID;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_sale_id::TEXT || ':sale-accounting', 0));
+  SELECT id INTO v_entry_id FROM public.pharmacy_journal_entries
+  WHERE pharmacy_id = p_pharmacy_id AND source_table = 'pharmacy_sales' AND source_id = p_sale_id LIMIT 1;
+  IF v_entry_id IS NOT NULL THEN RETURN v_entry_id; END IF;
+
+  SELECT * INTO v_sale FROM public.pharmacy_sales
+  WHERE id = p_sale_id AND pharmacy_id = p_pharmacy_id AND voided_at IS NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'فاتورة البيع غير موجودة'; END IF;
+
+  PERFORM public.ensure_default_pharmacy_accounts(p_pharmacy_id);
+  SELECT id INTO v_cash FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1010';
+  SELECT id INTO v_bank FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1020';
+  SELECT id INTO v_receivable FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1100';
+  SELECT id INTO v_inventory FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1200';
+  SELECT id INTO v_revenue FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='4010';
+  SELECT id INTO v_cogs FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='5010';
+
+  v_paid := LEAST(GREATEST(COALESCE(v_sale.paid_amount,0),0), GREATEST(COALESCE(v_sale.total,0),0));
+  v_due := GREATEST(COALESCE(v_sale.total,0) - v_paid, 0);
+  SELECT COALESCE(SUM(quantity * COALESCE(purchase_price,0)),0) INTO v_cost
+  FROM public.pharmacy_sale_lines WHERE pharmacy_id=p_pharmacy_id AND sale_id=p_sale_id;
+  v_debit_account := CASE WHEN v_sale.payment_method IN ('card','wallet','bank-transfer','mixed') THEN v_bank ELSE v_cash END;
+
+  INSERT INTO public.pharmacy_journal_entries(
+    pharmacy_id, branch_id, entry_number, entry_date, reference, description,
+    source_table, source_id, total_debit, total_credit, created_by
+  ) VALUES (
+    p_pharmacy_id, v_sale.branch_id, 'SAL-' || replace(p_sale_id::TEXT,'-',''), v_sale.sale_date::DATE,
+    v_sale.invoice_number, 'قيد فاتورة بيع ' || v_sale.invoice_number,
+    'pharmacy_sales', p_sale_id, COALESCE(v_sale.total,0)+v_cost, COALESCE(v_sale.total,0)+v_cost, COALESCE(p_actor_id,v_sale.created_by)
+  ) RETURNING id INTO v_entry_id;
+
+  IF v_paid > 0 THEN
+    INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description)
+    VALUES(p_pharmacy_id,v_entry_id,v_debit_account,v_paid,0,'المبلغ المحصل من فاتورة البيع');
+  END IF;
+  IF v_due > 0 THEN
+    INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description)
+    VALUES(p_pharmacy_id,v_entry_id,v_receivable,v_due,0,'الرصيد الآجل على العميل');
+  END IF;
+  IF COALESCE(v_sale.total,0) > 0 THEN
+    INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description)
+    VALUES(p_pharmacy_id,v_entry_id,v_revenue,0,v_sale.total,'إيراد المبيعات');
+  END IF;
+  IF v_cost > 0 THEN
+    INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description)
+    VALUES
+      (p_pharmacy_id,v_entry_id,v_cogs,v_cost,0,'تكلفة الأصناف المباعة'),
+      (p_pharmacy_id,v_entry_id,v_inventory,0,v_cost,'تخفيض المخزون بالتكلفة');
+  END IF;
+
+  IF v_paid > 0 AND NOT EXISTS (
+    SELECT 1 FROM public.pharmacy_financial_movements
+    WHERE pharmacy_id=p_pharmacy_id AND source_table='pharmacy_sales' AND source_id=p_sale_id AND category='sale_collection'
+  ) THEN
+    INSERT INTO public.pharmacy_financial_movements(
+      pharmacy_id,branch_id,type,category,amount,direction,source_table,source_id,description,movement_date,created_by
+    ) VALUES (
+      p_pharmacy_id,v_sale.branch_id,'sale','sale_collection',v_paid,'in','pharmacy_sales',p_sale_id,
+      'تحصيل فاتورة '||v_sale.invoice_number,v_sale.sale_date,COALESCE(p_actor_id,v_sale.created_by)
+    );
+  END IF;
+  RETURN v_entry_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.apply_sale_loyalty_v1(
+  p_pharmacy_id UUID,
+  p_sale_id UUID,
+  p_partner_id UUID,
+  p_actor_id UUID DEFAULT NULL
+)
+RETURNS INTEGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_sale public.pharmacy_sales%ROWTYPE;
+  v_enabled BOOLEAN := false;
+  v_amount NUMERIC := 100;
+  v_points_per_purchase INTEGER := 1;
+  v_expiry_days INTEGER := 365;
+  v_points INTEGER := 0;
+  v_balance INTEGER := 0;
+BEGIN
+  IF p_partner_id IS NULL THEN RETURN 0; END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_sale_id::TEXT || ':sale-loyalty', 0));
+  IF EXISTS (
+    SELECT 1 FROM public.pharmacy_loyalty_transactions
+    WHERE pharmacy_id=p_pharmacy_id AND partner_id=p_partner_id AND type='earn'
+      AND source_table='pharmacy_sales' AND source_id=p_sale_id
+  ) THEN
+    SELECT points INTO v_points FROM public.pharmacy_loyalty_transactions
+    WHERE pharmacy_id=p_pharmacy_id AND partner_id=p_partner_id AND type='earn'
+      AND source_table='pharmacy_sales' AND source_id=p_sale_id LIMIT 1;
+    RETURN COALESCE(v_points,0);
+  END IF;
+
+  SELECT * INTO v_sale FROM public.pharmacy_sales
+  WHERE id=p_sale_id AND pharmacy_id=p_pharmacy_id AND voided_at IS NULL;
+  IF NOT FOUND THEN RETURN 0; END IF;
+
+  SELECT COALESCE((SELECT value::BOOLEAN FROM public.pharmacy_settings WHERE pharmacy_id=p_pharmacy_id AND key='rewards.enableRewards' LIMIT 1), false)
+    INTO v_enabled;
+  v_enabled := COALESCE(v_enabled, false);
+  IF NOT v_enabled THEN RETURN 0; END IF;
+  SELECT COALESCE(NULLIF(value,'')::NUMERIC,100) INTO v_amount
+    FROM public.pharmacy_settings WHERE pharmacy_id=p_pharmacy_id AND key='rewards.pointsPerAmount' LIMIT 1;
+  SELECT COALESCE(NULLIF(value,'')::INTEGER,1) INTO v_points_per_purchase
+    FROM public.pharmacy_settings WHERE pharmacy_id=p_pharmacy_id AND key='rewards.pointsPerPurchase' LIMIT 1;
+  SELECT COALESCE(NULLIF(value,'')::INTEGER,365) INTO v_expiry_days
+    FROM public.pharmacy_settings WHERE pharmacy_id=p_pharmacy_id AND key='rewards.expiryDays' LIMIT 1;
+  v_amount := GREATEST(COALESCE(v_amount,100),0.01);
+  v_expiry_days := GREATEST(COALESCE(v_expiry_days,365),1);
+  v_points_per_purchase := GREATEST(COALESCE(v_points_per_purchase,1),0);
+  v_points := FLOOR(GREATEST(COALESCE(v_sale.total,0),0) / v_amount)::INTEGER * v_points_per_purchase;
+  IF v_points <= 0 THEN RETURN 0; END IF;
+
+  INSERT INTO public.pharmacy_loyalty_balances(pharmacy_id,partner_id,total_earned,total_redeemed,total_expired,current_balance,updated_at)
+  VALUES(p_pharmacy_id,p_partner_id,v_points,0,0,v_points,now())
+  ON CONFLICT(pharmacy_id,partner_id) DO UPDATE SET
+    total_earned=public.pharmacy_loyalty_balances.total_earned+EXCLUDED.total_earned,
+    current_balance=public.pharmacy_loyalty_balances.current_balance+EXCLUDED.current_balance,
+    updated_at=now()
+  RETURNING current_balance INTO v_balance;
+
+  INSERT INTO public.pharmacy_loyalty_points(pharmacy_id,partner_id,points,updated_at)
+  VALUES(p_pharmacy_id,p_partner_id,v_balance,now())
+  ON CONFLICT(pharmacy_id,partner_id) DO UPDATE SET points=EXCLUDED.points,updated_at=now();
+
+  INSERT INTO public.pharmacy_loyalty_transactions(
+    pharmacy_id,partner_id,type,points,reference,source_table,source_id,balance_after,notes,expires_at,created_by
+  ) VALUES(
+    p_pharmacy_id,p_partner_id,'earn',v_points,v_sale.invoice_number,'pharmacy_sales',p_sale_id,v_balance,
+    'نقاط مكتسبة من فاتورة بيع',now()+(v_expiry_days||' days')::INTERVAL,p_actor_id
+  );
+  RETURN v_points;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.finalize_sale_operations_v1(
+  p_pharmacy_id UUID,
+  p_sale_id UUID,
+  p_patient_id UUID DEFAULT NULL,
+  p_partner_id UUID DEFAULT NULL,
+  p_actor_id UUID DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_sale public.pharmacy_sales%ROWTYPE;
+  v_patient public.pharmacy_patients%ROWTYPE;
+  v_partner_id UUID := p_partner_id;
+  v_visit_id UUID;
+  v_points INTEGER := 0;
+  v_entry UUID;
+BEGIN
+  SELECT * INTO v_sale FROM public.pharmacy_sales
+  WHERE id=p_sale_id AND pharmacy_id=p_pharmacy_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'فاتورة البيع غير موجودة'; END IF;
+
+  IF p_patient_id IS NOT NULL THEN
+    SELECT * INTO v_patient FROM public.pharmacy_patients
+    WHERE id=p_patient_id AND pharmacy_id=p_pharmacy_id AND status <> 'archived';
+    IF NOT FOUND THEN RAISE EXCEPTION 'المريض غير موجود أو مؤرشف'; END IF;
+    v_partner_id := COALESCE(v_partner_id,v_patient.partner_id);
+    UPDATE public.pharmacy_sales SET
+      patient_id=v_patient.id,
+      customer_id=COALESCE(v_partner_id,customer_id),
+      customer_name=COALESCE(NULLIF(v_patient.name,''),customer_name),
+      patient_name=COALESCE(NULLIF(v_patient.name,''),patient_name),
+      updated_at=now()
+    WHERE id=p_sale_id AND pharmacy_id=p_pharmacy_id;
+
+    INSERT INTO public.pharmacy_patient_visits(
+      pharmacy_id,branch_id,patient_id,visit_type,reference_table,reference_id,visit_date,total_amount,notes,created_by
+    ) VALUES(
+      p_pharmacy_id,v_sale.branch_id,v_patient.id,'sale','pharmacy_sales',p_sale_id,v_sale.sale_date,v_sale.total,
+      'زيارة ناتجة عن فاتورة بيع '||v_sale.invoice_number,p_actor_id
+    ) ON CONFLICT DO NOTHING RETURNING id INTO v_visit_id;
+
+    IF v_visit_id IS NOT NULL THEN
+      UPDATE public.pharmacy_patients SET
+        visit_count=visit_count+1,
+        total_purchases=total_purchases+GREATEST(COALESCE(v_sale.total,0),0),
+        last_visit_date=GREATEST(COALESCE(last_visit_date,v_sale.sale_date),v_sale.sale_date),
+        updated_at=now()
+      WHERE id=v_patient.id AND pharmacy_id=p_pharmacy_id;
+    END IF;
+  ELSIF v_partner_id IS NOT NULL THEN
+    UPDATE public.pharmacy_sales SET customer_id=v_partner_id,updated_at=now()
+    WHERE id=p_sale_id AND pharmacy_id=p_pharmacy_id;
+  END IF;
+
+  IF v_partner_id IS NOT NULL THEN
+    SELECT public.apply_sale_loyalty_v1(p_pharmacy_id,p_sale_id,v_partner_id,p_actor_id) INTO v_points;
+  END IF;
+  SELECT public.post_sale_accounting_v1(p_pharmacy_id,p_sale_id,p_actor_id) INTO v_entry;
+  RETURN jsonb_build_object('journal_entry_id',v_entry,'loyalty_points',v_points,'patient_visit_id',v_visit_id);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.post_purchase_accounting_v1(
+  p_pharmacy_id UUID,
+  p_purchase_id UUID,
+  p_actor_id UUID DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_doc public.pharmacy_purchases%ROWTYPE;
+  v_entry UUID; v_cash UUID; v_bank UUID; v_inventory UUID; v_payable UUID; v_paid NUMERIC; v_due NUMERIC; v_credit UUID;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_purchase_id::TEXT || ':purchase-accounting',0));
+  SELECT id INTO v_entry FROM public.pharmacy_journal_entries WHERE pharmacy_id=p_pharmacy_id AND source_table='pharmacy_purchases' AND source_id=p_purchase_id LIMIT 1;
+  IF v_entry IS NOT NULL THEN RETURN v_entry; END IF;
+  SELECT * INTO v_doc FROM public.pharmacy_purchases WHERE id=p_purchase_id AND pharmacy_id=p_pharmacy_id AND voided_at IS NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'فاتورة الشراء غير موجودة'; END IF;
+  PERFORM public.ensure_default_pharmacy_accounts(p_pharmacy_id);
+  SELECT id INTO v_cash FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1010';
+  SELECT id INTO v_bank FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1020';
+  SELECT id INTO v_inventory FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1200';
+  SELECT id INTO v_payable FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='2010';
+  v_paid:=LEAST(GREATEST(COALESCE(v_doc.paid_amount,0),0),GREATEST(COALESCE(v_doc.total,0),0));
+  v_due:=GREATEST(COALESCE(v_doc.total,0)-v_paid,0);
+  v_credit:=CASE WHEN v_doc.payment_method IN ('card','wallet','bank-transfer','mixed') THEN v_bank ELSE v_cash END;
+  INSERT INTO public.pharmacy_journal_entries(pharmacy_id,branch_id,entry_number,entry_date,reference,description,source_table,source_id,total_debit,total_credit,created_by)
+  VALUES(p_pharmacy_id,v_doc.branch_id,'PUR-'||replace(p_purchase_id::TEXT,'-',''),v_doc.purchase_date::DATE,v_doc.purchase_number,'قيد فاتورة شراء '||v_doc.purchase_number,'pharmacy_purchases',p_purchase_id,v_doc.total,v_doc.total,COALESCE(p_actor_id,v_doc.created_by))
+  RETURNING id INTO v_entry;
+  IF v_doc.total>0 THEN INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description) VALUES(p_pharmacy_id,v_entry,v_inventory,v_doc.total,0,'إضافة مخزون من المشتريات'); END IF;
+  IF v_paid>0 THEN INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description) VALUES(p_pharmacy_id,v_entry,v_credit,0,v_paid,'المبلغ المدفوع للمورد'); END IF;
+  IF v_due>0 THEN INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description) VALUES(p_pharmacy_id,v_entry,v_payable,0,v_due,'الرصيد المستحق للمورد'); END IF;
+  IF v_paid>0 AND NOT EXISTS(SELECT 1 FROM public.pharmacy_financial_movements WHERE pharmacy_id=p_pharmacy_id AND source_table='pharmacy_purchases' AND source_id=p_purchase_id AND category='purchase_payment') THEN
+    INSERT INTO public.pharmacy_financial_movements(pharmacy_id,branch_id,type,category,amount,direction,source_table,source_id,description,movement_date,created_by)
+    VALUES(p_pharmacy_id,v_doc.branch_id,'purchase','purchase_payment',v_paid,'out','pharmacy_purchases',p_purchase_id,'سداد فاتورة شراء '||v_doc.purchase_number,v_doc.purchase_date,COALESCE(p_actor_id,v_doc.created_by));
+  END IF;
+  RETURN v_entry;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.post_expense_accounting_v1(
+  p_pharmacy_id UUID,
+  p_expense_id UUID,
+  p_actor_id UUID DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_doc public.pharmacy_expenses%ROWTYPE;
+  v_entry UUID; v_cash UUID; v_bank UUID; v_expense UUID; v_credit UUID;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_expense_id::TEXT || ':expense-accounting',0));
+  SELECT id INTO v_entry FROM public.pharmacy_journal_entries WHERE pharmacy_id=p_pharmacy_id AND source_table='pharmacy_expenses' AND source_id=p_expense_id LIMIT 1;
+  IF v_entry IS NOT NULL THEN RETURN v_entry; END IF;
+  SELECT * INTO v_doc FROM public.pharmacy_expenses WHERE id=p_expense_id AND pharmacy_id=p_pharmacy_id AND voided_at IS NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'المصروف غير موجود'; END IF;
+  PERFORM public.ensure_default_pharmacy_accounts(p_pharmacy_id);
+  SELECT id INTO v_cash FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1010';
+  SELECT id INTO v_bank FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1020';
+  SELECT id INTO v_expense FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='5020';
+  v_credit:=CASE WHEN v_doc.payment_method IN ('card','wallet','bank-transfer','mixed') THEN v_bank ELSE v_cash END;
+  INSERT INTO public.pharmacy_journal_entries(pharmacy_id,branch_id,entry_number,entry_date,reference,description,source_table,source_id,total_debit,total_credit,created_by)
+  VALUES(p_pharmacy_id,v_doc.branch_id,'EXP-'||replace(p_expense_id::TEXT,'-',''),v_doc.expense_date::DATE,v_doc.title,'قيد مصروف '||v_doc.title,'pharmacy_expenses',p_expense_id,v_doc.total,v_doc.total,p_actor_id)
+  RETURNING id INTO v_entry;
+  INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description) VALUES
+    (p_pharmacy_id,v_entry,v_expense,v_doc.total,0,v_doc.title),
+    (p_pharmacy_id,v_entry,v_credit,0,v_doc.total,'سداد المصروف');
+  IF NOT EXISTS(SELECT 1 FROM public.pharmacy_financial_movements WHERE pharmacy_id=p_pharmacy_id AND source_table='pharmacy_expenses' AND source_id=p_expense_id AND category='expense') THEN
+    INSERT INTO public.pharmacy_financial_movements(pharmacy_id,branch_id,type,category,amount,direction,source_table,source_id,description,movement_date,created_by)
+    VALUES(p_pharmacy_id,v_doc.branch_id,'expense','expense',v_doc.total,'out','pharmacy_expenses',p_expense_id,v_doc.title,v_doc.expense_date,p_actor_id);
+  END IF;
+  RETURN v_entry;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.post_sales_return_accounting_v1(
+  p_pharmacy_id UUID,
+  p_return_id UUID,
+  p_actor_id UUID DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_doc public.pharmacy_sales_returns%ROWTYPE;
+  v_sale public.pharmacy_sales%ROWTYPE;
+  v_entry UUID; v_cash UUID; v_receivable UUID; v_inventory UUID; v_returns UUID; v_cogs UUID;
+  v_refund NUMERIC; v_credit_customer NUMERIC; v_cost NUMERIC; v_earned INTEGER; v_reverse INTEGER; v_balance INTEGER;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_return_id::TEXT || ':sales-return-accounting',0));
+  SELECT id INTO v_entry FROM public.pharmacy_journal_entries WHERE pharmacy_id=p_pharmacy_id AND source_table='pharmacy_sales_returns' AND source_id=p_return_id LIMIT 1;
+  IF v_entry IS NOT NULL THEN RETURN v_entry; END IF;
+  SELECT * INTO v_doc FROM public.pharmacy_sales_returns WHERE id=p_return_id AND pharmacy_id=p_pharmacy_id AND voided_at IS NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'مرتجع المبيعات غير موجود'; END IF;
+  SELECT * INTO v_sale FROM public.pharmacy_sales WHERE id=v_doc.sale_id AND pharmacy_id=p_pharmacy_id;
+  PERFORM public.ensure_default_pharmacy_accounts(p_pharmacy_id);
+  SELECT id INTO v_cash FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1010';
+  SELECT id INTO v_receivable FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1100';
+  SELECT id INTO v_inventory FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1200';
+  SELECT id INTO v_returns FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='4020';
+  SELECT id INTO v_cogs FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='5010';
+  v_refund:=LEAST(GREATEST(COALESCE(v_doc.refund_amount,0),0),GREATEST(COALESCE(v_doc.total,0),0));
+  v_credit_customer:=GREATEST(COALESCE(v_doc.total,0)-v_refund,0);
+  SELECT COALESCE(SUM(rl.quantity*COALESCE(sl.purchase_price,0)),0) INTO v_cost
+  FROM public.pharmacy_sales_return_lines rl LEFT JOIN public.pharmacy_sale_lines sl ON sl.id=rl.sale_line_id
+  WHERE rl.pharmacy_id=p_pharmacy_id AND rl.return_id=p_return_id;
+  INSERT INTO public.pharmacy_journal_entries(pharmacy_id,branch_id,entry_number,entry_date,reference,description,source_table,source_id,total_debit,total_credit,created_by)
+  VALUES(p_pharmacy_id,v_doc.branch_id,'SRT-'||replace(p_return_id::TEXT,'-',''),v_doc.return_date::DATE,v_doc.return_number,'قيد مرتجع مبيعات '||v_doc.return_number,'pharmacy_sales_returns',p_return_id,v_doc.total+v_cost,v_doc.total+v_cost,COALESCE(p_actor_id,v_doc.created_by))
+  RETURNING id INTO v_entry;
+  IF v_doc.total>0 THEN INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description) VALUES(p_pharmacy_id,v_entry,v_returns,v_doc.total,0,'مردودات المبيعات'); END IF;
+  IF v_refund>0 THEN INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description) VALUES(p_pharmacy_id,v_entry,v_cash,0,v_refund,'رد نقدية للعميل'); END IF;
+  IF v_credit_customer>0 THEN INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description) VALUES(p_pharmacy_id,v_entry,v_receivable,0,v_credit_customer,'تخفيض رصيد العميل'); END IF;
+  IF v_cost>0 THEN INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description) VALUES
+    (p_pharmacy_id,v_entry,v_inventory,v_cost,0,'إعادة تكلفة الأصناف للمخزون'),
+    (p_pharmacy_id,v_entry,v_cogs,0,v_cost,'عكس تكلفة البضاعة المباعة'); END IF;
+
+  IF v_sale.customer_id IS NOT NULL THEN
+    SELECT points INTO v_earned FROM public.pharmacy_loyalty_transactions WHERE pharmacy_id=p_pharmacy_id AND partner_id=v_sale.customer_id AND type='earn' AND source_table='pharmacy_sales' AND source_id=v_sale.id LIMIT 1;
+    IF COALESCE(v_earned,0)>0 AND COALESCE(v_sale.total,0)>0 AND NOT EXISTS(SELECT 1 FROM public.pharmacy_loyalty_transactions WHERE pharmacy_id=p_pharmacy_id AND partner_id=v_sale.customer_id AND type='adjust' AND source_table='pharmacy_sales_returns' AND source_id=p_return_id) THEN
+      v_reverse:=LEAST(v_earned,GREATEST(1,FLOOR(v_earned*(v_doc.total/v_sale.total))::INTEGER));
+      UPDATE public.pharmacy_loyalty_balances SET total_redeemed=total_redeemed+LEAST(current_balance,v_reverse),current_balance=GREATEST(current_balance-v_reverse,0),updated_at=now()
+      WHERE pharmacy_id=p_pharmacy_id AND partner_id=v_sale.customer_id RETURNING current_balance INTO v_balance;
+      UPDATE public.pharmacy_loyalty_points SET points=COALESCE(v_balance,0),updated_at=now() WHERE pharmacy_id=p_pharmacy_id AND partner_id=v_sale.customer_id;
+      INSERT INTO public.pharmacy_loyalty_transactions(pharmacy_id,partner_id,type,points,reference,source_table,source_id,balance_after,notes,created_by)
+      VALUES(p_pharmacy_id,v_sale.customer_id,'adjust',-v_reverse,v_doc.return_number,'pharmacy_sales_returns',p_return_id,COALESCE(v_balance,0),'عكس نقاط بسبب مرتجع مبيعات',p_actor_id);
+    END IF;
+  END IF;
+  IF v_sale.patient_id IS NOT NULL THEN
+    UPDATE public.pharmacy_patients SET total_purchases=GREATEST(total_purchases-v_doc.total,0),updated_at=now() WHERE id=v_sale.patient_id AND pharmacy_id=p_pharmacy_id;
+    INSERT INTO public.pharmacy_patient_visits(pharmacy_id,branch_id,patient_id,visit_type,reference_table,reference_id,visit_date,total_amount,notes,created_by)
+    VALUES(p_pharmacy_id,v_doc.branch_id,v_sale.patient_id,'sale_return','pharmacy_sales_returns',p_return_id,v_doc.return_date,-v_doc.total,'مرتجع مبيعات '||v_doc.return_number,p_actor_id)
+    ON CONFLICT DO NOTHING;
+  END IF;
+  RETURN v_entry;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.post_purchase_return_accounting_v1(
+  p_pharmacy_id UUID,
+  p_return_id UUID,
+  p_actor_id UUID DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_doc public.pharmacy_purchase_returns%ROWTYPE;
+  v_entry UUID; v_cash UUID; v_payable UUID; v_inventory UUID; v_refund NUMERIC; v_supplier_credit NUMERIC;
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_return_id::TEXT || ':purchase-return-accounting',0));
+  SELECT id INTO v_entry FROM public.pharmacy_journal_entries WHERE pharmacy_id=p_pharmacy_id AND source_table='pharmacy_purchase_returns' AND source_id=p_return_id LIMIT 1;
+  IF v_entry IS NOT NULL THEN RETURN v_entry; END IF;
+  SELECT * INTO v_doc FROM public.pharmacy_purchase_returns WHERE id=p_return_id AND pharmacy_id=p_pharmacy_id AND voided_at IS NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'مرتجع المشتريات غير موجود'; END IF;
+  PERFORM public.ensure_default_pharmacy_accounts(p_pharmacy_id);
+  SELECT id INTO v_cash FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1010';
+  SELECT id INTO v_payable FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='2010';
+  SELECT id INTO v_inventory FROM public.pharmacy_chart_of_accounts WHERE pharmacy_id=p_pharmacy_id AND code='1200';
+  v_refund:=LEAST(GREATEST(COALESCE(v_doc.refund_amount,0),0),GREATEST(COALESCE(v_doc.total,0),0));
+  v_supplier_credit:=GREATEST(COALESCE(v_doc.total,0)-v_refund,0);
+  INSERT INTO public.pharmacy_journal_entries(pharmacy_id,branch_id,entry_number,entry_date,reference,description,source_table,source_id,total_debit,total_credit,created_by)
+  VALUES(p_pharmacy_id,v_doc.branch_id,'PRT-'||replace(p_return_id::TEXT,'-',''),v_doc.created_at::DATE,v_doc.return_number,'قيد مرتجع مشتريات '||v_doc.return_number,'pharmacy_purchase_returns',p_return_id,v_doc.total,v_doc.total,COALESCE(p_actor_id,v_doc.created_by))
+  RETURNING id INTO v_entry;
+  IF v_refund>0 THEN INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description) VALUES(p_pharmacy_id,v_entry,v_cash,v_refund,0,'مبلغ مسترد من المورد'); END IF;
+  IF v_supplier_credit>0 THEN INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description) VALUES(p_pharmacy_id,v_entry,v_payable,v_supplier_credit,0,'تخفيض رصيد المورد'); END IF;
+  IF v_doc.total>0 THEN INSERT INTO public.pharmacy_journal_lines(pharmacy_id,entry_id,account_id,debit,credit,description) VALUES(p_pharmacy_id,v_entry,v_inventory,0,v_doc.total,'تخفيض المخزون بمرتجع مشتريات'); END IF;
+  RETURN v_entry;
+END;
+$$;
+
+
+CREATE OR REPLACE FUNCTION public.adjust_loyalty_balance_v1(
+  p_pharmacy_id UUID,
+  p_partner_id UUID,
+  p_actor_id UUID,
+  p_operation TEXT,
+  p_points INTEGER,
+  p_reference TEXT DEFAULT NULL,
+  p_notes TEXT DEFAULT NULL,
+  p_client_request_id UUID DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+DECLARE
+  v_actor UUID := COALESCE(auth.uid(), p_actor_id);
+  v_operation TEXT := lower(BTRIM(COALESCE(p_operation,'')));
+  v_points INTEGER := ABS(COALESCE(p_points,0));
+  v_signed INTEGER;
+  v_balance INTEGER := 0;
+  v_total_earned INTEGER := 0;
+  v_total_redeemed INTEGER := 0;
+  v_total_expired INTEGER := 0;
+  v_type TEXT;
+  v_source UUID := COALESCE(p_client_request_id, gen_random_uuid());
+  v_existing public.pharmacy_loyalty_transactions%ROWTYPE;
+BEGIN
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'يجب تسجيل الدخول أولاً'; END IF;
+  IF NOT public.user_has_permission(p_pharmacy_id,'loyalty:write',v_actor)
+     AND NOT public.user_has_permission(p_pharmacy_id,'crm:write',v_actor) THEN
+    RAISE EXCEPTION 'ليست لديك صلاحية تعديل نقاط الولاء';
+  END IF;
+  IF v_operation NOT IN ('earn','redeem','adjust_add','adjust_deduct','expire') THEN
+    RAISE EXCEPTION 'نوع حركة الولاء غير صالح';
+  END IF;
+  IF v_points <= 0 THEN RAISE EXCEPTION 'عدد النقاط يجب أن يكون أكبر من صفر'; END IF;
+  IF NOT EXISTS(SELECT 1 FROM public.pharmacy_partners WHERE id=p_partner_id AND pharmacy_id=p_pharmacy_id AND type IN ('customer','both')) THEN
+    RAISE EXCEPTION 'العميل غير موجود';
+  END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_pharmacy_id::TEXT||':'||p_partner_id::TEXT||':loyalty',0));
+  SELECT * INTO v_existing FROM public.pharmacy_loyalty_transactions
+  WHERE pharmacy_id=p_pharmacy_id AND partner_id=p_partner_id
+    AND source_table='manual_loyalty' AND source_id=v_source LIMIT 1;
+  IF FOUND THEN
+    SELECT current_balance,total_earned,total_redeemed,total_expired
+      INTO v_balance,v_total_earned,v_total_redeemed,v_total_expired
+    FROM public.pharmacy_loyalty_balances WHERE pharmacy_id=p_pharmacy_id AND partner_id=p_partner_id;
+    RETURN jsonb_build_object('duplicate',true,'transaction',to_jsonb(v_existing),'balance',COALESCE(v_balance,0));
+  END IF;
+
+  INSERT INTO public.pharmacy_loyalty_balances(pharmacy_id,partner_id,total_earned,total_redeemed,total_expired,current_balance,updated_at)
+  VALUES(p_pharmacy_id,p_partner_id,0,0,0,0,now())
+  ON CONFLICT(pharmacy_id,partner_id) DO NOTHING;
+
+  SELECT current_balance,total_earned,total_redeemed,total_expired
+    INTO v_balance,v_total_earned,v_total_redeemed,v_total_expired
+  FROM public.pharmacy_loyalty_balances
+  WHERE pharmacy_id=p_pharmacy_id AND partner_id=p_partner_id
+  FOR UPDATE;
+
+  IF v_operation IN ('redeem','adjust_deduct','expire') AND v_points > v_balance THEN
+    RAISE EXCEPTION 'رصيد النقاط غير كافٍ';
+  END IF;
+
+  IF v_operation IN ('earn','adjust_add') THEN
+    v_signed := v_points;
+    v_type := CASE WHEN v_operation='earn' THEN 'earn' ELSE 'adjust' END;
+    v_total_earned := v_total_earned + CASE WHEN v_operation='earn' THEN v_points ELSE 0 END;
+  ELSIF v_operation='expire' THEN
+    v_signed := -v_points; v_type := 'expire'; v_total_expired := v_total_expired + v_points;
+  ELSE
+    v_signed := -v_points; v_type := CASE WHEN v_operation='redeem' THEN 'redeem' ELSE 'adjust' END;
+    v_total_redeemed := v_total_redeemed + CASE WHEN v_operation='redeem' THEN v_points ELSE 0 END;
+  END IF;
+  v_balance := v_balance + v_signed;
+
+  UPDATE public.pharmacy_loyalty_balances SET
+    total_earned=v_total_earned,total_redeemed=v_total_redeemed,total_expired=v_total_expired,
+    current_balance=v_balance,updated_at=now()
+  WHERE pharmacy_id=p_pharmacy_id AND partner_id=p_partner_id;
+
+  INSERT INTO public.pharmacy_loyalty_points(pharmacy_id,partner_id,points,updated_at)
+  VALUES(p_pharmacy_id,p_partner_id,v_balance,now())
+  ON CONFLICT(pharmacy_id,partner_id) DO UPDATE SET points=EXCLUDED.points,updated_at=now();
+
+  INSERT INTO public.pharmacy_loyalty_transactions(
+    pharmacy_id,partner_id,type,points,reference,source_table,source_id,balance_after,notes,created_by
+  ) VALUES(
+    p_pharmacy_id,p_partner_id,v_type,v_signed,NULLIF(BTRIM(p_reference),''),'manual_loyalty',v_source,v_balance,
+    NULLIF(BTRIM(p_notes),''),v_actor
+  ) RETURNING * INTO v_existing;
+
+  RETURN jsonb_build_object('duplicate',false,'transaction',to_jsonb(v_existing),'balance',v_balance);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.next_patient_code(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.create_pharmacy_patient_v1(UUID,UUID,JSONB) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.ensure_default_pharmacy_accounts(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.post_sale_accounting_v1(UUID,UUID,UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.apply_sale_loyalty_v1(UUID,UUID,UUID,UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.finalize_sale_operations_v1(UUID,UUID,UUID,UUID,UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.post_purchase_accounting_v1(UUID,UUID,UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.post_expense_accounting_v1(UUID,UUID,UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.post_sales_return_accounting_v1(UUID,UUID,UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.post_purchase_return_accounting_v1(UUID,UUID,UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.adjust_loyalty_balance_v1(UUID,UUID,UUID,TEXT,INTEGER,TEXT,TEXT,UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.next_patient_code(UUID) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.create_pharmacy_patient_v1(UUID,UUID,JSONB) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.ensure_default_pharmacy_accounts(UUID) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.post_sale_accounting_v1(UUID,UUID,UUID) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.apply_sale_loyalty_v1(UUID,UUID,UUID,UUID) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.finalize_sale_operations_v1(UUID,UUID,UUID,UUID,UUID) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.post_purchase_accounting_v1(UUID,UUID,UUID) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.post_expense_accounting_v1(UUID,UUID,UUID) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.post_sales_return_accounting_v1(UUID,UUID,UUID) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.post_purchase_return_accounting_v1(UUID,UUID,UUID) TO authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.adjust_loyalty_balance_v1(UUID,UUID,UUID,TEXT,INTEGER,TEXT,TEXT,UUID) TO authenticated, service_role;
+
+COMMIT;
+
+
+-- ===== CASHIER REPAIR SOURCE: 20260621008000_atomic_shifts_and_expenses.sql =====
+BEGIN;
+
+ALTER TABLE public.pharmacy_shifts
+  ADD COLUMN IF NOT EXISTS client_request_id TEXT;
+ALTER TABLE public.pharmacy_expenses
+  ADD COLUMN IF NOT EXISTS shift_id UUID REFERENCES public.pharmacy_shifts(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS client_request_id TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shifts_client_request
+  ON public.pharmacy_shifts(pharmacy_id,client_request_id)
+  WHERE client_request_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_client_request
+  ON public.pharmacy_expenses(pharmacy_id,client_request_id)
+  WHERE client_request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_expenses_shift
+  ON public.pharmacy_expenses(pharmacy_id,shift_id)
+  WHERE shift_id IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION public.open_cashier_shift_v1(
+  p_pharmacy_id UUID,
+  p_branch_id UUID,
+  p_actor_id UUID DEFAULT NULL,
+  p_opening_balance NUMERIC DEFAULT 0,
+  p_notes TEXT DEFAULT NULL,
+  p_client_request_id TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path=public,auth
+AS $$
+DECLARE
+  v_actor UUID:=COALESCE(auth.uid(),p_actor_id);
+  v_shift public.pharmacy_shifts%ROWTYPE;
+BEGIN
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'يجب تسجيل الدخول أولاً'; END IF;
+  IF NOT public.user_has_permission(p_pharmacy_id,'sales:write',v_actor) THEN
+    RAISE EXCEPTION 'ليست لديك صلاحية فتح وردية الكاشير';
+  END IF;
+  IF NOT public.has_branch_access(p_pharmacy_id,p_branch_id,v_actor) THEN
+    RAISE EXCEPTION 'ليست لديك صلاحية على الفرع';
+  END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_pharmacy_id::TEXT||':'||p_branch_id::TEXT||':'||v_actor::TEXT||':open-shift',0));
+
+  IF NULLIF(BTRIM(p_client_request_id),'') IS NOT NULL THEN
+    SELECT * INTO v_shift FROM public.pharmacy_shifts
+    WHERE pharmacy_id=p_pharmacy_id AND client_request_id=BTRIM(p_client_request_id)
+    LIMIT 1;
+    IF FOUND THEN RETURN jsonb_build_object('shift',to_jsonb(v_shift),'alreadyOpen',v_shift.status='open','duplicate',true); END IF;
+  END IF;
+
+  SELECT * INTO v_shift FROM public.pharmacy_shifts
+  WHERE pharmacy_id=p_pharmacy_id AND branch_id=p_branch_id AND user_id=v_actor AND status='open'
+  ORDER BY opened_at DESC LIMIT 1 FOR UPDATE;
+  IF FOUND THEN RETURN jsonb_build_object('shift',to_jsonb(v_shift),'alreadyOpen',true,'duplicate',true); END IF;
+
+  INSERT INTO public.pharmacy_shifts(
+    pharmacy_id,branch_id,user_id,opening_balance,expected_balance,notes,status,client_request_id
+  ) VALUES(
+    p_pharmacy_id,p_branch_id,v_actor,round(GREATEST(COALESCE(p_opening_balance,0),0),2),
+    round(GREATEST(COALESCE(p_opening_balance,0),0),2),NULLIF(BTRIM(p_notes),''),'open',NULLIF(BTRIM(p_client_request_id),'')
+  ) RETURNING * INTO v_shift;
+  RETURN jsonb_build_object('shift',to_jsonb(v_shift),'alreadyOpen',false,'duplicate',false);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.close_cashier_shift_v1(
+  p_pharmacy_id UUID,
+  p_branch_id UUID,
+  p_shift_id UUID,
+  p_actor_id UUID DEFAULT NULL,
+  p_closing_balance NUMERIC DEFAULT 0,
+  p_notes TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path=public,auth
+AS $$
+DECLARE
+  v_actor UUID:=COALESCE(auth.uid(),p_actor_id);
+  v_shift public.pharmacy_shifts%ROWTYPE;
+  v_expected NUMERIC:=0;
+BEGIN
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'يجب تسجيل الدخول أولاً'; END IF;
+  IF NOT public.user_has_permission(p_pharmacy_id,'sales:write',v_actor) THEN
+    RAISE EXCEPTION 'ليست لديك صلاحية إغلاق وردية الكاشير';
+  END IF;
+  IF NOT public.has_branch_access(p_pharmacy_id,p_branch_id,v_actor) THEN RAISE EXCEPTION 'ليست لديك صلاحية على الفرع'; END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_pharmacy_id::TEXT||':'||p_shift_id::TEXT||':close-shift',0));
+  SELECT * INTO v_shift FROM public.pharmacy_shifts
+  WHERE id=p_shift_id AND pharmacy_id=p_pharmacy_id AND branch_id=p_branch_id
+  FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'وردية الكاشير غير موجودة'; END IF;
+  IF v_shift.user_id<>v_actor AND NOT public.user_has_permission(p_pharmacy_id,'sales:manage',v_actor) THEN
+    RAISE EXCEPTION 'لا يمكنك إغلاق وردية مستخدم آخر';
+  END IF;
+  IF v_shift.status='closed' THEN RETURN jsonb_build_object('shift',to_jsonb(v_shift),'duplicate',true); END IF;
+
+  v_expected:=round(COALESCE(v_shift.opening_balance,0)+COALESCE(v_shift.cash_sales,0)-COALESCE(v_shift.total_expenses,0),2);
+  UPDATE public.pharmacy_shifts SET
+    status='closed',closed_at=now(),expected_balance=v_expected,
+    closing_balance=round(GREATEST(COALESCE(p_closing_balance,0),0),2),
+    difference=round(GREATEST(COALESCE(p_closing_balance,0),0)-v_expected,2),
+    notes=COALESCE(NULLIF(BTRIM(p_notes),''),notes),updated_at=now()
+  WHERE id=v_shift.id RETURNING * INTO v_shift;
+  RETURN jsonb_build_object('shift',to_jsonb(v_shift),'duplicate',false);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.create_expense_v1(
+  p_pharmacy_id UUID,
+  p_branch_id UUID,
+  p_actor_id UUID DEFAULT NULL,
+  p_category_id UUID DEFAULT NULL,
+  p_category_name TEXT DEFAULT NULL,
+  p_title TEXT DEFAULT NULL,
+  p_amount NUMERIC DEFAULT 0,
+  p_tax_amount NUMERIC DEFAULT 0,
+  p_payment_method TEXT DEFAULT 'cash',
+  p_paid_to TEXT DEFAULT NULL,
+  p_notes TEXT DEFAULT NULL,
+  p_expense_date TIMESTAMPTZ DEFAULT now(),
+  p_client_request_id TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path=public,auth
+AS $$
+DECLARE
+  v_actor UUID:=COALESCE(auth.uid(),p_actor_id);
+  v_expense public.pharmacy_expenses%ROWTYPE;
+  v_category TEXT;
+  v_total NUMERIC;
+  v_shift public.pharmacy_shifts%ROWTYPE;
+  v_journal UUID;
+BEGIN
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'يجب تسجيل الدخول أولاً'; END IF;
+  IF NOT public.user_has_permission(p_pharmacy_id,'financials:write',v_actor) THEN RAISE EXCEPTION 'ليست لديك صلاحية تسجيل المصروفات'; END IF;
+  IF NOT public.has_branch_access(p_pharmacy_id,p_branch_id,v_actor) THEN RAISE EXCEPTION 'ليست لديك صلاحية على الفرع'; END IF;
+  IF NULLIF(BTRIM(p_title),'') IS NULL THEN RAISE EXCEPTION 'أدخل اسم المصروف'; END IF;
+  IF COALESCE(p_amount,0)<0 OR COALESCE(p_tax_amount,0)<0 THEN RAISE EXCEPTION 'قيمة المصروف غير صالحة'; END IF;
+  v_total:=round(COALESCE(p_amount,0)+COALESCE(p_tax_amount,0),2);
+  IF v_total<=0 THEN RAISE EXCEPTION 'قيمة المصروف يجب أن تكون أكبر من صفر'; END IF;
+
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_pharmacy_id::TEXT||':'||COALESCE(NULLIF(BTRIM(p_client_request_id),''),gen_random_uuid()::TEXT)||':expense',0));
+  IF NULLIF(BTRIM(p_client_request_id),'') IS NOT NULL THEN
+    SELECT * INTO v_expense FROM public.pharmacy_expenses
+    WHERE pharmacy_id=p_pharmacy_id AND client_request_id=BTRIM(p_client_request_id) LIMIT 1;
+    IF FOUND THEN
+      SELECT id INTO v_journal FROM public.pharmacy_journal_entries
+      WHERE pharmacy_id=p_pharmacy_id AND source_table='pharmacy_expenses' AND source_id=v_expense.id LIMIT 1;
+      RETURN jsonb_build_object('expense',to_jsonb(v_expense),'journal_entry_id',v_journal,'duplicate',true);
+    END IF;
+  END IF;
+
+  IF p_category_id IS NOT NULL THEN
+    SELECT name INTO v_category FROM public.pharmacy_expense_categories
+    WHERE id=p_category_id AND pharmacy_id=p_pharmacy_id;
+    IF v_category IS NULL THEN RAISE EXCEPTION 'تصنيف المصروف غير موجود'; END IF;
+  ELSE
+    v_category:=COALESCE(NULLIF(BTRIM(p_category_name),''),'مصروفات عامة');
+  END IF;
+
+  IF LOWER(COALESCE(NULLIF(BTRIM(p_payment_method),''),'cash'))='cash' THEN
+    SELECT * INTO v_shift FROM public.pharmacy_shifts
+    WHERE pharmacy_id=p_pharmacy_id AND branch_id=p_branch_id AND user_id=v_actor AND status='open'
+    ORDER BY opened_at DESC LIMIT 1 FOR UPDATE;
+  END IF;
+
+  INSERT INTO public.pharmacy_expenses(
+    pharmacy_id,branch_id,shift_id,category_id,category_name,title,amount,tax_amount,total,payment_method,
+    paid_to,notes,expense_date,created_by,client_request_id
+  ) VALUES(
+    p_pharmacy_id,p_branch_id,v_shift.id,p_category_id,v_category,BTRIM(p_title),round(COALESCE(p_amount,0),2),
+    round(COALESCE(p_tax_amount,0),2),v_total,LOWER(COALESCE(NULLIF(BTRIM(p_payment_method),''),'cash')),
+    NULLIF(BTRIM(p_paid_to),''),NULLIF(BTRIM(p_notes),''),COALESCE(p_expense_date,now()),v_actor,NULLIF(BTRIM(p_client_request_id),'')
+  ) RETURNING * INTO v_expense;
+
+  v_journal:=public.post_expense_accounting_v1(p_pharmacy_id,v_expense.id,v_actor);
+  IF v_shift.id IS NOT NULL THEN
+    UPDATE public.pharmacy_shifts SET
+      total_expenses=COALESCE(total_expenses,0)+v_total,
+      expected_balance=COALESCE(opening_balance,0)+COALESCE(cash_sales,0)-(COALESCE(total_expenses,0)+v_total),
+      updated_at=now()
+    WHERE id=v_shift.id RETURNING * INTO v_shift;
+  END IF;
+  RETURN jsonb_build_object('expense',to_jsonb(v_expense),'shift',CASE WHEN v_shift.id IS NULL THEN NULL ELSE to_jsonb(v_shift) END,'journal_entry_id',v_journal,'duplicate',false);
+END;
+$$;
+
+-- Replaces the earlier implementation and also restores the cash drawer when
+-- the voided expense belonged to the open/closed cashier shift.
+CREATE OR REPLACE FUNCTION public.void_expense_v1(
+  p_pharmacy_id UUID,p_expense_id UUID,p_actor_id UUID,p_reason TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path=public,auth
+AS $$
+DECLARE
+  v_actor UUID:=COALESCE(auth.uid(),p_actor_id);
+  v_expense public.pharmacy_expenses%ROWTYPE;
+  v_shift public.pharmacy_shifts%ROWTYPE;
+  v_journal UUID;
+BEGIN
+  IF v_actor IS NULL THEN RAISE EXCEPTION 'يجب تسجيل الدخول أولاً'; END IF;
+  IF NOT public.user_has_permission(p_pharmacy_id,'financials:write',v_actor) THEN RAISE EXCEPTION 'ليست لديك صلاحية إلغاء المصروفات'; END IF;
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_pharmacy_id::TEXT||':'||p_expense_id::TEXT||':void-expense',0));
+  SELECT * INTO v_expense FROM public.pharmacy_expenses WHERE id=p_expense_id AND pharmacy_id=p_pharmacy_id FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'المصروف غير موجود'; END IF;
+  IF v_expense.voided_at IS NOT NULL THEN RETURN jsonb_build_object('duplicate',true,'expense',to_jsonb(v_expense)); END IF;
+  IF v_expense.branch_id IS NOT NULL AND NOT public.has_branch_access(p_pharmacy_id,v_expense.branch_id,v_actor) THEN RAISE EXCEPTION 'ليست لديك صلاحية على الفرع'; END IF;
+  IF v_expense.shift_id IS NOT NULL THEN
+    SELECT * INTO v_shift FROM public.pharmacy_shifts WHERE id=v_expense.shift_id AND pharmacy_id=p_pharmacy_id FOR UPDATE;
+  END IF;
+  UPDATE public.pharmacy_expenses SET voided_at=now(),voided_by=v_actor,void_reason=COALESCE(NULLIF(BTRIM(p_reason),''),'إلغاء مصروف'),updated_at=now()
+  WHERE id=p_expense_id RETURNING * INTO v_expense;
+  v_journal:=public.reverse_document_journal_v1(p_pharmacy_id,'pharmacy_expenses',p_expense_id,v_actor,p_reason);
+  IF COALESCE(v_expense.total,0)>0 AND NOT EXISTS(
+    SELECT 1 FROM public.pharmacy_financial_movements WHERE pharmacy_id=p_pharmacy_id AND source_table='pharmacy_expenses_void' AND source_id=p_expense_id
+  ) THEN
+    INSERT INTO public.pharmacy_financial_movements(
+      pharmacy_id,branch_id,type,category,amount,direction,source_table,source_id,description,movement_date,created_by
+    ) VALUES(
+      p_pharmacy_id,v_expense.branch_id,'expense_void','expense_void_refund',v_expense.total,'in','pharmacy_expenses_void',p_expense_id,
+      'عكس المصروف الملغى '||v_expense.title,now(),v_actor
+    );
+  END IF;
+  IF v_shift.id IS NOT NULL AND LOWER(COALESCE(v_expense.payment_method,'cash'))='cash' THEN
+    UPDATE public.pharmacy_shifts SET
+      total_expenses=GREATEST(COALESCE(total_expenses,0)-v_expense.total,0),
+      expected_balance=COALESCE(opening_balance,0)+COALESCE(cash_sales,0)-GREATEST(COALESCE(total_expenses,0)-v_expense.total,0),
+      difference=CASE WHEN status='closed' AND closing_balance IS NOT NULL THEN
+        closing_balance-(COALESCE(opening_balance,0)+COALESCE(cash_sales,0)-GREATEST(COALESCE(total_expenses,0)-v_expense.total,0))
+        ELSE difference END,
+      updated_at=now()
+    WHERE id=v_shift.id RETURNING * INTO v_shift;
+  END IF;
+  RETURN jsonb_build_object('duplicate',false,'expense',to_jsonb(v_expense),'shift',CASE WHEN v_shift.id IS NULL THEN NULL ELSE to_jsonb(v_shift) END,'journal_entry_id',v_journal);
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.open_cashier_shift_v1(UUID,UUID,UUID,NUMERIC,TEXT,TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.close_cashier_shift_v1(UUID,UUID,UUID,UUID,NUMERIC,TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.create_expense_v1(UUID,UUID,UUID,UUID,TEXT,TEXT,NUMERIC,NUMERIC,TEXT,TEXT,TEXT,TIMESTAMPTZ,TEXT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.void_expense_v1(UUID,UUID,UUID,TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.open_cashier_shift_v1(UUID,UUID,UUID,NUMERIC,TEXT,TEXT) TO authenticated,service_role;
+GRANT EXECUTE ON FUNCTION public.close_cashier_shift_v1(UUID,UUID,UUID,UUID,NUMERIC,TEXT) TO authenticated,service_role;
+GRANT EXECUTE ON FUNCTION public.create_expense_v1(UUID,UUID,UUID,UUID,TEXT,TEXT,NUMERIC,NUMERIC,TEXT,TEXT,TEXT,TIMESTAMPTZ,TEXT) TO authenticated,service_role;
+GRANT EXECUTE ON FUNCTION public.void_expense_v1(UUID,UUID,UUID,TEXT) TO authenticated,service_role;
+
+COMMIT;
+
+
+-- ===== CASHIER REPAIR SOURCE: 20260621009000_atomic_complete_business_documents.sql =====
+BEGIN;
+
+CREATE OR REPLACE FUNCTION public.create_cashier_sale_complete_v1(
+  p_pharmacy_id UUID,p_branch_id UUID,p_shift_id UUID,p_actor_id UUID,p_client_request_id TEXT,
+  p_customer_name TEXT,p_payment_method TEXT,p_paid_amount NUMERIC,p_invoice_discount NUMERIC,
+  p_tax_total NUMERIC,p_shipping_fee NUMERIC,p_rounding_adj NUMERIC,p_notes TEXT,
+  p_coupon_code TEXT DEFAULT NULL,p_patient_name TEXT DEFAULT NULL,p_doctor_name TEXT DEFAULT NULL,
+  p_prescription_number TEXT DEFAULT NULL,p_lines JSONB DEFAULT NULL,p_patient_id UUID DEFAULT NULL,p_partner_id UUID DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path=public,auth
+AS $$
+DECLARE
+  v_result JSONB;
+  v_finalization JSONB;
+  v_ledger JSONB;
+  v_sale_id UUID;
+  v_due NUMERIC:=0;
+  v_invoice TEXT;
+BEGIN
+  v_result:=public.create_cashier_sale_v2(
+    p_pharmacy_id,p_branch_id,p_shift_id,p_actor_id,p_client_request_id,p_customer_name,p_payment_method,
+    p_paid_amount,p_invoice_discount,p_tax_total,p_shipping_fee,p_rounding_adj,p_notes,p_coupon_code,
+    p_patient_name,p_doctor_name,p_prescription_number,p_lines
+  );
+  v_sale_id:=NULLIF(v_result->'sale'->>'id','')::UUID;
+  IF v_sale_id IS NULL THEN RAISE EXCEPTION 'لم يتم إنشاء فاتورة البيع'; END IF;
+  v_finalization:=public.finalize_sale_operations_v1(p_pharmacy_id,v_sale_id,p_patient_id,p_partner_id,p_actor_id);
+  v_due:=GREATEST(COALESCE((v_result->'sale'->>'due_amount')::NUMERIC,0),0);
+  v_invoice:=COALESCE(v_result->'sale'->>'invoice_number','');
+  IF p_partner_id IS NOT NULL AND v_due>0 THEN
+    v_ledger:=public.record_partner_balance_entry_v1(
+      p_pharmacy_id,p_branch_id,p_partner_id,'pharmacy_sales',v_sale_id,'charge',v_due,
+      'مديونية فاتورة البيع '||v_invoice,p_actor_id,true
+    );
+    v_finalization:=COALESCE(v_finalization,'{}'::JSONB)||jsonb_build_object('partner_ledger',v_ledger);
+  END IF;
+  RETURN v_result||jsonb_build_object('finalization',COALESCE(v_finalization,'{}'::JSONB));
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.create_received_purchase_complete_v1(
+  p_pharmacy_id UUID,p_branch_id UUID,p_actor_id UUID,p_client_request_id TEXT,p_supplier_id UUID,
+  p_supplier_name TEXT,p_payment_method TEXT,p_paid_amount NUMERIC,p_header_discount NUMERIC,p_tax_total NUMERIC,
+  p_shipping_fee NUMERIC,p_notes TEXT,p_purchase_date TIMESTAMPTZ,p_lines JSONB
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path=public,auth
+AS $$
+DECLARE
+  v_result JSONB;
+  v_ledger JSONB;
+  v_purchase_id UUID;
+  v_journal UUID;
+  v_due NUMERIC:=0;
+  v_number TEXT;
+BEGIN
+  v_result:=public.create_received_purchase(
+    p_pharmacy_id,p_branch_id,p_actor_id,p_client_request_id,p_supplier_id,p_supplier_name,p_payment_method,
+    p_paid_amount,p_header_discount,p_tax_total,p_shipping_fee,p_notes,p_purchase_date,p_lines
+  );
+  v_purchase_id:=NULLIF(v_result->'purchase'->>'id','')::UUID;
+  IF v_purchase_id IS NULL THEN RAISE EXCEPTION 'لم يتم إنشاء فاتورة الشراء'; END IF;
+  v_journal:=public.post_purchase_accounting_v1(p_pharmacy_id,v_purchase_id,p_actor_id);
+  v_due:=GREATEST(COALESCE((v_result->'purchase'->>'due_amount')::NUMERIC,0),0);
+  v_number:=COALESCE(v_result->'purchase'->>'purchase_number','');
+  IF p_supplier_id IS NOT NULL AND v_due>0 THEN
+    -- The purchase RPC already updates the supplier balance, therefore this
+    -- records the immutable ledger row without applying the balance twice.
+    v_ledger:=public.record_partner_balance_entry_v1(
+      p_pharmacy_id,p_branch_id,p_supplier_id,'pharmacy_purchases',v_purchase_id,'charge',v_due,
+      'مديونية فاتورة الشراء '||v_number,p_actor_id,false
+    );
+  END IF;
+  RETURN v_result||jsonb_build_object('journal_entry_id',v_journal,'partner_ledger',v_ledger);
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.create_sales_return_complete_v1(
+  p_pharmacy_id UUID,p_sale_id UUID,p_actor_id UUID,p_client_request_id TEXT,p_reason TEXT,p_lines JSONB
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path=public,auth
+AS $$
+DECLARE
+  v_result JSONB;
+  v_finalization JSONB;
+  v_return_id UUID;
+  v_journal UUID;
+BEGIN
+  v_result:=public.create_sales_return(p_pharmacy_id,p_sale_id,p_actor_id,p_client_request_id,p_reason,p_lines);
+  v_return_id:=NULLIF(v_result->'return'->>'id','')::UUID;
+  IF v_return_id IS NULL THEN RAISE EXCEPTION 'لم يتم إنشاء مرتجع المبيعات'; END IF;
+  v_journal:=public.post_sales_return_accounting_v1(p_pharmacy_id,v_return_id,p_actor_id);
+  v_finalization:=public.finalize_sales_return_partner_v1(p_pharmacy_id,v_return_id,p_actor_id);
+  RETURN v_result||jsonb_build_object('journal_entry_id',v_journal,'operational_finalization',COALESCE(v_finalization,'{}'::JSONB));
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.create_purchase_return_complete_v1(
+  p_pharmacy_id UUID,p_purchase_id UUID,p_actor_id UUID,p_client_request_id TEXT,
+  p_stock_mode TEXT DEFAULT 'restock',p_reason TEXT DEFAULT NULL,p_lines JSONB DEFAULT '[]'::JSONB
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path=public,auth
+AS $$
+DECLARE
+  v_result JSONB;
+  v_finalization JSONB;
+  v_return_id UUID;
+  v_journal UUID;
+BEGIN
+  v_result:=public.create_purchase_return(p_pharmacy_id,p_purchase_id,p_actor_id,p_client_request_id,p_stock_mode,p_reason,p_lines);
+  v_return_id:=NULLIF(v_result->'return'->>'id','')::UUID;
+  IF v_return_id IS NULL THEN RAISE EXCEPTION 'لم يتم إنشاء مرتجع المشتريات'; END IF;
+  v_finalization:=public.finalize_purchase_return_partner_v1(p_pharmacy_id,v_return_id,p_actor_id);
+  v_journal:=public.post_purchase_return_accounting_v1(p_pharmacy_id,v_return_id,p_actor_id);
+  RETURN v_result||jsonb_build_object('journal_entry_id',v_journal,'operational_finalization',COALESCE(v_finalization,'{}'::JSONB));
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.create_cashier_sale_complete_v1(UUID,UUID,UUID,UUID,TEXT,TEXT,TEXT,NUMERIC,NUMERIC,NUMERIC,NUMERIC,NUMERIC,TEXT,TEXT,TEXT,TEXT,TEXT,JSONB,UUID,UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.create_received_purchase_complete_v1(UUID,UUID,UUID,TEXT,UUID,TEXT,TEXT,NUMERIC,NUMERIC,NUMERIC,NUMERIC,TEXT,TIMESTAMPTZ,JSONB) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.create_sales_return_complete_v1(UUID,UUID,UUID,TEXT,TEXT,JSONB) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.create_purchase_return_complete_v1(UUID,UUID,UUID,TEXT,TEXT,TEXT,JSONB) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.create_cashier_sale_complete_v1(UUID,UUID,UUID,UUID,TEXT,TEXT,TEXT,NUMERIC,NUMERIC,NUMERIC,NUMERIC,NUMERIC,TEXT,TEXT,TEXT,TEXT,TEXT,JSONB,UUID,UUID) TO authenticated,service_role;
+GRANT EXECUTE ON FUNCTION public.create_received_purchase_complete_v1(UUID,UUID,UUID,TEXT,UUID,TEXT,TEXT,NUMERIC,NUMERIC,NUMERIC,NUMERIC,TEXT,TIMESTAMPTZ,JSONB) TO authenticated,service_role;
+GRANT EXECUTE ON FUNCTION public.create_sales_return_complete_v1(UUID,UUID,UUID,TEXT,TEXT,JSONB) TO authenticated,service_role;
+GRANT EXECUTE ON FUNCTION public.create_purchase_return_complete_v1(UUID,UUID,UUID,TEXT,TEXT,TEXT,JSONB) TO authenticated,service_role;
+
+COMMIT;
+
+
+-- ===== CASHIER REPAIR SOURCE: 20260621115000_cashier_experience_operational_repair.sql =====
+BEGIN;
+
+-- Cashier UX and operational compatibility repair.
+-- Additive and safe for an existing tenant database.
+ALTER TABLE public.pharmacy_sales
+  ADD COLUMN IF NOT EXISTS client_request_id TEXT,
+  ADD COLUMN IF NOT EXISTS shift_id UUID REFERENCES public.pharmacy_shifts(id) ON DELETE SET NULL;
+ALTER TABLE public.pharmacy_shifts
+  ADD COLUMN IF NOT EXISTS client_request_id TEXT;
+ALTER TABLE public.pharmacy_expenses
+  ADD COLUMN IF NOT EXISTS shift_id UUID REFERENCES public.pharmacy_shifts(id) ON DELETE SET NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_client_request
+  ON public.pharmacy_sales(pharmacy_id,client_request_id)
+  WHERE client_request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sales_shift_date
+  ON public.pharmacy_sales(pharmacy_id,branch_id,shift_id,sale_date DESC)
+  WHERE shift_id IS NOT NULL AND voided_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_expenses_shift_live
+  ON public.pharmacy_expenses(pharmacy_id,branch_id,shift_id,expense_date DESC)
+  WHERE shift_id IS NOT NULL AND voided_at IS NULL;
+
+-- Pharmacists may apply a controlled sale discount. Explicit profile denies
+-- still take precedence inside user_has_permission.
+CREATE OR REPLACE FUNCTION public.user_has_permission(p_pharmacy_id UUID, p_permission TEXT, p_user_id UUID DEFAULT auth.uid())
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+DECLARE
+  v_role TEXT;
+BEGIN
+  IF p_user_id IS NULL OR p_permission IS NULL OR p_permission = '' THEN
+    RETURN false;
+  END IF;
+
+  -- المطور يرى ويدير كل شيء من جدول developer_users فقط.
+  IF public.is_developer(p_user_id) THEN
+    RETURN true;
+  END IF;
+
+  -- صلاحيات النظام ليست قابلة للإسناد لأصحاب الصيدليات أو الموظفين.
+  IF public.permission_is_system_only(p_permission) THEN
+    RETURN false;
+  END IF;
+
+  IF public.permission_denied_in_profile(p_pharmacy_id, p_permission, p_user_id) THEN
+    RETURN false;
+  END IF;
+
+  v_role := public.user_pharmacy_role(p_pharmacy_id, p_user_id);
+
+  IF v_role = 'owner' THEN
+    RETURN true;
+  END IF;
+
+  IF public.permission_in_profile(p_pharmacy_id, p_permission, p_user_id) THEN
+    RETURN true;
+  END IF;
+
+  IF v_role = 'admin' THEN
+    RETURN p_permission IN (
+      'pharmacy:read','pharmacy:write','pharmacy:delete',
+      'branches:read','branches:write','branches:delete',
+      'users:read','users:write','users:delete','auth:audit.read',
+      'sales:read','sales:write','sales:void','sales:discount','sales:price-override',
+      'purchases:read','purchases:write','purchases:void',
+      'inventory:read','inventory:write','inventory:create','inventory:update','inventory:delete','inventory:restore','inventory:archive','inventory:stocktake','inventory:opening-stock.write','inventory:transfer.write','inventory:damaged.write','inventory:barcode.print',
+      'items:view-cost','items:view-profit','items:export','items:print','items:ledger.read','items:price-groups.write',
+      'financials:read','financials:write','reports:read','reports:export','hr:read','hr:write','crm:read','crm:write',
+      'settings:read','settings:write','settings:project.read','settings:project.write','settings:branches.read','settings:branches.write','settings:tax.read','settings:tax.write','settings:items.read','settings:items.write','settings:sales.read','settings:sales.write','settings:cashier.read','settings:cashier.write','settings:purchases.read','settings:purchases.write','settings:payments.read','settings:payments.write','settings:contacts.read','settings:contacts.write','settings:invoice.read','settings:invoice.write','settings:barcode.read','settings:barcode.write','settings:printers.read','settings:printers.write','settings:stock-alerts.read','settings:stock-alerts.write','settings:notification-templates.read','settings:notification-templates.write','settings:email.read','settings:email.write','settings:sms.read','settings:sms.write','settings:backup.read','settings:shortcuts.read','settings:shortcuts.write','settings:rewards.read','settings:rewards.write','settings:extra-units.read','settings:extra-units.write','settings:custom-labels.read','settings:custom-labels.write',
+      'notifications:read','notifications:manage','notifications:templates.write',
+      'prescriptions:read','delivery:read','loyalty:read','sync:read','deleted-records:read','deleted-records:restore'
+    );
+  END IF;
+
+  IF v_role = 'manager' THEN
+    RETURN p_permission IN (
+      'pharmacy:read','pharmacy:write','branches:read','branches:write','users:read',
+      'sales:read','sales:write','sales:void','sales:discount',
+      'purchases:read','purchases:write',
+      'inventory:read','inventory:write','inventory:create','inventory:update','inventory:archive','inventory:stocktake','inventory:opening-stock.write','inventory:transfer.write','inventory:damaged.write','inventory:barcode.print',
+      'items:view-cost','items:export','items:print','items:ledger.read','items:price-groups.write',
+      'financials:read','reports:read','reports:export','hr:read','crm:read','crm:write',
+      'settings:read','settings:write','settings:project.read','settings:branches.read','settings:branches.write','settings:items.read','settings:items.write','settings:sales.read','settings:sales.write','settings:cashier.read','settings:cashier.write','settings:purchases.read','settings:purchases.write','settings:payments.read','settings:contacts.read','settings:invoice.read','settings:barcode.read','settings:barcode.write','settings:printers.read','settings:printers.write','settings:stock-alerts.read','settings:stock-alerts.write','settings:notification-templates.read','settings:shortcuts.read','settings:shortcuts.write','settings:extra-units.read','settings:custom-labels.read',
+      'notifications:read','notifications:manage','sync:read'
+    );
+  END IF;
+
+  IF v_role = 'accountant' THEN
+    RETURN p_permission IN (
+      'pharmacy:read','branches:read','sales:read','purchases:read','inventory:read',
+      'items:view-cost','items:view-profit','items:export','items:print','items:ledger.read',
+      'financials:read','financials:write','reports:read','reports:export','crm:read',
+      'settings:read','settings:project.read','settings:tax.read','settings:invoice.read','settings:payments.read','settings:contacts.read','notifications:read'
+    );
+  END IF;
+
+  IF v_role = 'pharmacist' THEN
+    RETURN p_permission IN (
+      'pharmacy:read','branches:read','sales:read','sales:write','sales:discount','purchases:read',
+      'inventory:read','inventory:write','inventory:create','inventory:update','inventory:stocktake','inventory:opening-stock.write','inventory:barcode.print',
+      'items:print','items:ledger.read','crm:read','settings:read','settings:items.read','settings:stock-alerts.read','settings:barcode.read','settings:printers.read','notifications:read',
+      'prescriptions:read','prescriptions:write'
+    );
+  END IF;
+
+  IF v_role = 'cashier' THEN
+    RETURN p_permission IN (
+      'pharmacy:read','branches:read','sales:read','sales:write','inventory:read','crm:read','settings:read','settings:cashier.read','settings:printers.read','notifications:read'
+    );
+  END IF;
+
+  IF v_role IN ('technician','worker','viewer') THEN
+    RETURN p_permission IN (
+      'pharmacy:read','branches:read','inventory:read','sales:read','reports:read','settings:read','notifications:read'
+    );
+  END IF;
+
+  RETURN false;
+END;
+$$;
+
+-- Stable versioned entry point used by the cashier service. The v1 document
+-- RPC remains the single transactional implementation to avoid duplicated
+-- accounting/inventory logic.
+CREATE OR REPLACE FUNCTION public.create_cashier_sale_complete_v2(
+  p_pharmacy_id UUID,p_branch_id UUID,p_shift_id UUID,p_actor_id UUID,p_client_request_id TEXT,
+  p_customer_name TEXT,p_payment_method TEXT,p_paid_amount NUMERIC,p_invoice_discount NUMERIC,
+  p_tax_total NUMERIC,p_shipping_fee NUMERIC,p_rounding_adj NUMERIC,p_notes TEXT,
+  p_coupon_code TEXT DEFAULT NULL,p_patient_name TEXT DEFAULT NULL,p_doctor_name TEXT DEFAULT NULL,
+  p_prescription_number TEXT DEFAULT NULL,p_lines JSONB DEFAULT NULL,p_patient_id UUID DEFAULT NULL,p_partner_id UUID DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path=public,auth
+AS $$
+BEGIN
+  RETURN public.create_cashier_sale_complete_v1(
+    p_pharmacy_id,p_branch_id,p_shift_id,p_actor_id,p_client_request_id,
+    p_customer_name,p_payment_method,p_paid_amount,p_invoice_discount,
+    p_tax_total,p_shipping_fee,p_rounding_adj,p_notes,p_coupon_code,
+    p_patient_name,p_doctor_name,p_prescription_number,p_lines,p_patient_id,p_partner_id
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.create_cashier_sale_complete_v2(UUID,UUID,UUID,UUID,TEXT,TEXT,TEXT,NUMERIC,NUMERIC,NUMERIC,NUMERIC,NUMERIC,TEXT,TEXT,TEXT,TEXT,TEXT,JSONB,UUID,UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.create_cashier_sale_complete_v2(UUID,UUID,UUID,UUID,TEXT,TEXT,TEXT,NUMERIC,NUMERIC,NUMERIC,NUMERIC,NUMERIC,TEXT,TEXT,TEXT,TEXT,TEXT,JSONB,UUID,UUID) TO authenticated,service_role;
+
+NOTIFY pgrst, 'reload schema';
+COMMIT;

@@ -131,13 +131,39 @@ requireText("supabase/migrations/20260621114000_hr_workflow_integrity.sql", [
   "hr.attendanceGraceMinutes",
 ])
 
+requireText("src/features/sales/server/cashier-sale-service.ts", [
+  "export class CashierSaleService",
+  "create_cashier_sale_complete_v2",
+  "create_cashier_sale_complete_v1",
+  "create_cashier_sale_v2",
+  "CASHIER_DATABASE_UPGRADE_REQUIRED",
+])
+requireText("src/features/sales/server/cashier-shift-repository.ts", [
+  "export class CashierShiftRepository",
+  "async snapshot",
+  "expectedDrawer",
+  "recentSales",
+])
+requireText("src/features/sales/components/cashier-view.tsx", [
+  "CashierSessionDialog",
+  "CashierCloseDialog",
+  "CashierShortcutsDialog",
+  "InvoiceDiscountDialog",
+  "searchResultsVisible",
+  "openSystemWindow",
+])
+requireText("supabase/migrations/20260621115000_cashier_experience_operational_repair.sql", [
+  "create_cashier_sale_complete_v2",
+  "sales:discount",
+  "idx_sales_shift_date",
+])
 
 for (const generatedSql of ["supabase/deploy.sql", "supabase/final-repair.sql"]) {
   const content = read(generatedSql)
   if (!content.includes("20260621111000_domain_units_delivery_workflows.sql")) {
     failures.push(`${generatedSql} does not include the latest domain migration`)
   }
-  if (!content.includes("Normalize legacy aliases") || !content.includes("receive_purchase_order_complete_v1") || !content.includes("pharmacy_purchase_order_receipts") || !content.includes("pay_payroll_run_v1") || !content.includes("pharmacy_payroll_lines") || !content.includes("enforce_leave_transition_v1") || !content.includes("prevent_employee_hard_delete_v1")) {
+  if (!content.includes("Normalize legacy aliases") || !content.includes("receive_purchase_order_complete_v1") || !content.includes("pharmacy_purchase_order_receipts") || !content.includes("pay_payroll_run_v1") || !content.includes("pharmacy_payroll_lines") || !content.includes("enforce_leave_transition_v1") || !content.includes("prevent_employee_hard_delete_v1") || !content.includes("create_cashier_sale_complete_v2") || !content.includes("open_cashier_shift_v1") || !content.includes("close_cashier_shift_v1")) {
     failures.push(`${generatedSql} is stale; rebuild it after domain migration changes`)
   }
 }
@@ -161,6 +187,7 @@ notices.push("Operational UIs use the shared HTTP client and legal workflow tran
 notices.push("Payroll calculation, approval, payment and accounting are centralized and audited")
 notices.push("Employee lifecycle and leave transitions are protected in API, domain and database layers")
 notices.push("Attendance status is derived from shift time and a centralized grace-period policy")
+notices.push("Cashier save, live-session reporting, closing summary and shortcuts are centralized and audited")
 
 if (failures.length > 0) {
   console.error(`Domain architecture audit failed (${failures.length})`)

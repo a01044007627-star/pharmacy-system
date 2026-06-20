@@ -5,6 +5,9 @@ import { toast } from "sonner"
 import {
   AlertCircle,
   Info,
+  Keyboard,
+  ListChecks,
+  BadgePercent,
   DollarSign,
   Barcode,
   Calculator as CalculatorIcon,
@@ -12,6 +15,7 @@ import {
   Clock,
   CreditCard,
   FileText,
+  ExternalLink,
   MapPin,
   Minus,
   Monitor,
@@ -53,6 +57,14 @@ import { numberValue, escapeHtml, labelFromMap } from "@/lib/helpers"
 import { money } from "@/lib/formatters"
 import { EmptyState } from "@/components/shared/empty-state"
 import { Calculator as CalculatorWidget } from "@/features/calculator"
+import { apiClient, isNetworkError } from "@/lib/api-client"
+import type { CashierShiftSnapshot } from "@/features/sales/types/cashier-session"
+import {
+  CashierCloseDialog,
+  CashierSessionDialog,
+  CashierShortcutsDialog,
+  InvoiceDiscountDialog,
+} from "@/features/sales/components/cashier-operations-dialogs"
 
 type CashierProductBarcode = {
   barcode?: string | null
@@ -113,8 +125,11 @@ type CashierShift = {
   id: string
   user_id?: string | null
   opened_at: string
+  closed_at?: string | null
   opening_balance: number
+  closing_balance?: number | null
   expected_balance: number | null
+  difference?: number | null
   cash_sales: number | null
   card_sales: number | null
   credit_sales: number | null
@@ -135,6 +150,7 @@ type CashierResponse = {
 type ShiftResponse = {
   openShift?: CashierShift | null
   shift?: CashierShift
+  snapshot?: CashierShiftSnapshot | null
   error?: string
 }
 
@@ -184,7 +200,7 @@ type ReceiptPrinterProfile = {
 
 const LEGACY_OFFLINE_SALES_KEY = "pharmacy_cashier_offline_sales_v1"
 const DRAFT_KEY = "pharmacy_cashier_draft_v1"
-const CATALOG_PANEL_KEY = "pharmacy_cashier_catalog_panel_v1"
+const CATALOG_PANEL_KEY = "pharmacy_cashier_catalog_panel_v2"
 const CATALOG_PANEL_WIDTH_KEY = "pharmacy_cashier_catalog_panel_width_v1"
 
 const PAYMENT_METHOD_LABELS: Record<string, string> = {
@@ -269,6 +285,48 @@ function clampPanelWidth(value: number) {
   return Math.min(620, Math.max(320, Math.round(value)))
 }
 
+function fallbackShiftSnapshot(shift: CashierShift, closingBalance?: number | null): CashierShiftSnapshot {
+  const openingBalance = numberValue(shift.opening_balance)
+  const cashSales = numberValue(shift.cash_sales)
+  const cardSales = numberValue(shift.card_sales)
+  const creditSales = numberValue(shift.credit_sales)
+  const paidTotal = numberValue(shift.total_collected, cashSales + cardSales)
+  const expensesTotal = numberValue(shift.total_expenses)
+  const expectedDrawer = numberValue(shift.expected_balance, openingBalance + cashSales - expensesTotal)
+  const actualDrawer = closingBalance ?? (shift.closing_balance == null ? null : numberValue(shift.closing_balance))
+  const openedAt = new Date(shift.opened_at).getTime()
+  const closedAt = shift.closed_at ? new Date(shift.closed_at).getTime() : Date.now()
+  const durationMinutes = Number.isFinite(openedAt) && Number.isFinite(closedAt) && closedAt > openedAt
+    ? Math.floor((closedAt - openedAt) / 60_000)
+    : 0
+
+  return {
+    shift,
+    metrics: {
+      invoiceCount: 0,
+      grossSales: cashSales + cardSales + creditSales,
+      discountTotal: 0,
+      netSales: cashSales + cardSales + creditSales,
+      paidTotal,
+      dueTotal: creditSales,
+      cashCollected: cashSales,
+      cardCollected: cardSales,
+      walletCollected: 0,
+      transferCollected: 0,
+      mixedCollected: 0,
+      expenseCount: 0,
+      expensesTotal,
+      openingBalance,
+      expectedDrawer,
+      actualDrawer,
+      drawerDifference: actualDrawer == null ? null : actualDrawer - expectedDrawer,
+      durationMinutes,
+      lastSaleAt: null,
+    },
+    recentSales: [],
+  }
+}
+
 function priceForGroup(product: CashierProduct, group: PriceGroup | null) {
   if (!group) return Math.max(0, numberValue(product.sell_price))
   const buyPrice = Math.max(0, numberValue(product.buy_price))
@@ -304,6 +362,7 @@ export function CashierView() {
   const [couponCode, setCouponCode] = useState("")
   const [couponDiscount, setCouponDiscount] = useState(0)
   const [couponValidating, setCouponValidating] = useState(false)
+  const [couponPanelOpen, setCouponPanelOpen] = useState(false)
   const [couponApplied, setCouponApplied] = useState<{ code: string; discount: number; label: string } | null>(null)
   const [patientName, setPatientName] = useState("")
   const [patientId, setPatientId] = useState<string | null>(null)
@@ -313,17 +372,27 @@ export function CashierView() {
   const [loading, setLoading] = useState(false)
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [saleError, setSaleError] = useState<string | null>(null)
+  const saleRequestRef = useRef<{ fingerprint: string; id: string } | null>(null)
   const [searchFocused, setSearchFocused] = useState(false)
   const [showRecent, setShowRecent] = useState(false)
-  const [showCatalog, setShowCatalog] = useState(true)
+  const [showCatalog, setShowCatalog] = useState(false)
   const [catalogSearch, setCatalogSearch] = useState("")
   const [catalogFilter, setCatalogFilter] = useState("all")
-  const [catalogPanelWidth, setCatalogPanelWidth] = useState(420)
+  const [catalogPanelWidth, setCatalogPanelWidth] = useState(370)
   const [cashierBranchId, setCashierBranchId] = useState<string | null>(null)
   const [calculatorOpen, setCalculatorOpen] = useState(false)
   const [calculatorResult, setCalculatorResult] = useState(0)
   const [shift, setShift] = useState<CashierShift | null>(null)
+  const [shiftSnapshot, setShiftSnapshot] = useState<CashierShiftSnapshot | null>(null)
   const [shiftLoading, setShiftLoading] = useState(false)
+  const [sessionDialogOpen, setSessionDialogOpen] = useState(false)
+  const [closeShiftDialogOpen, setCloseShiftDialogOpen] = useState(false)
+  const [closeSummaryOpen, setCloseSummaryOpen] = useState(false)
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const [discountDialogOpen, setDiscountDialogOpen] = useState(false)
+  const [closingShift, setClosingShift] = useState(false)
+  const [shiftClosedPendingReset, setShiftClosedPendingReset] = useState(false)
   const [openingCash, setOpeningCash] = useState("0")
   const [openingNotes, setOpeningNotes] = useState("")
   const [openingSession, setOpeningSession] = useState(false)
@@ -334,7 +403,12 @@ export function CashierView() {
 
   const discountFeatureEnabled = settings.bool("sales", "enableDiscount", true)
   const priceOverrideFeatureEnabled = settings.bool("sales", "enablePriceOverride", true)
-  const canDiscount = discountFeatureEnabled && (auth.isDeveloper || auth.can("sales:discount"))
+  const canDiscount = discountFeatureEnabled && (
+    auth.isDeveloper
+    || auth.isOwner
+    || ["owner", "admin", "manager", "pharmacist"].includes(auth.role)
+    || auth.can("sales:discount")
+  )
   const canPriceOverride = priceOverrideFeatureEnabled && (auth.isDeveloper || auth.can("sales:price-override"))
   const canSell = auth.isDeveloper || auth.can("sales:write")
   const pharmacyId = auth.activePharmacyId
@@ -409,9 +483,27 @@ export function CashierView() {
   const subtotal = useMemo(() => lines.reduce((total, line) => total + line.quantity * line.unit_price, 0), [lines])
   const linesDiscount = useMemo(() => lines.reduce((total, line) => total + line.discount, 0), [lines])
   const total = useMemo(() => Math.max(0, subtotal - linesDiscount - invoiceDiscount - couponDiscount), [couponDiscount, invoiceDiscount, linesDiscount, subtotal])
+  const invoiceFingerprint = useMemo(() => JSON.stringify({
+    branchId,
+    customerId,
+    customerName,
+    patientId,
+    paymentMethod,
+    paidAmount,
+    invoiceDiscount,
+    couponCode: couponApplied?.code ?? null,
+    lines: lines.map((line) => [line.id, line.quantity, line.unit_price, line.discount]),
+  }), [branchId, couponApplied?.code, customerId, customerName, invoiceDiscount, lines, paidAmount, patientId, paymentMethod])
   const due = Math.max(0, total - paidAmount)
   const hasControlledItems = useMemo(() => lines.some((line) => line.is_controlled || line.requires_prescription), [lines])
+  const normalizedQuery = query.trim()
+  const queryLooksLikeBarcode = barcodeSearchEnabled && /^[0-9A-Za-z_-]{4,}$/.test(normalizedQuery)
+  const hasSearchIntent = normalizedQuery.length >= searchMinChars || queryLooksLikeBarcode
+  const searchResultsVisible = searchEnabled && searchFocused && hasSearchIntent
   const expectedDrawer = numberValue(shift?.expected_balance, numberValue(shift?.opening_balance))
+  useEffect(() => {
+    setSaleError(null)
+  }, [invoiceFingerprint])
   const cashierGridStyle = useMemo(() => ({
     "--cashier-catalog-width": `${catalogPanelWidth}px`,
   }) as CSSProperties & Record<string, string>, [catalogPanelWidth])
@@ -461,6 +553,7 @@ export function CashierView() {
       if (!response.ok) throw new Error(data.error ?? "فشل تحميل جلسة الكاشير")
       const nextShift = data.openShift ?? null
       setShift(nextShift)
+      setShiftSnapshot(nextShift ? (data.snapshot ?? fallbackShiftSnapshot(nextShift)) : null)
       if (nextShift) {
         await localDB.putTableRow("pharmacy_shifts", {
           ...nextShift,
@@ -475,9 +568,11 @@ export function CashierView() {
       const cachedShift = await loadOfflineOpenShift({ pharmacyId, branchId, userId: authUserId })
       if (cachedShift) {
         setShift(cachedShift)
+        setShiftSnapshot(fallbackShiftSnapshot(cachedShift))
         if (network.online) toast.warning("تعذر الاتصال بالخادم؛ تم فتح آخر وردية محفوظة على الجهاز")
       } else {
         setShift(null)
+        setShiftSnapshot(null)
         if (network.online) toast.error(error instanceof Error ? error.message : "فشل تحميل جلسة الكاشير")
       }
     } finally {
@@ -489,20 +584,21 @@ export function CashierView() {
     if (!pharmacyId || !branchId || !searchEnabled) return
     const normalizedTerm = term.trim()
     const looksLikeBarcode = barcodeSearchEnabled && /^[0-9A-Za-z_-]{4,}$/.test(normalizedTerm)
-    if (normalizedTerm && normalizedTerm.length < searchMinChars && !looksLikeBarcode) {
+    if (!normalizedTerm || (normalizedTerm.length < searchMinChars && !looksLikeBarcode)) {
       setProducts([])
+      setLoading(false)
       return
     }
     setLoading(true)
     try {
-      const params = new URLSearchParams({ query: term, pharmacy_id: pharmacyId, branch_id: branchId, limit: term.trim() ? "80" : "60" })
+      const params = new URLSearchParams({ query: normalizedTerm, pharmacy_id: pharmacyId, branch_id: branchId, limit: "80" })
       const response = await fetch(`/api/sales/cashier?${params.toString()}`, { cache: "no-store" })
       const data = (await response.json().catch(() => ({}))) as CashierResponse
       if (!response.ok) throw new Error(data.error ?? "فشل تحميل الأصناف")
       setProducts(data.products ?? [])
       setRecentSales(data.recentSales ?? [])
     } catch (error) {
-      const cachedProducts = await loadOfflineCashierCatalog({ pharmacyId, branchId, query: normalizedTerm, limit: normalizedTerm ? 80 : 60 })
+      const cachedProducts = await loadOfflineCashierCatalog({ pharmacyId, branchId, query: normalizedTerm, limit: 80 })
       setProducts(cachedProducts)
       if (cachedProducts.length === 0 && network.online) toast.error(error instanceof Error ? error.message : "فشل تحميل بيانات الكاشير")
     } finally {
@@ -582,17 +678,20 @@ export function CashierView() {
     const stored = localStorage.getItem(DRAFT_KEY)
     if (stored) {
       try {
-        const draft = JSON.parse(stored) as { lines?: CartLine[]; customerName?: string; paymentMethod?: string; invoiceDiscount?: number; paidAmount?: number }
+        const draft = JSON.parse(stored) as { lines?: CartLine[]; customerName?: string; paymentMethod?: string; invoiceDiscount?: number; paidAmount?: number; clientRequestId?: string; fingerprint?: string }
         setLines(draft.lines ?? [])
         setCustomerName(draft.customerName ?? "نقد جمهوري")
         setPaymentMethod(draft.paymentMethod ?? "cash")
         setInvoiceDiscount(numberValue(draft.invoiceDiscount))
         setPaidAmount(numberValue(draft.paidAmount))
+        if (typeof draft.clientRequestId === "string" && typeof draft.fingerprint === "string") {
+          saleRequestRef.current = { id: draft.clientRequestId, fingerprint: draft.fingerprint }
+        }
       } catch {}
     }
     const storedPanel = localStorage.getItem(CATALOG_PANEL_KEY)
     const storedWidth = Number(localStorage.getItem(CATALOG_PANEL_WIDTH_KEY))
-    setShowCatalog(storedPanel !== "hidden")
+    setShowCatalog(storedPanel === "visible")
     if (Number.isFinite(storedWidth) && storedWidth > 0) setCatalogPanelWidth(clampPanelWidth(storedWidth))
   }, [])
 
@@ -623,9 +722,14 @@ export function CashierView() {
 
   useEffect(() => {
     if (!pharmacyId || !branchId || !shift || !searchEnabled) return
-    const handle = window.setTimeout(() => { void fetchProducts(query) }, 220)
+    if (!hasSearchIntent) {
+      setProducts([])
+      setLoading(false)
+      return
+    }
+    const handle = window.setTimeout(() => { void fetchProducts(query) }, queryLooksLikeBarcode ? 40 : 220)
     return () => window.clearTimeout(handle)
-  }, [branchId, fetchProducts, pharmacyId, query, searchEnabled, shift])
+  }, [branchId, fetchProducts, hasSearchIntent, pharmacyId, query, queryLooksLikeBarcode, searchEnabled, shift])
 
   useEffect(() => {
     if (!pharmacyId || !branchId || !shift) return
@@ -666,25 +770,94 @@ export function CashierView() {
     window.addEventListener("pointerup", handleUp, { once: true })
   }, [catalogPanelWidth])
 
+  async function refreshSessionSnapshot() {
+    if (!pharmacyId || !branchId || !shift) return
+    setShiftLoading(true)
+    try {
+      const data = await apiClient.get<ShiftResponse>("/api/sales/cashier/shift", {
+        query: { pharmacy_id: pharmacyId, branch_id: branchId, shift_id: shift.id },
+        fallbackMessage: "فشل تحميل تفاصيل الجلسة",
+      })
+      if (data.openShift) setShift(data.openShift)
+      setShiftSnapshot(data.snapshot ?? null)
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "فشل تحميل تفاصيل الجلسة")
+    } finally {
+      setShiftLoading(false)
+    }
+  }
+
+  function openSessionDetails() {
+    setSessionDialogOpen(true)
+    void refreshSessionSnapshot()
+  }
+
+  function openSystemWindow() {
+    if (lines.length > 0) saveDraft("تم حفظ الفاتورة الحالية كمسودة قبل فتح لوحة النظام")
+    window.open("/dashboard", "_blank", "noopener,noreferrer")
+  }
+
+  function openSaleDetails(saleId: string) {
+    window.open(`/dashboard/sales/${encodeURIComponent(saleId)}`, "_blank", "noopener,noreferrer")
+  }
+
+  function finalizeClosedShiftView() {
+    setCloseSummaryOpen(false)
+    setShiftClosedPendingReset(false)
+    setShift(null)
+    setShiftSnapshot(null)
+    clearInvoice()
+  }
+
   useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.repeat) return
       if (event.key === "F2") {
         event.preventDefault()
         searchInputRef.current?.focus()
-      }
-      if (event.key === "F4") {
-        event.preventDefault()
-        setCatalogVisible(!showCatalog)
-      }
-      if (event.key === "F3" && calculatorEnabled) {
+      } else if (event.key === "F3" && calculatorEnabled) {
         event.preventDefault()
         setCalculatorOpen(true)
+      } else if (event.key === "F4") {
+        event.preventDefault()
+        setCatalogVisible(!showCatalog)
+      } else if (event.key === "F6") {
+        event.preventDefault()
+        openSessionDetails()
+      } else if (event.key === "F7" && canDiscount && lines.length > 0) {
+        event.preventDefault()
+        setDiscountDialogOpen(true)
+      } else if (event.key === "F8") {
+        event.preventDefault()
+        setShowRecent((current) => !current)
+      } else if (event.key === "F9" && lines.length > 0) {
+        event.preventDefault()
+        saveDraft()
+      } else if (event.key === "F10") {
+        event.preventDefault()
+        openSystemWindow()
+      } else if (event.key === "F12" && lines.length > 0 && !saving && !shiftClosedPendingReset) {
+        event.preventDefault()
+        void submitSale("cash")
+      } else if (event.altKey && event.key === "2" && lines.length > 0) {
+        event.preventDefault()
+        void submitSale("card")
+      } else if (event.altKey && event.key === "3" && lines.length > 0) {
+        event.preventDefault()
+        void submitSale("credit")
+      } else if (event.altKey && event.key === "4" && lines.length > 0) {
+        event.preventDefault()
+        void submitSale("mixed")
+      } else if (event.key === "Escape") {
+        setSearchFocused(false)
+        setShowRecent(false)
+        setShortcutsOpen(false)
+        setDiscountDialogOpen(false)
       }
-      if (event.key === "Escape" && searchFocused) setSearchFocused(false)
     }
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [calculatorEnabled, searchFocused, setCatalogVisible, showCatalog])
+  }, [calculatorEnabled, canDiscount, lines.length, saving, searchFocused, setCatalogVisible, shiftClosedPendingReset, showCatalog])
 
   async function openShift() {
     if (!pharmacyId || !branchId) {
@@ -693,20 +866,17 @@ export function CashierView() {
     }
     setOpeningSession(true)
     try {
-      const response = await fetch("/api/sales/cashier/shift", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pharmacy_id: pharmacyId,
-          branch_id: branchId,
-          opening_balance: numberValue(openingCash),
-          notes: openingNotes,
-        }),
-      })
-      const data = (await response.json().catch(() => ({}))) as ShiftResponse & { alreadyOpen?: boolean }
-      if (!response.ok) throw new Error(data.error ?? "فشل فتح جلسة الكاشير")
+      const data = await apiClient.post<ShiftResponse & { alreadyOpen?: boolean }>("/api/sales/cashier/shift", {
+        pharmacy_id: pharmacyId,
+        branch_id: branchId,
+        opening_balance: numberValue(openingCash),
+        notes: openingNotes,
+        client_request_id: crypto.randomUUID(),
+      }, { fallbackMessage: "فشل فتح جلسة الكاشير", timeoutMs: 25_000 })
       const nextShift = data.shift ?? null
       setShift(nextShift)
+      setShiftSnapshot(nextShift ? (data.snapshot ?? fallbackShiftSnapshot(nextShift)) : null)
+      setShiftClosedPendingReset(false)
       if (nextShift) {
         await localDB.putTableRow("pharmacy_shifts", {
           ...nextShift,
@@ -727,8 +897,9 @@ export function CashierView() {
       const cachedShift = await loadOfflineOpenShift({ pharmacyId, branchId, userId: authUserId })
       if (cachedShift) {
         setShift(cachedShift)
+        setShiftSnapshot(fallbackShiftSnapshot(cachedShift))
         toast.warning("تم استرجاع الوردية المفتوحة المحفوظة على الجهاز")
-      } else if (!network.online || error instanceof TypeError) {
+      } else if (!network.online || isNetworkError(error)) {
         toast.error("فتح وردية جديدة لأول مرة يحتاج اتصالًا بالخادم. جهّز الجهاز للأوفلاين والوردية مفتوحة قبل انقطاع الإنترنت")
       } else {
         toast.error(error instanceof Error ? error.message : "فشل فتح جلسة الكاشير")
@@ -738,58 +909,95 @@ export function CashierView() {
     }
   }
 
-  async function closeShift() {
+  async function closeShift(actualBalance: number, notes: string) {
     if (!shift || !pharmacyId || !branchId) return
-    const entered = window.prompt("اكتب المبلغ الفعلي الموجود في الدرج لإغلاق جلسة الكاشير", String(expectedDrawer.toFixed(2)))
-    if (entered === null) return
+    const closingBalance = Math.max(0, numberValue(actualBalance))
+    setClosingShift(true)
     try {
-      const response = await fetch("/api/sales/cashier/shift", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pharmacy_id: pharmacyId, branch_id: branchId, shift_id: shift.id, closing_balance: numberValue(entered) }),
-      })
-      const data = (await response.json().catch(() => ({}))) as ShiftResponse
-      if (!response.ok) throw new Error(data.error ?? "فشل إغلاق جلسة الكاشير")
-      await localDB.putTableRow("pharmacy_shifts", {
-        ...shift,
+      const data = await apiClient.patch<ShiftResponse>("/api/sales/cashier/shift", {
         pharmacy_id: pharmacyId,
         branch_id: branchId,
-        user_id: shift.user_id ?? authUserId,
-        status: "closed",
-        closing_balance: numberValue(entered),
+        shift_id: shift.id,
+        closing_balance: closingBalance,
+        notes,
+      }, { fallbackMessage: "فشل إغلاق جلسة الكاشير", timeoutMs: 25_000 })
+      const closedShift = data.shift ?? {
+        ...shift,
+        status: "closed" as const,
+        closing_balance: closingBalance,
         closed_at: new Date().toISOString(),
+      }
+      await localDB.putTableRow("pharmacy_shifts", {
+        ...closedShift,
+        pharmacy_id: pharmacyId,
+        branch_id: branchId,
+        user_id: closedShift.user_id ?? authUserId,
+        status: "closed",
         updated_at: new Date().toISOString(),
       }, true)
-      setShift(null)
-      setLines([])
+      setShift(closedShift)
+      const closedSnapshot = data.snapshot ?? shiftSnapshot ?? fallbackShiftSnapshot(closedShift, closingBalance)
+      setShiftSnapshot({
+        ...closedSnapshot,
+        shift: { ...closedSnapshot.shift, ...closedShift },
+        metrics: {
+          ...closedSnapshot.metrics,
+          actualDrawer: closingBalance,
+          drawerDifference: closingBalance - closedSnapshot.metrics.expectedDrawer,
+        },
+      })
+      setCloseShiftDialogOpen(false)
+      setShiftClosedPendingReset(true)
+      setCloseSummaryOpen(true)
       play("shift-end", 0.45)
-      toast.success("تم إغلاق جلسة الكاشير")
+      toast.success("تم إغلاق جلسة الكاشير وعرض تفاصيل التقفيل")
     } catch (error) {
-      if (!network.online || error instanceof TypeError) {
+      if (!network.online || isNetworkError(error)) {
         await queueApiRequest({
           path: "/api/sales/cashier/shift",
           method: "PATCH",
-          body: { pharmacy_id: pharmacyId, branch_id: branchId, shift_id: shift.id, closing_balance: numberValue(entered) },
+          body: { pharmacy_id: pharmacyId, branch_id: branchId, shift_id: shift.id, closing_balance: closingBalance, notes },
           label: "إغلاق وردية الكاشير أوفلاين",
         })
-        await localDB.putTableRow("pharmacy_shifts", {
+        const closedAt = new Date().toISOString()
+        const offlineShift: CashierShift = {
           ...shift,
+          status: "closed",
+          closing_balance: closingBalance,
+          closed_at: closedAt,
+          notes: notes || shift.notes,
+        }
+        await localDB.putTableRow("pharmacy_shifts", {
+          ...offlineShift,
           pharmacy_id: pharmacyId,
           branch_id: branchId,
           user_id: shift.user_id ?? authUserId,
-          status: "closed",
-          closing_balance: numberValue(entered),
-          closed_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+          updated_at: closedAt,
         }, false)
         await syncManager.refreshPending()
-        setShift(null)
-        setLines([])
+        setShift(offlineShift)
+        setShiftSnapshot((current) => {
+          const base = current ?? fallbackShiftSnapshot(offlineShift, closingBalance)
+          return {
+            ...base,
+            shift: { ...base.shift, ...offlineShift },
+            metrics: {
+              ...base.metrics,
+              actualDrawer: closingBalance,
+              drawerDifference: closingBalance - base.metrics.expectedDrawer,
+            },
+          }
+        })
+        setCloseShiftDialogOpen(false)
+        setShiftClosedPendingReset(true)
+        setCloseSummaryOpen(true)
         play("shift-end", 0.45)
-        toast.warning("تم إغلاق الوردية على الجهاز وستُرسل للخادم عند رجوع الإنترنت")
+        toast.warning("تم تقفيل الوردية على الجهاز وستُرسل للخادم عند رجوع الإنترنت")
       } else {
         toast.error(error instanceof Error ? error.message : "فشل إغلاق جلسة الكاشير")
       }
+    } finally {
+      setClosingShift(false)
     }
   }
 
@@ -888,6 +1096,7 @@ export function CashierView() {
     setCouponDiscount(0)
     setCouponApplied(null)
     setCouponCode("")
+    setCouponPanelOpen(false)
     setCustomerName("نقد جمهوري")
     setCustomerId(null)
     setPatientName("")
@@ -898,11 +1107,26 @@ export function CashierView() {
     const normalized = preferred === "bank" ? "bank-transfer" : preferred
     setPaymentMethod(acceptedPaymentMethods.includes(normalized) ? normalized : acceptedPaymentMethods[0] ?? "cash")
     setPaidAmount(0)
+    setSaleError(null)
+    saleRequestRef.current = null
     localStorage.removeItem(DRAFT_KEY)
   }
 
   function saveDraft(label = "تم حفظ المسودة على الجهاز") {
-    localStorage.setItem(DRAFT_KEY, JSON.stringify({ lines, customerName, paymentMethod, invoiceDiscount, paidAmount, savedAt: new Date().toISOString() }))
+    const request = saleRequestRef.current?.fingerprint === invoiceFingerprint
+      ? saleRequestRef.current
+      : { fingerprint: invoiceFingerprint, id: crypto.randomUUID() }
+    saleRequestRef.current = request
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({
+      lines,
+      customerName,
+      paymentMethod,
+      invoiceDiscount,
+      paidAmount,
+      clientRequestId: request.id,
+      fingerprint: request.fingerprint,
+      savedAt: new Date().toISOString(),
+    }))
     toast.success(label)
   }
 
@@ -917,12 +1141,17 @@ export function CashierView() {
   }, [fetchCatalogProducts, fetchProducts, loadShift, network.online, syncStatus.isSyncing])
 
   async function submitSale(methodOverride?: string) {
+    if (saving) return
     if (!pharmacyId || !branchId) {
       toast.error("اختر صيدلية وفرع قبل البيع")
       return
     }
     if (!shift) {
       toast.error("لازم تفتح جلسة الكاشير الأول")
+      return
+    }
+    if (shiftClosedPendingReset || shift.status !== "open") {
+      toast.error("جلسة الكاشير مقفولة. راجع تفاصيل التقفيل ثم افتح جلسة جديدة")
       return
     }
     if (lines.length === 0) {
@@ -941,8 +1170,13 @@ export function CashierView() {
       return
     }
     const safeInvoiceDiscount = canDiscount ? Math.min(invoiceDiscountLimit, Math.max(0, invoiceDiscount)) : 0
+    const submissionFingerprint = `${invoiceFingerprint}|method:${effectiveMethod}|paid:${effectivePaid.toFixed(2)}`
+    const request = saleRequestRef.current?.fingerprint === submissionFingerprint
+      ? saleRequestRef.current
+      : { fingerprint: submissionFingerprint, id: crypto.randomUUID() }
+    saleRequestRef.current = request
     const payload = {
-      client_request_id: crypto.randomUUID(),
+      client_request_id: request.id,
       pharmacy_id: pharmacyId,
       branch_id: branchId,
       shift_id: shift.id,
@@ -965,16 +1199,30 @@ export function CashierView() {
       doctor_name: doctorName || null,
       prescription_number: prescriptionNumber || null,
     }
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({
+      lines,
+      customerName,
+      paymentMethod: effectiveMethod,
+      invoiceDiscount,
+      paidAmount: effectivePaid,
+      clientRequestId: request.id,
+      fingerprint: request.fingerprint,
+      savedAt: new Date().toISOString(),
+    }))
     setSaving(true)
+    setSaleError(null)
     try {
       if (!network.online) throw new Error("offline")
-      const response = await fetch("/api/sales/cashier", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+      const data = await apiClient.post<{
+        error?: string
+        code?: string
+        warning?: string
+        compatibilityMode?: boolean
+        sale?: { invoice_number?: string }
+      }>("/api/sales/cashier", payload, {
+        fallbackMessage: "فشل حفظ فاتورة البيع",
+        timeoutMs: 30_000,
       })
-      const data = (await response.json().catch(() => ({}))) as { error?: string; sale?: { invoice_number?: string } }
-      if (!response.ok) throw new Error(data.error ?? "فشل حفظ الفاتورة")
       setLastInvoice({
         invoiceNumber: data.sale?.invoice_number,
         customerName,
@@ -987,17 +1235,20 @@ export function CashierView() {
         paidAmount: effectivePaid,
       })
       toast.success(`تم حفظ الفاتورة ${data.sale?.invoice_number ?? ""}`)
+      if (data.warning) toast.warning(data.warning, { duration: 7000 })
       play("payment-received", 0.45)
       clearInvoice()
       startTransition(() => {
-        void fetchProducts("")
+        setProducts([])
         void fetchCatalogProducts()
         void loadShift()
       })
     } catch (error) {
-      const shouldQueue = !network.online || (error instanceof Error && error.message === "offline") || error instanceof TypeError
+      const shouldQueue = !network.online || (error instanceof Error && error.message === "offline") || isNetworkError(error)
       if (!shouldQueue) {
-        toast.error(error instanceof Error ? error.message : "فشل حفظ الفاتورة")
+        const message = error instanceof Error ? error.message : "فشل حفظ فاتورة البيع"
+        setSaleError(message)
+        toast.error(message, { duration: 7000 })
         play("error", 0.35)
       } else {
         await queueApiRequest({ path: "/api/sales/cashier", method: "POST", body: { ...payload, saved_at: new Date().toISOString() }, label: "فاتورة بيع أوفلاين" })
@@ -1206,36 +1457,52 @@ export function CashierView() {
 
   return (
     <PageAccess permission="sales:read">
-      <section dir="rtl" className="fixed inset-0 z-[100] flex min-w-0 flex-col bg-slate-50 text-right">
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-3 py-2 shadow-sm sm:gap-3 sm:px-4">
+      <section dir="rtl" className="fixed inset-0 z-40 flex min-w-0 flex-col bg-slate-50 text-right">
+        <div className="flex shrink-0 items-center gap-2 border-b border-slate-200 bg-white px-2 py-2 shadow-sm sm:px-3">
           {shiftLoading ? (
-            <div className="text-sm font-black text-slate-500">جارٍ تحميل جلسة الكاشير...</div>
+            <div className="flex h-9 items-center gap-2 px-3 text-sm font-black text-slate-500"><RefreshCw className="size-4 animate-spin" /> جارٍ تحميل الجلسة...</div>
           ) : (
             <>
-              <Button variant="outline" className="h-9 rounded-2xl gap-1.5 text-xs" onClick={() => void closeShift()} disabled={!shift || saving}>
-                <X className="size-3.5 text-rose-500" /> إنهاء
-              </Button>
-              <Button variant="outline" className="h-9 rounded-2xl gap-1.5 text-xs" onClick={() => { void fetchProducts(); void fetchCatalogProducts() }} disabled={loading || catalogLoading}>
-                <RefreshCw className={cn("size-3.5", (loading || catalogLoading) && "animate-spin")} /> تحديث
-              </Button>
-              <Button variant={showCatalog ? "default" : "outline"} className="h-9 rounded-2xl gap-1.5 text-xs" onClick={() => setCatalogVisible(!showCatalog)}>
-                <Package className="size-3.5" /> قائمة الأصناف
-              </Button>
-              {calculatorEnabled ? (
-                <Button variant="outline" className="h-9 rounded-2xl gap-1.5 text-xs" onClick={() => setCalculatorOpen(true)} title="الآلة الحاسبة — F3">
-                  <CalculatorIcon className="size-3.5" /> الحاسبة F3
+              <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pb-0.5 pharmacy-scrollbar">
+                <Button variant="outline" className="h-9 shrink-0 rounded-xl border-rose-200 px-3 text-xs font-black text-rose-600 hover:bg-rose-50" onClick={() => setCloseShiftDialogOpen(true)} disabled={!shift || saving || closingShift || shiftClosedPendingReset} title="تقفيل جلسة الكاشير">
+                  <X className="size-3.5" /> تقفيل
                 </Button>
-              ) : null}
-              <Button variant="outline" className="h-9 rounded-2xl gap-1.5 text-xs" onClick={() => saveDraft()} disabled={!holdSaleEnabled || lines.length === 0}>
-                <Save className="size-3.5" /> مسودة
-              </Button>
-              <Button variant="outline" className="h-9 rounded-2xl gap-1.5 text-xs" onClick={printInvoice} disabled={lines.length === 0 && !lastInvoice}>
-                <Printer className="size-3.5" /> {lastInvoice && lines.length === 0 ? "طباعة آخر فاتورة" : "طباعة"}
-              </Button>
-              <div className="flex w-full min-w-0 flex-wrap items-center gap-2 text-xs font-black text-slate-600 sm:mr-auto sm:w-auto">
-                <span className="inline-flex h-7 items-center gap-1 rounded-xl bg-brand px-2.5 text-white"><Clock className="size-3" /> {shiftTime(shift?.opened_at)}</span>
-                <span className="inline-flex h-7 items-center rounded-xl border border-slate-200 px-2.5">{auth.activePharmacy?.name ?? "الصيدلية"}</span>
-                <span className="inline-flex h-7 items-center rounded-xl border border-slate-200 px-2.5">{activeCashierBranch?.name ?? "الرئيسي"}</span>
+                <Button className="h-9 shrink-0 rounded-xl px-3 text-xs font-black" onClick={openSessionDetails} disabled={!shift} title="عرض الجلسة الحالية — F6">
+                  <ListChecks className="size-3.5" /> الجلسة F6
+                </Button>
+                <Button variant="outline" className="h-9 shrink-0 rounded-xl px-3 text-xs font-black" onClick={openSystemWindow} title="فتح لوحة النظام في تبويب جديد — F10">
+                  <ExternalLink className="size-3.5" /> النظام F10
+                </Button>
+                <Button variant={showCatalog ? "default" : "outline"} className="h-9 shrink-0 rounded-xl px-3 text-xs font-black" onClick={() => setCatalogVisible(!showCatalog)} title="قائمة الأصناف — F4">
+                  <Package className="size-3.5" /> الأصناف F4
+                </Button>
+                {calculatorEnabled ? (
+                  <Button variant="outline" className="h-9 shrink-0 rounded-xl px-3 text-xs font-black" onClick={() => setCalculatorOpen(true)} title="الآلة الحاسبة — F3">
+                    <CalculatorIcon className="size-3.5" /> الحاسبة F3
+                  </Button>
+                ) : null}
+                {canDiscount ? (
+                  <Button variant="outline" className="h-9 shrink-0 rounded-xl px-3 text-xs font-black" onClick={() => setDiscountDialogOpen(true)} disabled={lines.length === 0 || shiftClosedPendingReset} title="خصم الفاتورة — F7">
+                    <BadgePercent className="size-3.5" /> خصم F7
+                  </Button>
+                ) : null}
+                <Button variant="ghost" size="icon" className="size-9 shrink-0 rounded-xl" onClick={() => setShortcutsOpen(true)} title="كل اختصارات الكاشير">
+                  <Keyboard className="size-4" />
+                </Button>
+                <Button variant="ghost" size="icon" className="size-9 shrink-0 rounded-xl" onClick={() => { setProducts([]); void fetchCatalogProducts(); void refreshSessionSnapshot() }} disabled={loading || catalogLoading || shiftLoading} title="تحديث بيانات الكاشير">
+                  <RefreshCw className={cn("size-4", (loading || catalogLoading || shiftLoading) && "animate-spin")} />
+                </Button>
+                <Button variant="ghost" size="icon" className="size-9 shrink-0 rounded-xl" onClick={() => saveDraft()} disabled={!holdSaleEnabled || lines.length === 0} title="حفظ مسودة — F9">
+                  <Save className="size-4" />
+                </Button>
+                <Button variant="ghost" size="icon" className="size-9 shrink-0 rounded-xl" onClick={printInvoice} disabled={lines.length === 0 && !lastInvoice} title={lastInvoice && lines.length === 0 ? "طباعة آخر فاتورة" : "طباعة الفاتورة"}>
+                  <Printer className="size-4" />
+                </Button>
+              </div>
+
+              <div className="hidden shrink-0 items-center gap-1.5 text-[11px] font-black text-slate-600 md:flex">
+                <span className="inline-flex h-7 items-center gap-1 rounded-lg bg-brand px-2 text-white"><Clock className="size-3" /> {shiftTime(shift?.opened_at)}</span>
+                <span className="inline-flex h-7 max-w-36 items-center truncate rounded-lg border border-slate-200 px-2">{activeCashierBranch?.name ?? "الرئيسي"}</span>
               </div>
             </>
           )}
@@ -1314,7 +1581,7 @@ export function CashierView() {
 
               <div className="relative min-w-0">
                 <div className="flex h-14 overflow-hidden rounded-2xl border-2 border-slate-200 bg-white shadow-sm transition-all focus-within:border-brand focus-within:shadow-md focus-within:shadow-brand/10">
-                  <button disabled={!searchEnabled} type="button" className="flex w-14 items-center justify-center border-l-2 border-slate-200 text-brand transition hover:bg-brand/5 disabled:cursor-not-allowed disabled:text-slate-300" onClick={() => setSearchFocused(true)} title="إضافة صنف">
+                  <button disabled={!searchEnabled} type="button" className="flex w-14 items-center justify-center border-l-2 border-slate-200 text-brand transition hover:bg-brand/5 disabled:cursor-not-allowed disabled:text-slate-300" onClick={() => setCatalogVisible(!showCatalog)} title="إظهار أو إخفاء قائمة الأصناف">
                     <Package className="size-6" strokeWidth={2.2} />
                   </button>
                   <Input
@@ -1333,7 +1600,7 @@ export function CashierView() {
                     <Search className="size-5" />
                   </button>
                 </div>
-                {searchEnabled && searchFocused ? (
+                {searchResultsVisible ? (
                   <div className="absolute left-0 right-0 top-full z-50 mt-1.5 max-h-[min(460px,60dvh)] overflow-auto rounded-2xl border-2 border-slate-200 bg-white p-2 text-right shadow-2xl shadow-slate-200/60 pharmacy-scrollbar">
                     {loading ? (
                       <div className="grid gap-2 p-1">
@@ -1522,25 +1789,31 @@ export function CashierView() {
               ) : null}
 
               <div className="flex min-h-0 flex-col gap-3">
+                {saleError ? (
+                  <div className="flex shrink-0 flex-wrap items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-black text-rose-800">
+                    <AlertCircle className="size-4 shrink-0" />
+                    <span className="min-w-0 flex-1">{saleError}</span>
+                    <Button size="sm" variant="outline" className="h-8 rounded-xl border-rose-200 bg-white text-rose-700" onClick={() => void submitSale(paymentMethod)} disabled={saving || lines.length === 0}>
+                      <RefreshCw className={cn("size-3.5", saving && "animate-spin")} /> إعادة المحاولة
+                    </Button>
+                  </div>
+                ) : null}
                 {showExpiryInSales && lines.some((line) => line.nearest_expiry) ? (
-                  <Alert className="shrink-0 rounded-2xl border-amber-200 bg-amber-50 text-amber-900">
-                    <CalendarDays className="size-4" />
-                    <AlertTitle className="font-black">طبّق الأقرب انتهاءً أولًا (FEFO)</AlertTitle>
-                    <AlertDescription className="font-bold text-amber-800">
-                      النظام سيخصم تلقائيًا من أقرب تشغيلة صالحة عند حفظ الفاتورة.
-                    </AlertDescription>
-                  </Alert>
+                  <div className="flex shrink-0 items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-black text-amber-800">
+                    <CalendarDays className="size-4 shrink-0" />
+                    <span>FEFO مفعّل: سيتم الخصم تلقائيًا من أقرب تشغيلة صالحة.</span>
+                  </div>
                 ) : null}
                 <div className="min-h-[260px] flex-1 overflow-auto rounded-2xl border border-slate-100 bg-white pharmacy-scrollbar">
-                  <Table className="min-w-[900px]">
+                  <Table className="min-w-[760px]">
                     <TableHeader className="bg-slate-50/70">
                       <TableRow>
                         <TableHead className="w-12 text-center"><X className="mx-auto size-4" /></TableHead>
                         <TableHead className="text-right">صنف <Info className="inline size-3 text-brand" /></TableHead>
-                        <TableHead className="w-[170px] text-center">سعر الوحدة</TableHead>
-                        <TableHead className="w-[180px] text-center">الكمية</TableHead>
-                        <TableHead className="w-[140px] text-center">خصم الصنف</TableHead>
-                        <TableHead className="w-[160px] text-center">المجموع</TableHead>
+                        <TableHead className="w-[130px] text-center">سعر الوحدة</TableHead>
+                        <TableHead className="w-[150px] text-center">الكمية</TableHead>
+                        <TableHead className="w-[120px] text-center">الخصم</TableHead>
+                        <TableHead className="w-[130px] text-center">المجموع</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -1631,7 +1904,12 @@ export function CashierView() {
                     </div>
                   </div>
                 )}
-                <div className="space-y-1">
+                <div className="flex items-center justify-end">
+                  <Button type="button" size="sm" variant="ghost" className="h-8 rounded-xl text-xs font-black" onClick={() => setCouponPanelOpen((current) => !current)}>
+                    <BadgePercent className="size-3.5" /> {couponApplied ? "الكوبون مطبق" : couponPanelOpen ? "إخفاء الكوبون" : "إضافة كوبون"}
+                  </Button>
+                </div>
+                {couponPanelOpen || couponApplied ? <div className="space-y-1 rounded-xl border border-slate-100 bg-slate-50/60 p-2">
                   <label className="text-xs font-black text-slate-500">كوبون خصم</label>
                   {couponApplied ? (
                     <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
@@ -1653,7 +1931,7 @@ export function CashierView() {
                       </Button>
                     </div>
                   )}
-                </div>
+                </div> : null}
               </div>
             </div>
           </CardContent>
@@ -1668,13 +1946,20 @@ export function CashierView() {
             </div>
             <div className="max-h-72 space-y-2 overflow-auto pharmacy-scrollbar">
               {recentSales.map((sale) => (
-                <div key={sale.id} className="flex items-center justify-between rounded-2xl bg-slate-50 p-3 text-xs font-bold">
+                <button key={sale.id} type="button" onClick={() => openSaleDetails(sale.id)} className="flex w-full items-center justify-between rounded-2xl bg-slate-50 p-3 text-right text-xs font-bold transition hover:bg-brand/5">
                   <span className="min-w-0 truncate">{sale.invoice_number} — {sale.customer_name}</span>
-                  <span className="shrink-0 font-black text-brand">{money(numberValue(sale.total), currency)}</span>
-                </div>
+                  <span className="flex shrink-0 items-center gap-1 font-black text-brand">{money(numberValue(sale.total), currency)} <ExternalLink className="size-3" /></span>
+                </button>
               ))}
               {recentSales.length === 0 ? <p className="rounded-2xl border border-dashed border-slate-200/60 p-6 text-center text-sm font-bold text-slate-400">لا توجد عمليات حديثة</p> : null}
             </div>
+          </div>
+        ) : null}
+
+        {shiftClosedPendingReset ? (
+          <div className="mx-3 mb-1 flex shrink-0 items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm font-black text-amber-800">
+            <span>تم تقفيل الجلسة. راجع التفاصيل قبل بدء جلسة جديدة.</span>
+            <Button size="sm" className="h-8 rounded-xl" onClick={() => setCloseSummaryOpen(true)}><ListChecks className="size-4" /> تفاصيل التقفيل</Button>
           </div>
         ) : null}
 
@@ -1689,12 +1974,12 @@ export function CashierView() {
           </div>
 
           <div className="flex w-full min-w-0 shrink-0 items-center gap-1.5 overflow-x-auto pb-1 pharmacy-scrollbar lg:w-auto lg:pb-0">
-            <Button variant="destructive" className="shrink-0 h-9 rounded-xl px-4 text-sm font-black" onClick={clearInvoice} disabled={saving || lines.length === 0}><X className="size-4" /> إلغاء</Button>
-            <Button className="shrink-0 h-9 rounded-xl bg-emerald-600 px-4 text-sm font-black hover:bg-emerald-700" onClick={() => void submitSale("cash")} disabled={!quickSaleEnabled || !acceptedPaymentMethods.includes("cash") || !canSell || saving || isPending || lines.length === 0}><DollarSign className="size-4" /> نقدي</Button>
-            <Button className="shrink-0 h-9 rounded-xl bg-slate-950 px-4 text-sm font-black hover:bg-slate-800" onClick={() => void submitSale("mixed")} disabled={!quickSaleEnabled || !acceptedPaymentMethods.includes("mixed") || !canSell || saving || isPending || lines.length === 0}><Wallet className="size-4" /> متعدد</Button>
-            <Button variant="outline" className="shrink-0 h-9 rounded-xl px-3 text-sm font-black text-brand" onClick={() => void submitSale("card")} disabled={!quickSaleEnabled || !acceptedPaymentMethods.includes("card") || !canSell || saving || isPending || lines.length === 0}><CreditCard className="size-4" /> بطاقة</Button>
-            <Button variant="outline" className="shrink-0 h-9 rounded-xl px-3 text-sm font-black" onClick={() => void submitSale("credit")} disabled={!quickSaleEnabled || !acceptedPaymentMethods.includes("credit") || !canSell || saving || isPending || lines.length === 0}><Receipt className="size-4" /> أجل</Button>
-            <Button variant="outline" className="shrink-0 h-9 rounded-xl px-3 text-sm font-black" onClick={() => saveDraft("تم حفظ عرض السعر كمسودة") } disabled={!settings.bool("sales", "enablePriceOffers", true) || lines.length === 0}><FileText className="size-4" /> عرض سعر</Button>
+            <Button variant="destructive" className="shrink-0 h-9 rounded-xl px-4 text-sm font-black" onClick={clearInvoice} disabled={shiftClosedPendingReset || saving || lines.length === 0}><X className="size-4" /> إلغاء</Button>
+            <Button className="shrink-0 h-9 rounded-xl bg-emerald-600 px-4 text-sm font-black hover:bg-emerald-700" onClick={() => void submitSale("cash")} disabled={!quickSaleEnabled || !acceptedPaymentMethods.includes("cash") || !canSell || shiftClosedPendingReset || saving || isPending || lines.length === 0}><DollarSign className="size-4" /> نقدي</Button>
+            <Button className="shrink-0 h-9 rounded-xl bg-slate-950 px-4 text-sm font-black hover:bg-slate-800" onClick={() => void submitSale("mixed")} disabled={!quickSaleEnabled || !acceptedPaymentMethods.includes("mixed") || !canSell || shiftClosedPendingReset || saving || isPending || lines.length === 0}><Wallet className="size-4" /> متعدد</Button>
+            <Button variant="outline" className="shrink-0 h-9 rounded-xl px-3 text-sm font-black text-brand" onClick={() => void submitSale("card")} disabled={!quickSaleEnabled || !acceptedPaymentMethods.includes("card") || !canSell || shiftClosedPendingReset || saving || isPending || lines.length === 0}><CreditCard className="size-4" /> بطاقة</Button>
+            <Button variant="outline" className="shrink-0 h-9 rounded-xl px-3 text-sm font-black" onClick={() => void submitSale("credit")} disabled={!quickSaleEnabled || !acceptedPaymentMethods.includes("credit") || !canSell || shiftClosedPendingReset || saving || isPending || lines.length === 0}><Receipt className="size-4" /> أجل</Button>
+            <Button variant="outline" className="shrink-0 h-9 rounded-xl px-3 text-sm font-black" onClick={() => saveDraft("تم حفظ عرض السعر كمسودة") } disabled={shiftClosedPendingReset || !settings.bool("sales", "enablePriceOffers", true) || lines.length === 0}><FileText className="size-4" /> عرض سعر</Button>
           </div>
 
           <Separator orientation="vertical" className="hidden h-8 lg:block" />
@@ -1703,8 +1988,48 @@ export function CashierView() {
           </div>
         </footer>
 
+        <CashierSessionDialog
+          open={sessionDialogOpen}
+          onOpenChange={setSessionDialogOpen}
+          snapshot={shiftSnapshot}
+          currency={currency}
+          loading={shiftLoading}
+          onRefresh={() => void refreshSessionSnapshot()}
+          onOpenSale={openSaleDetails}
+        />
+        <CashierCloseDialog
+          open={closeShiftDialogOpen}
+          onOpenChange={setCloseShiftDialogOpen}
+          expected={shiftSnapshot?.metrics.expectedDrawer ?? expectedDrawer}
+          currency={currency}
+          loading={closingShift}
+          onConfirm={(actual, notes) => void closeShift(actual, notes)}
+        />
+        <CashierSessionDialog
+          open={closeSummaryOpen}
+          onOpenChange={(open) => {
+            setCloseSummaryOpen(open)
+            if (!open && shiftClosedPendingReset) finalizeClosedShiftView()
+          }}
+          snapshot={shiftSnapshot}
+          currency={currency}
+          loading={false}
+          onOpenSale={openSaleDetails}
+          title="تفاصيل تقفيل جلسة الكاشير"
+        />
+        <CashierShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+        <InvoiceDiscountDialog
+          open={discountDialogOpen}
+          onOpenChange={setDiscountDialogOpen}
+          subtotal={subtotal}
+          currentDiscount={invoiceDiscount}
+          maxPercent={maxDiscountPercent}
+          currency={currency}
+          onApply={setInvoiceDiscount}
+        />
+
         <Dialog open={calculatorOpen} onOpenChange={setCalculatorOpen}>
-          <DialogContent dir="rtl" className="max-w-[340px] rounded-3xl border-slate-200 bg-slate-50 p-5 shadow-2xl">
+          <DialogContent dir="rtl" className="z-[140] max-w-[340px] rounded-3xl border-slate-200 bg-slate-50 p-5 shadow-2xl">
             <DialogHeader className="text-right">
               <DialogTitle className="flex items-center gap-2 text-lg font-black text-slate-950">
                 <CalculatorIcon className="size-5 text-brand" /> الآلة الحاسبة

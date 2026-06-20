@@ -7,6 +7,7 @@ import { scopeCan, assertBranchScope } from "@/lib/auth/server-permissions"
 import { writeAuditLog } from "@/lib/audit/audit-log"
 import { Money } from "@/domain/shared/decimal-value"
 import { ItemQuantityPolicyRepository } from "@/features/inventory/server/item-quantity-policy-repository"
+import { CashierSaleService, cashierErrorResponse } from "@/features/sales/server/cashier-sale-service"
 
 
 type CashierItemRow = {
@@ -297,12 +298,13 @@ export async function POST(request: Request) {
       .in("id", itemIds)
       .or("is_controlled.eq.true,requires_prescription.eq.true")
     if (regulatedError) throw regulatedError
-    if ((regulatedItems ?? []).length > 0) {
-      const names = (regulatedItems ?? []).map((item) => item.name_ar).filter(Boolean).join("، ")
+    const regulatedRows = (regulatedItems ?? []) as Array<{ id: string; name_ar: string | null; is_controlled: boolean | null; requires_prescription: boolean | null }>
+    if (regulatedRows.length > 0) {
+      const names = regulatedRows.map((item) => item.name_ar).filter(Boolean).join("، ")
       if (!patientId) throw new Error(`يجب اختيار ملف مريض قبل صرف: ${names}`)
       if (!doctorName) throw new Error(`اسم الطبيب مطلوب لصرف: ${names}`)
       if (!prescriptionNumber) throw new Error(`رقم الوصفة مطلوب لصرف: ${names}`)
-      if ((regulatedItems ?? []).some((item) => item.is_controlled)) {
+      if (regulatedRows.some((item) => item.is_controlled)) {
         const { data: patientIdentity, error: identityError } = await db
           .from("pharmacy_patients")
           .select("id,id_number")
@@ -314,7 +316,8 @@ export async function POST(request: Request) {
       }
     }
 
-    const { data, error: rpcError } = await db.rpc("create_cashier_sale_complete_v1", {
+    const saleService = new CashierSaleService(db)
+    const result = await saleService.create({
       p_pharmacy_id: pharmacyId,
       p_branch_id: branchId,
       p_shift_id: shiftId,
@@ -336,8 +339,6 @@ export async function POST(request: Request) {
       p_patient_id: patientId,
       p_partner_id: partnerId,
     })
-    if (rpcError) throw rpcError
-    const result = (data ?? {}) as { sale?: Record<string, unknown>; lines?: unknown[]; duplicate?: boolean; finalization?: Record<string, unknown> }
 
     const finalization = (result.finalization ?? null) as Record<string, unknown> | null
 
@@ -364,7 +365,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ...result, finalization }, { status: result.duplicate ? 200 : 201 })
   } catch (error) {
     console.error("cashier POST failed", error)
-    const message = error instanceof Error ? error.message : "فشل حفظ فاتورة البيع"
-    return NextResponse.json({ error: message }, { status: 400 })
+    const failure = cashierErrorResponse(error)
+    return NextResponse.json({ error: failure.message, code: failure.code }, { status: failure.status })
   }
 }

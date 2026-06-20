@@ -5,9 +5,30 @@ import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
 import { writeAuditLog } from "@/lib/audit/audit-log"
+import { CashierShiftRepository } from "@/features/sales/server/cashier-shift-repository"
 
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
+}
+
+type DatabaseError = { code?: string | null; message?: string | null; details?: string | null; hint?: string | null }
+
+function missingRpc(error: unknown, functionName: string) {
+  const record = (error ?? {}) as DatabaseError
+  const text = [record.message, record.details, record.hint].filter(Boolean).join(" ")
+  return record.code === "PGRST202" || record.code === "42883"
+    || new RegExp(`could not find.*${functionName}|function .*${functionName}.*does not exist`, "i").test(text)
+}
+
+function shiftFailure(error: unknown, functionName: string, fallback: string) {
+  if (missingRpc(error, functionName)) {
+    return NextResponse.json({
+      error: "قاعدة البيانات غير محدثة لدورة الكاشير. شغّل supabase/final-repair.sql ثم أعد المحاولة",
+      code: "CASHIER_DATABASE_UPGRADE_REQUIRED",
+    }, { status: 503 })
+  }
+  const message = error instanceof Error ? error.message : fallback
+  return NextResponse.json({ error: message }, { status: 400 })
 }
 
 function clean(value: unknown) {
@@ -38,21 +59,6 @@ async function resolveScope(request: Request, body?: Record<string, unknown>) {
   return { scope, branchId, error: null }
 }
 
-async function getOpenShift(db: SupabaseClient, pharmacyId: string, branchId: string, userId: string) {
-  const { data, error } = await db
-    .from("pharmacy_shifts")
-    .select("id, pharmacy_id, branch_id, user_id, opened_at, closed_at, opening_balance, closing_balance, expected_balance, difference, cash_sales, card_sales, credit_sales, total_collected, total_expenses, status, notes")
-    .eq("pharmacy_id", pharmacyId)
-    .eq("branch_id", branchId)
-    .eq("user_id", userId)
-    .eq("status", "open")
-    .order("opened_at", { ascending: false })
-    .limit(1)
-    .maybeSingle()
-  if (error) throw error
-  return data
-}
-
 export async function GET(request: Request) {
   try {
     const { scope, branchId, error } = await resolveScope(request)
@@ -60,10 +66,16 @@ export async function GET(request: Request) {
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
-    const openShift = await getOpenShift(db, scope.activePharmacyId!, branchId!, scope.user!.id)
+    const repository = new CashierShiftRepository(db, scope.activePharmacyId!, branchId!, scope.user!.id)
+    const requestedShiftId = new URL(request.url).searchParams.get("shift_id")
+    const openShift = requestedShiftId
+      ? await repository.findScopedById(requestedShiftId)
+      : await repository.findOpenForActor()
+    const snapshot = openShift ? await repository.snapshot(openShift) : null
 
     return NextResponse.json({
       openShift: openShift ?? null,
+      snapshot,
       pharmacyId: scope.activePharmacyId,
       branchId,
     })
@@ -93,17 +105,19 @@ export async function POST(request: Request) {
     })
     if (rpcError) throw rpcError
     const result = (data ?? {}) as { shift?: Record<string, unknown>; alreadyOpen?: boolean; duplicate?: boolean }
+    const repository = new CashierShiftRepository(db, scope.activePharmacyId!, branchId!, scope.user!.id)
+    const shiftRecord = result.shift?.id ? await repository.findScopedById(String(result.shift.id)) : null
+    const snapshot = shiftRecord ? await repository.snapshot(shiftRecord) : null
     await writeAuditLog(db, {
       pharmacyId: scope.activePharmacyId!, branchId, actorId: scope.user!.id,
       eventType: result.alreadyOpen ? "cashier.shift_restored" : "cashier.shift_opened",
       source: "cashier.shift", description: result.alreadyOpen ? "تم استرجاع وردية الكاشير المفتوحة" : "تم فتح وردية كاشير ذرية",
       metadata: { shift_id: result.shift?.id, duplicate: result.duplicate },
     })
-    return NextResponse.json({ shift: result.shift ?? null, alreadyOpen: Boolean(result.alreadyOpen) }, { status: result.alreadyOpen ? 200 : 201 })
+    return NextResponse.json({ shift: result.shift ?? null, snapshot, alreadyOpen: Boolean(result.alreadyOpen) }, { status: result.alreadyOpen ? 200 : 201 })
   } catch (error) {
     console.error("cashier shift POST failed", error)
-    const message = error instanceof Error ? error.message : "فشل فتح جلسة الكاشير"
-    return NextResponse.json({ error: message }, { status: 400 })
+    return shiftFailure(error, "open_cashier_shift_v1", "فشل فتح جلسة الكاشير")
   }
 }
 
@@ -124,16 +138,18 @@ export async function PATCH(request: Request) {
     })
     if (rpcError) throw rpcError
     const result = (data ?? {}) as { shift?: Record<string, unknown>; duplicate?: boolean }
+    const repository = new CashierShiftRepository(db, scope.activePharmacyId!, branchId!, scope.user!.id)
+    const shiftRecord = result.shift?.id ? await repository.findScopedById(String(result.shift.id)) : null
+    const snapshot = shiftRecord ? await repository.snapshot(shiftRecord) : null
     await writeAuditLog(db, {
       pharmacyId: scope.activePharmacyId!, branchId, actorId: scope.user!.id,
       eventType: "cashier.shift_closed", source: "cashier.shift", description: "تم إغلاق وردية الكاشير وتسوية فرق الدرج",
       severity: Number(result.shift?.difference ?? 0) === 0 ? "info" : "warning",
       metadata: { shift_id: shiftId, difference: result.shift?.difference, duplicate: result.duplicate },
     })
-    return NextResponse.json({ shift: result.shift ?? null, duplicate: Boolean(result.duplicate) })
+    return NextResponse.json({ shift: result.shift ?? null, snapshot, duplicate: Boolean(result.duplicate) })
   } catch (error) {
     console.error("cashier shift PATCH failed", error)
-    const message = error instanceof Error ? error.message : "فشل إغلاق جلسة الكاشير"
-    return NextResponse.json({ error: message }, { status: 400 })
+    return shiftFailure(error, "close_cashier_shift_v1", "فشل إغلاق جلسة الكاشير")
   }
 }
