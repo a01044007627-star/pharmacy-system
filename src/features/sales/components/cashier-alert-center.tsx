@@ -1,6 +1,6 @@
 "use client"
 
-import { AlertCircle, BellRing, CircleAlert, RefreshCw, TriangleAlert, WifiOff, X } from "lucide-react"
+import { AlertCircle, AlertTriangle, Bell, RefreshCw, WifiOff, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
@@ -29,8 +29,8 @@ const severityStyles: Record<CashierAlertSeverity, { card: string; icon: string 
 function AlertIcon({ alert }: { alert: CashierOperationalAlert }) {
   if (alert.id === "offline-sync") return <WifiOff className="size-4" />
   if (alert.severity === "error") return <AlertCircle className="size-4" />
-  if (alert.severity === "warning") return <TriangleAlert className="size-4" />
-  return <CircleAlert className="size-4" />
+  if (alert.severity === "warning") return <AlertTriangle className="size-4" />
+  return <AlertCircle className="size-4" />
 }
 
 export function CashierAlertCenter({ alerts }: { alerts: CashierOperationalAlert[] }) {
@@ -52,7 +52,7 @@ export function CashierAlertCenter({ alerts }: { alerts: CashierOperationalAlert
         )}
         title="مركز تنبيهات الكاشير"
       >
-        <BellRing className={cn("size-4", alerts.length > 0 && "animate-pulse")} />
+        <Bell className={cn("size-4", alerts.length > 0 && "animate-pulse")} />
         <span className="hidden sm:inline">التنبيهات</span>
         {totalCount > 0 ? (
           <span className={cn(
@@ -74,7 +74,7 @@ export function CashierAlertCenter({ alerts }: { alerts: CashierOperationalAlert
                 : `${criticalCount.toLocaleString("ar-EG")} خطأ و${warningCount.toLocaleString("ar-EG")} تحذير`}
             </div>
           </div>
-          <BellRing className="size-5 text-brand" />
+          <Bell className="size-5 text-brand" />
         </div>
 
         <div className="max-h-[60dvh] space-y-2 overflow-auto p-3 pharmacy-scrollbar">
