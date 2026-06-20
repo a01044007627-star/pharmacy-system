@@ -45,7 +45,11 @@ export function StockBalancesView() {
   const canChooseAllBranches = auth.isDeveloper || auth.isOwner || ["owner", "admin"].includes(auth.role)
 
   const load = useCallback(async () => {
-    if (!auth.activePharmacyId) return
+    if (!auth.activePharmacyId) {
+      setRows([])
+      setLoading(auth.loading)
+      return
+    }
     setLoading(true)
     try {
       const params = new URLSearchParams({
@@ -64,7 +68,7 @@ export function StockBalancesView() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "فشل تحميل الأرصدة")
     } finally { setLoading(false) }
-  }, [auth.activePharmacyId, branchId, page, query])
+  }, [auth.activePharmacyId, auth.loading, branchId, page, query])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => void load(), 300)

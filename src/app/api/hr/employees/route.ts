@@ -30,7 +30,7 @@ export async function GET(request: Request) {
     const db = getDbClient(supabase) as SupabaseClient
 
     const page = safeNumber(url.searchParams.get("page"), 1, 1, 100000)
-    const pageSize = safeNumber(url.searchParams.get("page_size"), 25, 10, 100)
+    const pageSize = safeNumber(url.searchParams.get("page_size"), 25, 10, 500)
     const offset = (page - 1) * pageSize
     const search = clean(url.searchParams.get("query"))
     const status = clean(url.searchParams.get("is_active"))

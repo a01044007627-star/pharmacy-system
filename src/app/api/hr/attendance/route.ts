@@ -4,6 +4,8 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { requireActivePharmacy, scopeCan } from "@/lib/auth/server-permissions"
+import { HrRepository } from "@/lib/server/hr-repository"
+import { operationalErrorResponse } from "@/lib/server/tenant-request-context"
 
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
@@ -23,27 +25,16 @@ export async function GET(request: Request) {
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
+    const repository = new HrRepository(db, pharmacyId)
+    const records = await repository.listAttendance({
+      dateKey: clean(url.searchParams.get("date")) || undefined,
+      employeeId: clean(url.searchParams.get("employee_id")) || undefined,
+      limit: 100,
+    })
 
-    const date = clean(url.searchParams.get("date"))
-    const employeeId = clean(url.searchParams.get("employee_id"))
-
-    let query = db
-      .from("pharmacy_shifts")
-      .select("*, employee:pharmacy_employees(id,name,position)")
-      .eq("pharmacy_id", pharmacyId)
-      .order("date", { ascending: false })
-      .limit(100)
-
-    if (date) query = query.eq("date", date)
-    if (employeeId) query = query.eq("employee_id", employeeId)
-
-    const { data, error } = await query
-    if (error) throw error
-    return NextResponse.json({ records: data ?? [] })
+    return NextResponse.json({ records })
   } catch (error) {
-    console.error("hr/attendance GET failed", error)
-    const message = error instanceof Error ? error.message : "فشل تحميل الحضور"
-    return NextResponse.json({ error: message }, { status: 500 })
+    return operationalErrorResponse(error, "hr/attendance GET failed", "فشل تحميل الحضور")
   }
 }
 
@@ -59,52 +50,20 @@ export async function POST(request: Request) {
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
-
-    const today = new Date().toISOString().split("T")[0]
+    const repository = new HrRepository(db, pharmacyId)
     const action = clean(body.action)
 
     if (action === "check-out") {
-      const { data: existing } = await db
-        .from("pharmacy_shifts")
-        .select("*")
-        .eq("employee_id", employeeId)
-        .eq("date", today)
-        .is("clock_out", null)
-        .maybeSingle()
-
-      if (!existing) return NextResponse.json({ error: "لا يوجد تسجيل دخول اليوم" }, { status: 400 })
-
-      const { data, error } = await db
-        .from("pharmacy_shifts")
-        .update({ clock_out: new Date().toISOString() })
-        .eq("id", existing.id)
-        .select("*")
-        .maybeSingle()
-
-      if (error) throw error
-      return NextResponse.json(data)
+      return NextResponse.json(await repository.checkOut(employeeId))
     }
 
-    const { data, error } = await db
-      .from("pharmacy_shifts")
-      .insert({
-        pharmacy_id: pharmacyId,
-        employee_id: employeeId,
-        date: today,
-        clock_in: new Date().toISOString(),
-        type: clean(body.type) || "regular",
-      })
-      .select("*")
-      .maybeSingle()
-
-    if (error) {
-      if (error.code === "23505") return NextResponse.json({ error: "تم تسجيل الدخول مسبقاً" }, { status: 409 })
-      throw error
-    }
-    return NextResponse.json(data, { status: 201 })
+    const record = await repository.checkIn({
+      employeeId,
+      notes: clean(body.notes) || null,
+      status: clean(body.status) || null,
+    })
+    return NextResponse.json(record, { status: 201 })
   } catch (error) {
-    console.error("hr/attendance POST failed", error)
-    const message = error instanceof Error ? error.message : "فشل تسجيل الحضور"
-    return NextResponse.json({ error: message }, { status: 400 })
+    return operationalErrorResponse(error, "hr/attendance POST failed", "فشل تسجيل الحضور", 400)
   }
 }

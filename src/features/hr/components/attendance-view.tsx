@@ -17,10 +17,11 @@ import { cn } from "@/lib/utils"
 type AttendanceRecord = {
   id: string
   employee_id: string
-  date: string
-  clock_in: string
-  clock_out: string | null
-  type: string
+  date_key: string
+  check_in: string
+  check_out: string | null
+  hours_worked: number | null
+  status: string
   employee: { id: string; name: string; position: string | null } | null
 }
 
@@ -32,21 +33,25 @@ export function AttendanceView() {
   const [employees, setEmployees] = useState<{ id: string; name: string }[]>([])
 
   const load = useCallback(async () => {
-    if (!auth.activePharmacyId) return
+    if (!auth.activePharmacyId) {
+      setRecords([])
+      setLoading(auth.loading)
+      return
+    }
     setLoading(true)
     try {
       const params = new URLSearchParams({ pharmacy_id: auth.activePharmacyId })
       if (employeeId !== "all") params.set("employee_id", employeeId)
       const response = await fetch(`/api/hr/attendance?${params.toString()}`, { cache: "no-store" })
-      const data = await response.json().catch(() => ({})) as { records?: AttendanceRecord[] }
-      if (!response.ok) throw new Error("فشل تحميل الحضور")
+      const data = await response.json().catch(() => ({})) as { records?: AttendanceRecord[]; error?: string }
+      if (!response.ok) throw new Error(data.error ?? "فشل تحميل الحضور")
       setRecords(data.records ?? [])
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "فشل تحميل الحضور")
     } finally {
       setLoading(false)
     }
-  }, [auth.activePharmacyId, employeeId])
+  }, [auth.activePharmacyId, auth.loading, employeeId])
 
   useEffect(() => { void load() }, [load])
 
@@ -59,8 +64,11 @@ export function AttendanceView() {
   }, [auth.activePharmacyId])
 
   const checkIn = async () => {
-    const empId = window.prompt("أدخل رقم الموظف:")
-    if (!empId) return
+    if (employeeId === "all") {
+      toast.error("اختر الموظف أولًا")
+      return
+    }
+    const empId = employeeId
     try {
       const response = await fetch("/api/hr/attendance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pharmacy_id: auth.activePharmacyId, employee_id: empId, action: "check-in" }) })
       if (!response.ok) { const d = await response.json().catch(() => ({})); throw new Error((d as { error?: string }).error ?? "فشل") }
@@ -110,13 +118,13 @@ export function AttendanceView() {
                 {auth.can("hr:write") ? <TableHead className="text-center">إجراء</TableHead> : null}
               </TableRow></TableHeader>
               <TableBody>{records.map((row) => {
-                const clockIn = new Date(row.clock_in)
-                const clockOut = row.clock_out ? new Date(row.clock_out) : null
+                const clockIn = new Date(row.check_in)
+                const clockOut = row.check_out ? new Date(row.check_out) : null
                 return (
                   <TableRow key={row.id}>
                     <TableCell className="font-black text-brand">{row.employee?.name ?? "—"}</TableCell>
                     <TableCell className="font-bold">{row.employee?.position ?? "—"}</TableCell>
-                    <TableCell className="text-center text-xs font-bold">{new Date(row.date).toLocaleDateString("ar-EG")}</TableCell>
+                    <TableCell className="text-center text-xs font-bold">{new Date(`${row.date_key}T00:00:00`).toLocaleDateString("ar-EG")}</TableCell>
                     <TableCell className="text-center text-xs font-bold dir-left">{clockIn.toLocaleTimeString("ar-EG")}</TableCell>
                     <TableCell className="text-center text-xs font-bold">{clockOut ? clockOut.toLocaleTimeString("ar-EG") : "—"}</TableCell>
                     <TableCell className="text-center"><Badge variant="outline" className={cn("font-black", clockOut ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-amber-200 bg-amber-50 text-amber-700")}>{clockOut ? "منصرف" : "حاضر"}</Badge></TableCell>

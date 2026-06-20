@@ -21,7 +21,8 @@ export class RouteHttpError extends Error {
 }
 
 type TenantRequestContextOptions = {
-  permission: Permission
+  permission?: Permission
+  anyPermissions?: Permission[]
   forbiddenMessage?: string
   missingPharmacyMessage?: string
 }
@@ -59,7 +60,14 @@ export class TenantRequestContext {
     if (!scope.activePharmacyId) {
       throw new RouteHttpError(options.missingPharmacyMessage ?? "اختر صيدلية أولًا", 400, "PHARMACY_REQUIRED")
     }
-    if (!scopeCan(scope, options.permission)) {
+    const requiredPermissions = [
+      ...(options.permission ? [options.permission] : []),
+      ...(options.anyPermissions ?? []),
+    ]
+    if (requiredPermissions.length === 0) {
+      throw new Error("TenantRequestContext requires at least one permission")
+    }
+    if (!requiredPermissions.some((permission) => scopeCan(scope, permission))) {
       throw new RouteHttpError(options.forbiddenMessage ?? "ليست لديك صلاحية تنفيذ هذه العملية", 403, "FORBIDDEN")
     }
 
@@ -90,7 +98,7 @@ export class TenantRequestContext {
   }
 
   search(name = "query") {
-    return this.text(name).replace(/[,%().]/g, " ").replace(/\s+/g, " ").trim()
+    return this.text(name).replace(/[,%.()'"]/g, " ").replace(/\s+/g, " ").trim()
   }
 
   integer(name: string, fallback: number, min: number, max: number) {
@@ -98,9 +106,9 @@ export class TenantRequestContext {
     return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback
   }
 
-  pagination(defaultPageSize = 25) {
+  pagination(defaultPageSize = 25, maxPageSize = 100) {
     const page = this.integer("page", 1, 1, 100_000)
-    const pageSize = this.integer("page_size", defaultPageSize, 10, 100)
+    const pageSize = this.integer("page_size", defaultPageSize, 10, maxPageSize)
     return { page, pageSize, offset: (page - 1) * pageSize }
   }
 }

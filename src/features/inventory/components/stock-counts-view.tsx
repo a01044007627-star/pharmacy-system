@@ -49,15 +49,23 @@ type ItemSearchRow = {
   available_qty: number
 }
 
-function statusLabel(status: string) {
-  const labels: Record<string, string> = { matched: "مطابق", variance: "فروقات", approved: "معتمد", void: "ملغي" }
-  return labels[status] ?? status
+function effectiveStatus(status: string, variance: number) {
+  if (status === "posted") return Number(variance) === 0 ? "matched" : "variance"
+  if (status === "cancelled") return "void"
+  return status
 }
 
-function statusColor(status: string) {
-  if (status === "matched") return "border-emerald-200 bg-emerald-50 text-emerald-700"
-  if (status === "approved") return "border-blue-200 bg-blue-50 text-blue-700"
-  if (status === "void") return "border-rose-200 bg-rose-50 text-rose-700"
+function statusLabel(status: string, variance: number) {
+  const labels: Record<string, string> = { matched: "مطابق", variance: "فروقات", approved: "معتمد", void: "ملغي" }
+  const value = effectiveStatus(status, variance)
+  return labels[value] ?? value
+}
+
+function statusColor(status: string, variance: number) {
+  const value = effectiveStatus(status, variance)
+  if (value === "matched") return "border-emerald-200 bg-emerald-50 text-emerald-700"
+  if (value === "approved") return "border-blue-200 bg-blue-50 text-blue-700"
+  if (value === "void") return "border-rose-200 bg-rose-50 text-rose-700"
   return "border-amber-200 bg-amber-50 text-amber-700"
 }
 
@@ -95,7 +103,11 @@ export function StockCountsView() {
   const canChooseAllBranches = auth.isDeveloper || auth.isOwner || ["owner", "admin"].includes(auth.role)
 
   const load = useCallback(async () => {
-    if (!auth.activePharmacyId) return
+    if (!auth.activePharmacyId) {
+      setRows([])
+      setLoading(auth.loading)
+      return
+    }
     loadControllerRef.current?.abort()
     const controller = new AbortController()
     loadControllerRef.current = controller
@@ -126,7 +138,7 @@ export function StockCountsView() {
         setLoading(false)
       }
     }
-  }, [auth.activePharmacyId, branchId, page, query, statusFilter])
+  }, [auth.activePharmacyId, auth.loading, branchId, page, query, statusFilter])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => void load(), 250)
@@ -320,13 +332,13 @@ export function StockCountsView() {
                       {numberLabel(row.variance)}
                     </TableCell>
                     <TableCell className="text-center">
-                      <Badge variant="outline" className={cn("font-black", statusColor(row.status))}>{statusLabel(row.status)}</Badge>
+                      <Badge variant="outline" className={cn("font-black", statusColor(row.status, row.variance))}>{statusLabel(row.status, row.variance)}</Badge>
                     </TableCell>
                     <TableCell className="text-center text-sm text-slate-500">{row.notes ?? "—"}</TableCell>
                     <TableCell className="text-center text-xs font-bold">{new Date(row.created_at).toLocaleString("ar-EG")}</TableCell>
                     {canWrite ? (
                       <TableCell className="text-center">
-                        {row.status === "variance" || row.status === "matched" ? (
+                        {["posted", "variance", "matched"].includes(row.status) ? (
                           <Button size="sm" variant="outline" className="h-8 rounded-xl border-emerald-200 text-emerald-700 hover:bg-emerald-50" disabled={approvingId === row.id} onClick={() => void approve(row)}>
                             {approvingId === row.id ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />} اعتماد
                           </Button>

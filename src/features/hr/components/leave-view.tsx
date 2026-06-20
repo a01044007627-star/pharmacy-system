@@ -19,9 +19,12 @@ import { cn } from "@/lib/utils"
 type LeaveRecord = {
   id: string
   employee_id: string
-  date: string
-  leave_reason: string | null
-  leave_status: string | null
+  type: string
+  start_date: string
+  end_date: string
+  days_used: number
+  reason: string | null
+  status: string
   employee: { id: string; name: string; position: string | null } | null
 }
 
@@ -35,20 +38,24 @@ export function LeaveView() {
   const [employees, setEmployees] = useState<{ id: string; name: string }[]>([])
 
   const load = useCallback(async () => {
-    if (!auth.activePharmacyId) return
+    if (!auth.activePharmacyId) {
+      setRecords([])
+      setLoading(auth.loading)
+      return
+    }
     setLoading(true)
     try {
       const params = new URLSearchParams({ pharmacy_id: auth.activePharmacyId, status: statusFilter })
       const response = await fetch(`/api/hr/leave?${params.toString()}`, { cache: "no-store" })
-      const data = await response.json().catch(() => ({})) as { records?: LeaveRecord[] }
-      if (!response.ok) throw new Error("فشل تحميل الإجازات")
+      const data = await response.json().catch(() => ({})) as { records?: LeaveRecord[]; error?: string }
+      if (!response.ok) throw new Error(data.error ?? "فشل تحميل الإجازات")
       setRecords(data.records ?? [])
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "فشل تحميل الإجازات")
     } finally {
       setLoading(false)
     }
-  }, [auth.activePharmacyId, statusFilter])
+  }, [auth.activePharmacyId, auth.loading, statusFilter])
 
   useEffect(() => { void load() }, [load])
 
@@ -64,7 +71,8 @@ export function LeaveView() {
     if (!form.employee_id) { toast.error("اختر الموظف"); return }
     try {
       const response = await fetch("/api/hr/leave", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, pharmacy_id: auth.activePharmacyId }) })
-      if (!response.ok) throw new Error("فشل تسجيل الإجازة")
+      const data = await response.json().catch(() => ({})) as { error?: string }
+      if (!response.ok) throw new Error(data.error ?? "فشل تسجيل الإجازة")
       toast.success("تم تسجيل الإجازة"); setOpen(false); setForm({ employee_id: "", date: new Date().toISOString().split("T")[0], reason: "" }); void load()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "فشل تسجيل الإجازة")
@@ -74,7 +82,8 @@ export function LeaveView() {
   const handleStatus = async (id: string, status: string) => {
     try {
       const response = await fetch("/api/hr/leave", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, status, pharmacy_id: auth.activePharmacyId }) })
-      if (!response.ok) throw new Error("فشل تحديث الإجازة")
+      const data = await response.json().catch(() => ({})) as { error?: string }
+      if (!response.ok) throw new Error(data.error ?? "فشل تحديث الإجازة")
       toast.success(status === "approved" ? "تم الموافقة" : "تم الرفض"); void load()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "فشل التحديث")
@@ -116,16 +125,16 @@ export function LeaveView() {
                 <TableRow key={row.id}>
                   <TableCell className="font-black text-brand">{row.employee?.name ?? "—"}</TableCell>
                   <TableCell className="font-bold">{row.employee?.position ?? "—"}</TableCell>
-                  <TableCell className="text-center text-xs font-bold">{new Date(row.date).toLocaleDateString("ar-EG")}</TableCell>
-                  <TableCell className="text-center text-xs font-bold max-w-[200px] truncate">{row.leave_reason ?? "—"}</TableCell>
+                  <TableCell className="text-center text-xs font-bold">{new Date(`${row.start_date}T00:00:00`).toLocaleDateString("ar-EG")}</TableCell>
+                  <TableCell className="text-center text-xs font-bold max-w-[200px] truncate">{row.reason ?? "—"}</TableCell>
                   <TableCell className="text-center">
-                    <Badge variant="outline" className={cn("font-black", row.leave_status === "approved" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : row.leave_status === "rejected" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-amber-200 bg-amber-50 text-amber-700")}>
-                      {row.leave_status === "approved" ? "موافَق" : row.leave_status === "rejected" ? "مرفوض" : "قيد الانتظار"}
+                    <Badge variant="outline" className={cn("font-black", row.status === "approved" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : row.status === "rejected" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-amber-200 bg-amber-50 text-amber-700")}>
+                      {row.status === "approved" ? "موافَق" : row.status === "rejected" ? "مرفوض" : "قيد الانتظار"}
                     </Badge>
                   </TableCell>
                   {auth.can("hr:write") ? (
                     <TableCell className="text-center">
-                      {row.leave_status === "pending" ? (
+                      {row.status === "pending" ? (
                         <div className="flex items-center justify-center gap-1">
                           <Button size="icon" variant="ghost" className="text-emerald-600" onClick={() => void handleStatus(row.id, "approved")}><Check className="size-4" /></Button>
                           <Button size="icon" variant="ghost" className="text-rose-600" onClick={() => void handleStatus(row.id, "rejected")}><X className="size-4" /></Button>

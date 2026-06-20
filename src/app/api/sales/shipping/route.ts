@@ -15,7 +15,6 @@ function clean(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
 }
 
-
 const SHIPPING_STATUSES = ["pending", "confirmed", "preparing", "shipped", "delivered", "cancelled", "returned"] as const
 
 function shippingStatusLabel(value: string) {
@@ -23,7 +22,7 @@ function shippingStatusLabel(value: string) {
     pending: "قيد الانتظار",
     confirmed: "مؤكد",
     preparing: "قيد التحضير",
-    shipped: "تم الشحن",
+    shipped: "قيد التوصيل",
     delivered: "تم التوصيل",
     cancelled: "ملغي",
     returned: "مرتجع",
@@ -34,8 +33,8 @@ function shippingStatusLabel(value: string) {
 export async function GET(request: Request) {
   try {
     const context = await TenantRequestContext.from(request, {
-      permission: "sales:read",
-      forbiddenMessage: "ليست لديك صلاحية عرض الشحن",
+      anyPermissions: ["sales:read", "delivery:read"],
+      forbiddenMessage: "ليست لديك صلاحية عرض طلبات التوصيل",
     })
     const { page, pageSize, offset } = context.pagination()
     const query = context.search()
@@ -43,7 +42,10 @@ export async function GET(request: Request) {
 
     let ordersQuery = context.db
       .from("pharmacy_orders")
-      .select("id,pharmacy_id,branch_id,order_number,customer_id,customer_name,shipping_address_id,shipping_fee,status,created_at,updated_at", { count: "exact" })
+      .select(
+        "id,pharmacy_id,branch_id,order_number,customer_id,customer_name,shipping_address_id,shipping_fee,subtotal,discount_total,tax_total,total,paid_amount,due_amount,payment_method,payment_status,status,notes,created_at,updated_at",
+        { count: "exact" },
+      )
       .eq("pharmacy_id", context.pharmacyId)
       .order("created_at", { ascending: false })
       .range(offset, offset + pageSize - 1)
@@ -55,36 +57,29 @@ export async function GET(request: Request) {
     const { data, error, count } = await ordersQuery
     if (error) throw error
 
-    const orderIds = (data ?? []).map((order) => order.id as string)
-    const totalMap = new Map<string, number>()
-    if (orderIds.length > 0) {
-      const { data: linesData, error: linesError } = await context.db
-        .from("pharmacy_order_lines")
-        .select("order_id,net_total")
-        .eq("pharmacy_id", context.pharmacyId)
-        .in("order_id", orderIds)
-      if (linesError) throw linesError
-      for (const line of linesData ?? []) {
-        const orderId = line.order_id as string
-        totalMap.set(orderId, (totalMap.get(orderId) ?? 0) + Number(line.net_total ?? 0))
-      }
-    }
-
     const relations = new OperationalRelationsRepository(context.db, context.pharmacyId)
-    const rowsWithBranches = await relations.attachBranches(data ?? [])
-    const orders = rowsWithBranches.map((order) => ({
+    const withBranches = await relations.attachBranches(data ?? [])
+    const withCustomers = await relations.attachCustomers(withBranches)
+    const withAddresses = await relations.attachShippingAddresses(withCustomers)
+    const orders = withAddresses.map((order) => ({
       ...order,
-      total: Number(order.shipping_fee ?? 0) + (totalMap.get(order.id as string) ?? 0),
-      line_total: totalMap.get(order.id as string) ?? 0,
+      customer_phone: order.shipping_address?.phone ?? order.customer?.phone ?? null,
+      shipping_address_text: order.shipping_address?.address ?? order.customer?.address ?? null,
+      shipping_status: order.status,
     }))
 
     return NextResponse.json({
       orders,
       statuses: SHIPPING_STATUSES.map((value) => ({ value, label: shippingStatusLabel(value) })),
-      pagination: { page, pageSize, total: count ?? 0, totalPages: Math.max(1, Math.ceil((count ?? 0) / pageSize)) },
+      pagination: {
+        page,
+        pageSize,
+        total: count ?? orders.length,
+        totalPages: Math.max(1, Math.ceil((count ?? orders.length) / pageSize)),
+      },
     })
   } catch (error) {
-    return operationalErrorResponse(error, "shipping GET failed", "فشل تحميل طلبات الشحن")
+    return operationalErrorResponse(error, "shipping GET failed", "فشل تحميل طلبات التوصيل")
   }
 }
 
@@ -108,15 +103,15 @@ export async function PATCH(request: Request) {
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
-
-    const { data: existing } = await db
+    const { data: existing, error: existingError } = await db
       .from("pharmacy_orders")
       .select("id,branch_id,status")
       .eq("id", id)
       .eq("pharmacy_id", scope.activePharmacyId)
       .maybeSingle()
+    if (existingError) throw existingError
     if (!existing) return NextResponse.json({ error: "الطلب غير موجود" }, { status: 404 })
-    assertBranchScope(scope, existing.branch_id)
+    if (existing.branch_id) assertBranchScope(scope, existing.branch_id)
 
     const { data, error } = await db
       .from("pharmacy_orders")
@@ -129,8 +124,6 @@ export async function PATCH(request: Request) {
 
     return NextResponse.json(data ?? {})
   } catch (error) {
-    console.error("shipping PATCH failed", error)
-    const message = error instanceof Error ? error.message : "فشل تحديث حالة الطلب"
-    return NextResponse.json({ error: message }, { status: 400 })
+    return operationalErrorResponse(error, "shipping PATCH failed", "فشل تحديث حالة الطلب", 400)
   }
 }

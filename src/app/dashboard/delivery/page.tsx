@@ -21,10 +21,25 @@ type DeliveryOrder = {
   order_number: string
   customer_name: string
   customer_phone: string | null
-  shipping_address: string | null
-  shipping_status: string | null
+  shipping_address_text: string | null
+  status: string
   total: number
   created_at: string
+}
+
+type DeliveryResponse = {
+  orders?: DeliveryOrder[]
+  error?: string
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  pending: "قيد الانتظار",
+  confirmed: "مؤكد",
+  preparing: "قيد التحضير",
+  shipped: "قيد التوصيل",
+  delivered: "تم التوصيل",
+  cancelled: "ملغي",
+  returned: "مرتجع",
 }
 
 export default function DeliveryPage() {
@@ -37,45 +52,63 @@ export default function DeliveryPage() {
   const [statusFilter, setStatusFilter] = useState("all")
 
   const load = useCallback(async () => {
-    if (!auth.activePharmacyId) return
+    if (!auth.activePharmacyId) {
+      setRows([])
+      setLoading(auth.loading)
+      return
+    }
+
     setLoading(true)
     try {
-      const params = new URLSearchParams({ pharmacy_id: auth.activePharmacyId, query, shipping_status: statusFilter })
-      const response = await fetch(`/api/sales?${params.toString()}&shipping=1&page_size=100`, { cache: "no-store" })
-      const data = await response.json().catch(() => ({})) as { sales?: DeliveryOrder[] }
-      if (!response.ok) throw new Error("فشل تحميل طلبات التوصيل")
-      setRows(data.sales?.filter((s) => s.shipping_address) ?? [])
+      const params = new URLSearchParams({
+        pharmacy_id: auth.activePharmacyId,
+        branch_id: auth.activeBranchId ?? "all",
+        query: query.trim(),
+        status: statusFilter,
+        page_size: "100",
+      })
+      const response = await fetch(`/api/sales/shipping?${params.toString()}`, { cache: "no-store" })
+      const data = await response.json().catch(() => ({})) as DeliveryResponse
+      if (!response.ok) throw new Error(data.error ?? "فشل تحميل طلبات التوصيل")
+      setRows(data.orders ?? [])
     } catch (error) {
+      setRows([])
       toast.error(error instanceof Error ? error.message : "فشل تحميل طلبات التوصيل")
     } finally {
       setLoading(false)
     }
-  }, [auth.activePharmacyId, query, statusFilter])
+  }, [auth.activeBranchId, auth.activePharmacyId, auth.loading, query, statusFilter])
 
   useEffect(() => {
-    const t = window.setTimeout(() => void load(), 250)
-    return () => window.clearTimeout(t)
+    const timeout = window.setTimeout(() => void load(), 250)
+    return () => window.clearTimeout(timeout)
   }, [load])
 
   return (
     <PageAccess permission="delivery:read">
       <section dir="rtl" className="page-container space-y-4 py-4 text-right sm:py-6">
-        <DashboardPageHeader title="التوصيل" subtitle="متابعة طلبات التوصيل والشحن." icon={Truck} actions={
-          <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()}><RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث</Button>
-        } />
+        <DashboardPageHeader
+          title="التوصيل"
+          subtitle="متابعة طلبات التوصيل والشحن."
+          icon={Truck}
+          actions={(
+            <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()} disabled={loading}>
+              <RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث
+            </Button>
+          )}
+        />
 
         <Card className="rounded-3xl border-slate-200 shadow-sm">
           <CardContent className="grid gap-3 p-4 md:grid-cols-2">
             <div className="relative">
               <Search className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-              <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="رقم الطلب أو اسم العميل..." className="h-11 rounded-2xl pr-10 font-bold" />
+              <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="رقم الطلب أو اسم العميل..." className="h-11 rounded-2xl pr-10 font-bold" />
             </div>
-            <NativeSelect value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <NativeSelect value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
               <NativeSelectOption value="all">كل الحالات</NativeSelectOption>
-              <NativeSelectOption value="pending">قيد الانتظار</NativeSelectOption>
-              <NativeSelectOption value="in_transit">قيد التوصيل</NativeSelectOption>
-              <NativeSelectOption value="delivered">تم التوصيل</NativeSelectOption>
-              <NativeSelectOption value="cancelled">ملغي</NativeSelectOption>
+              {Object.entries(STATUS_LABELS).map(([value, label]) => (
+                <NativeSelectOption key={value} value={value}>{label}</NativeSelectOption>
+              ))}
             </NativeSelect>
           </CardContent>
         </Card>
@@ -94,11 +127,11 @@ export default function DeliveryPage() {
                   <TableCell className="font-black text-brand">{row.order_number}</TableCell>
                   <TableCell className="font-bold">{row.customer_name}</TableCell>
                   <TableCell dir="ltr" className="text-left font-bold">{row.customer_phone ?? "—"}</TableCell>
-                  <TableCell className="max-w-[200px] truncate text-xs font-bold">{row.shipping_address ?? "—"}</TableCell>
+                  <TableCell className="max-w-[240px] truncate text-xs font-bold">{row.shipping_address_text ?? "—"}</TableCell>
                   <TableCell className="text-center font-black">{Number(row.total || 0).toLocaleString("ar-EG")} {currency}</TableCell>
                   <TableCell className="text-center">
-                    <Badge variant="outline" className={cn("font-black", row.shipping_status === "delivered" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : row.shipping_status === "in_transit" ? "border-blue-200 bg-blue-50 text-blue-700" : row.shipping_status === "cancelled" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-amber-200 bg-amber-50 text-amber-700")}>
-                      {row.shipping_status === "delivered" ? "تم التوصيل" : row.shipping_status === "in_transit" ? "قيد التوصيل" : row.shipping_status === "cancelled" ? "ملغي" : "قيد الانتظار"}
+                    <Badge variant="outline" className={cn("font-black", statusColor(row.status))}>
+                      {STATUS_LABELS[row.status] ?? row.status}
                     </Badge>
                   </TableCell>
                   <TableCell className="text-center text-xs font-bold">{new Date(row.created_at).toLocaleDateString("ar-EG")}</TableCell>
@@ -110,4 +143,11 @@ export default function DeliveryPage() {
       </section>
     </PageAccess>
   )
+}
+
+function statusColor(status: string) {
+  if (status === "delivered") return "border-emerald-200 bg-emerald-50 text-emerald-700"
+  if (["confirmed", "preparing", "shipped"].includes(status)) return "border-blue-200 bg-blue-50 text-blue-700"
+  if (["cancelled", "returned"].includes(status)) return "border-rose-200 bg-rose-50 text-rose-700"
+  return "border-amber-200 bg-amber-50 text-amber-700"
 }

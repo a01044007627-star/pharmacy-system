@@ -88,7 +88,11 @@ export function StockMovementsView() {
   const money = useCallback((v: number) => `${Number(v || 0).toLocaleString("ar-EG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`, [currency])
 
   const load = useCallback(async () => {
-    if (!auth.activePharmacyId) return
+    if (!auth.activePharmacyId) {
+      setRows([])
+      setLoading(auth.loading)
+      return
+    }
     setLoading(true)
     try {
       const params = new URLSearchParams({
@@ -112,7 +116,7 @@ export function StockMovementsView() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "فشل تحميل حركة المخزون")
     } finally { setLoading(false) }
-  }, [auth.activeBranchId, auth.activePharmacyId, dateFrom, dateTo, direction, movementType, page, search, sourceTable])
+  }, [auth.activeBranchId, auth.activePharmacyId, auth.loading, dateFrom, dateTo, direction, movementType, page, search, sourceTable])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => void load(), 250)

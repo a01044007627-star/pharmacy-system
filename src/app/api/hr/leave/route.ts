@@ -4,6 +4,8 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { requireActivePharmacy, scopeCan } from "@/lib/auth/server-permissions"
+import { HrRepository } from "@/lib/server/hr-repository"
+import { operationalErrorResponse } from "@/lib/server/tenant-request-context"
 
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
@@ -20,30 +22,19 @@ export async function GET(request: Request) {
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scopeCan(scope, "hr:read")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
     const pharmacyId = requireActivePharmacy(scope)
-    const status = clean(url.searchParams.get("status"))
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
+    const repository = new HrRepository(db, pharmacyId)
+    const records = await repository.listLeave({
+      status: clean(url.searchParams.get("status")) || undefined,
+      employeeId: clean(url.searchParams.get("employee_id")) || undefined,
+      limit: 100,
+    })
 
-    let query = db
-      .from("pharmacy_shifts")
-      .select("*, employee:pharmacy_employees(id,name,position)")
-      .eq("pharmacy_id", pharmacyId)
-      .not("is_leave", "is", null)
-      .order("date", { ascending: false })
-      .limit(100)
-
-    if (status === "pending") query = query.eq("leave_status", "pending")
-    else if (status === "approved") query = query.eq("leave_status", "approved")
-    else if (status === "rejected") query = query.eq("leave_status", "rejected")
-
-    const { data, error } = await query
-    if (error) throw error
-    return NextResponse.json({ records: data ?? [] })
+    return NextResponse.json({ records })
   } catch (error) {
-    console.error("hr/leave GET failed", error)
-    const message = error instanceof Error ? error.message : "فشل تحميل الإجازات"
-    return NextResponse.json({ error: message }, { status: 500 })
+    return operationalErrorResponse(error, "hr/leave GET failed", "فشل تحميل الإجازات")
   }
 }
 
@@ -59,27 +50,18 @@ export async function POST(request: Request) {
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
+    const repository = new HrRepository(db, pharmacyId)
+    const record = await repository.createLeave({
+      employeeId,
+      type: clean(body.type),
+      startDate: clean(body.start_date) || clean(body.date),
+      endDate: clean(body.end_date),
+      reason: clean(body.reason) || null,
+    })
 
-    const { data, error } = await db
-      .from("pharmacy_shifts")
-      .insert({
-        pharmacy_id: pharmacyId,
-        employee_id: employeeId,
-        date: clean(body.date) || new Date().toISOString().split("T")[0],
-        is_leave: true,
-        leave_reason: clean(body.reason) || "",
-        leave_status: "pending",
-        type: "leave",
-      })
-      .select("*")
-      .maybeSingle()
-
-    if (error) throw error
-    return NextResponse.json(data, { status: 201 })
+    return NextResponse.json(record, { status: 201 })
   } catch (error) {
-    console.error("hr/leave POST failed", error)
-    const message = error instanceof Error ? error.message : "فشل تسجيل الإجازة"
-    return NextResponse.json({ error: message }, { status: 400 })
+    return operationalErrorResponse(error, "hr/leave POST failed", "فشل تسجيل الإجازة", 400)
   }
 }
 
@@ -95,21 +77,15 @@ export async function PATCH(request: Request) {
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
+    const repository = new HrRepository(db, pharmacyId)
+    const record = await repository.updateLeaveStatus({
+      id: recordId,
+      status: clean(body.status) || "approved",
+      actorId: scope.user.id,
+    })
 
-    const { data, error } = await db
-      .from("pharmacy_shifts")
-      .update({ leave_status: clean(body.status) || "approved" })
-      .eq("id", recordId)
-      .eq("pharmacy_id", pharmacyId)
-      .select("*")
-      .maybeSingle()
-
-    if (error) throw error
-    if (!data) return NextResponse.json({ error: "السجل غير موجود" }, { status: 404 })
-    return NextResponse.json(data)
+    return NextResponse.json(record)
   } catch (error) {
-    console.error("hr/leave PATCH failed", error)
-    const message = error instanceof Error ? error.message : "فشل تحديث الإجازة"
-    return NextResponse.json({ error: message }, { status: 400 })
+    return operationalErrorResponse(error, "hr/leave PATCH failed", "فشل تحديث الإجازة", 400)
   }
 }
