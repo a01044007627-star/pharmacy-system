@@ -35,6 +35,18 @@ type ItemBatchRow = {
   expiry_date?: string | null
   remaining_quantity?: number | string | null
 }
+type ItemUnitRow = {
+  id: string
+  item_id: string
+  unit_name: string
+  position: number
+  conversion_to_lowest: number
+  barcode: string | null
+  sell_price: number | string | null
+  old_sell_price: number | string | null
+  sale_enabled: boolean | null
+  is_base: boolean | null
+}
 type QueryResult<T> = { data?: T[] | null; error?: { message: string } | null }
 
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
@@ -105,8 +117,18 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
       .ilike("barcode", `%${barcodeNeedle}%`)
       .limit(Math.min(rowLimit, 120))
     if (barcodeError) throw barcodeError
+    const { data: unitBarcodeRows, error: unitBarcodeError } = await db
+      .from("pharmacy_item_units")
+      .select("item_id, barcode")
+      .eq("pharmacy_id", pharmacyId)
+      .ilike("barcode", `%${barcodeNeedle}%`)
+      .limit(Math.min(rowLimit, 120))
+    if (unitBarcodeError) throw unitBarcodeError
     const existingIds = new Set(rows.map((row) => row.id))
-    const ids = Array.from(new Set(((barcodeRows ?? []) as ItemBarcodeRow[]).map((row) => row.item_id).filter(Boolean))).filter((id) => !existingIds.has(id))
+    const ids = Array.from(new Set([
+      ...((barcodeRows ?? []) as ItemBarcodeRow[]).map((row) => row.item_id),
+      ...((unitBarcodeRows ?? []) as ItemBarcodeRow[]).map((row) => row.item_id),
+    ].filter(Boolean))).filter((id) => !existingIds.has(id))
     if (ids.length > 0) {
       let barcodeItemsQuery = db
         .from("pharmacy_items")
@@ -127,7 +149,7 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
   const groupIds = Array.from(new Set(limitedRows.map((item) => item.group_id).filter((id): id is string => Boolean(id))))
   const brandIds = Array.from(new Set(limitedRows.map((item) => item.brand_id).filter((id): id is string => Boolean(id))))
 
-  const [barcodes, balances, groups, brands, batches] = itemIds.length ? await Promise.all([
+  const [barcodes, balances, groups, brands, batches, unitRows] = itemIds.length ? await Promise.all([
     db.from("pharmacy_item_barcodes").select("item_id, barcode, is_primary").eq("pharmacy_id", pharmacyId).in("item_id", itemIds),
     db.from("pharmacy_stock_balances").select("item_id, branch_id, quantity").eq("pharmacy_id", pharmacyId).in("item_id", itemIds),
     groupIds.length ? db.from("pharmacy_item_groups").select("id, name").eq("pharmacy_id", pharmacyId).in("id", groupIds) : Promise.resolve({ data: [], error: null }),
@@ -139,15 +161,23 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
       .in("item_id", itemIds)
       .gt("remaining_quantity", 0)
       .order("expiry_date", { ascending: true, nullsFirst: false }),
-  ]) : [{ data: [] }, { data: [] }, { data: [] }, { data: [] }, { data: [] }]
+    db
+      .from("pharmacy_item_units")
+      .select("id, item_id, unit_name, position, conversion_to_lowest, barcode, sell_price, old_sell_price, sale_enabled, is_base")
+      .eq("pharmacy_id", pharmacyId)
+      .in("item_id", itemIds)
+      .eq("sale_enabled", true)
+      .order("position", { ascending: true }),
+  ]) : [{ data: [] }, { data: [] }, { data: [] }, { data: [] }, { data: [] }, { data: [] }]
 
   const barcodeResult = barcodes as QueryResult<ItemBarcodeRow>
   const balanceResult = balances as QueryResult<StockBalanceRow>
   const groupResult = groups as QueryResult<NamedLookupRow>
   const brandResult = brands as QueryResult<NamedLookupRow>
   const batchResult = batches as QueryResult<ItemBatchRow>
+  const unitResult = unitRows as QueryResult<ItemUnitRow>
 
-  for (const result of [barcodeResult, balanceResult, groupResult, brandResult, batchResult]) {
+  for (const result of [barcodeResult, balanceResult, groupResult, brandResult, batchResult, unitResult]) {
     if (result.error) throw result.error
   }
 
@@ -166,11 +196,18 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
   const groupMap = new Map<string, string>((groupResult.data ?? []).map((group) => [group.id, group.name]))
   const brandMap = new Map<string, string>((brandResult.data ?? []).map((brand) => [brand.id, brand.name]))
   const batchesByItem = new Map<string, ItemBatchRow[]>()
+  const unitsByItem = new Map<string, ItemUnitRow[]>()
   for (const row of batchResult.data ?? []) {
     if (branchId && row.branch_id && row.branch_id !== branchId) continue
     const list = batchesByItem.get(row.item_id) ?? []
     list.push(row)
     batchesByItem.set(row.item_id, list)
+  }
+
+  for (const row of unitResult.data ?? []) {
+    const list = unitsByItem.get(row.item_id) ?? []
+    list.push(row)
+    unitsByItem.set(row.item_id, list)
   }
 
   const today = new Date().toISOString().slice(0, 10)
@@ -196,6 +233,18 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
       today,
     })
 
+    const itemUnits = (unitsByItem.get(item.id) ?? []).map((u) => ({
+      id: u.id,
+      unit_name: u.unit_name,
+      position: u.position,
+      conversion_to_lowest: n(u.conversion_to_lowest),
+      barcode: u.barcode ?? null,
+      sell_price: n(u.sell_price),
+      old_sell_price: n(u.old_sell_price),
+      sale_enabled: !!u.sale_enabled,
+      is_base: !!u.is_base,
+    }))
+
     return {
       ...item,
       sell_price: n(item.sell_price),
@@ -211,6 +260,7 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
       stock_message: availability.stockMessage,
       barcode: itemBarcodes.find((b) => b.is_primary)?.barcode ?? itemBarcodes[0]?.barcode ?? item.sku ?? "",
       barcodes: itemBarcodes,
+      units: itemUnits,
       group_name: item.group_id ? groupMap.get(item.group_id) ?? null : null,
       brand_name: item.brand_id ? brandMap.get(item.brand_id) ?? null : null,
       nearest_batch_id: nearestBatch?.id ?? null,

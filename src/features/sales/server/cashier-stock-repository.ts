@@ -114,12 +114,30 @@ export class CashierStockRepository {
   async assertLines(lines: Array<Record<string, unknown>>) {
     const itemIds = lines.map((line) => String(line.item_id ?? "")).filter(Boolean)
     const snapshots = await this.load(itemIds)
+
+    const conversionMap = new Map<string, number>()
+    if (lines.some((line) => line.unit_id && line.conversion_to_base)) {
+      const { data: unitRows, error: unitError } = await this.db
+        .from("pharmacy_item_units")
+        .select("item_id, id, conversion_to_lowest")
+        .eq("pharmacy_id", this.pharmacyId)
+        .in("item_id", itemIds)
+      if (!unitError && unitRows) {
+        for (const u of unitRows) conversionMap.set(`${u.item_id}:${u.id}`, numberValue(u.conversion_to_lowest))
+      }
+    }
+
     for (const line of lines) {
       const itemId = String(line.item_id ?? "")
       const quantity = numberValue(line.quantity)
       const snapshot = snapshots.get(itemId)
       if (!snapshot || quantity <= 0) continue
-      if (quantity > snapshot.sellableQty) {
+
+      const unitId = line.unit_id ? String(line.unit_id) : null
+      const conversion = unitId ? (conversionMap.get(`${itemId}:${unitId}`) ?? numberValue(line.conversion_to_base) || 1) : 1
+      const baseQty = quantity * conversion
+
+      if (baseQty > snapshot.sellableQty) {
         const base = snapshot.stockMessage
           ?? `المتاح للبيع ${snapshot.sellableQty} فقط من ${snapshot.itemName}.`
         throw new CashierStockAvailabilityError(

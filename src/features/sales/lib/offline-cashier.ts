@@ -2,6 +2,20 @@
 
 import { localDB } from "@/lib/sync/local-db"
 import { resolveCashierStock, type CashierStockIssue } from "@/features/sales/lib/cashier-stock"
+import { executeOfflineSale as domainExecuteOfflineSale } from "@/features/sales/lib/offline-sale-executor"
+import type { OfflineSaleInput, OfflineSaleResult } from "@/features/sales/lib/offline-sale-executor"
+
+export type OfflineCashierUnit = {
+  id: string
+  unit_name: string
+  position: number
+  conversion_to_lowest: number
+  barcode: string | null
+  sell_price: number
+  old_sell_price: number | null
+  sale_enabled: boolean
+  is_base: boolean
+}
 
 export type OfflineCashierProduct = {
   id: string
@@ -10,6 +24,7 @@ export type OfflineCashierProduct = {
   sku?: string | null
   barcode?: string | null
   barcodes?: Array<{ barcode?: string | null; is_primary?: boolean | null }>
+  units?: OfflineCashierUnit[]
   unit?: string | null
   sell_price: number
   old_sell_price?: number | null
@@ -60,13 +75,14 @@ function boolean(value: unknown, fallback = false) { return typeof value === "bo
 function searchable(parts: unknown[]) { return parts.filter((value) => value != null).join(" ").toLocaleLowerCase("ar") }
 
 export async function loadOfflineCashierCatalog(input: { pharmacyId: string; branchId: string; query?: string; limit?: number }): Promise<OfflineCashierProduct[]> {
-  const [items, barcodeRows, balanceRows, groupRows, brandRows, batchRows] = await Promise.all([
+  const [items, barcodeRows, balanceRows, groupRows, brandRows, batchRows, unitRows] = await Promise.all([
     localDB.getTableRows("pharmacy_items"),
     localDB.getTableRows("pharmacy_item_barcodes"),
     localDB.getTableRows("pharmacy_stock_balances"),
     localDB.getTableRows("pharmacy_item_groups"),
     localDB.getTableRows("pharmacy_item_brands"),
     localDB.getTableRows("pharmacy_item_batches"),
+    localDB.getTableRows("pharmacy_item_units"),
   ])
   const pharmacyItems = items.filter((row) => row.pharmacy_id === input.pharmacyId && String(row.status ?? "active") === "active" && row.not_for_sale !== true && (!row.branch_id || row.branch_id === input.branchId))
   const itemIds = new Set(pharmacyItems.map((row) => String(row.id)))
@@ -98,6 +114,27 @@ export async function loadOfflineCashierCatalog(input: { pharmacyId: string; bra
     batchesByItem.set(itemId, list)
   }
   for (const rows of batchesByItem.values()) rows.sort((a, b) => text(a.expiry_date || "9999-12-31").localeCompare(text(b.expiry_date || "9999-12-31")))
+
+  const unitsByItem = new Map<string, OfflineCashierUnit[]>()
+  for (const row of unitRows) {
+    if (row.pharmacy_id !== input.pharmacyId || !itemIds.has(String(row.item_id))) continue
+    if (!boolean(row.sale_enabled, true)) continue
+    const itemId = String(row.item_id)
+    const list = unitsByItem.get(itemId) ?? []
+    list.push({
+      id: String(row.id),
+      unit_name: text(row.unit_name) || "",
+      position: number(row.position, 1),
+      conversion_to_lowest: number(row.conversion_to_lowest, number(row.factor, 1)),
+      barcode: text(row.barcode) || null,
+      sell_price: number(row.sell_price),
+      old_sell_price: number(row.old_sell_price) || null,
+      sale_enabled: boolean(row.sale_enabled, true),
+      is_base: boolean(row.is_base),
+    })
+    list.sort((a, b) => a.position - b.position)
+    unitsByItem.set(itemId, list)
+  }
 
   const needle = (input.query ?? "").trim().toLocaleLowerCase("ar")
   const result = pharmacyItems.map((row): OfflineCashierProduct => {
@@ -132,6 +169,7 @@ export async function loadOfflineCashierCatalog(input: { pharmacyId: string; bra
       sku: text(row.sku) || null,
       barcode: primaryBarcode,
       barcodes,
+      units: unitsByItem.get(id) ?? [],
       unit: text(row.unit) || "علبة",
       sell_price: number(row.sell_price),
       old_sell_price: number(row.old_sell_price),
@@ -164,9 +202,14 @@ export async function loadOfflineCashierCatalog(input: { pharmacyId: string; bra
     product.name_ar, product.name_en, product.sku, product.barcode, product.unit, product.group_name,
     product.brand_name, product.category, product.manufacturer_name, product.item_type,
     ...(product.barcodes ?? []).map((barcode) => barcode.barcode),
+    ...(product.units ?? []).map((unit) => unit.barcode),
   ]).includes(needle))
   result.sort((a, b) => Number(b.available_qty > 0) - Number(a.available_qty > 0) || a.name_ar.localeCompare(b.name_ar, "ar"))
   return result.slice(0, Math.max(1, input.limit ?? 5000))
+}
+
+export async function executeOfflineSale(input: OfflineSaleInput): Promise<OfflineSaleResult> {
+  return domainExecuteOfflineSale(input)
 }
 
 export async function loadOfflineOpenShift(input: { pharmacyId: string; branchId: string; userId?: string | null }): Promise<OfflineCashierShift | null> {

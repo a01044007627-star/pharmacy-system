@@ -64,10 +64,24 @@ type FormData = {
   barcodes: string;
   group_id: string;
   brand_id: string;
+  level1_name: string;
+  level1_barcode: string;
+  level1_old_price: string;
+  level1_sell_price: string;
+  level1_sellable: boolean;
+  level2_name: string;
+  level2_qty_in_level1: string;
+  level2_barcode: string;
+  level2_old_price: string;
+  level2_sell_price: string;
+  level2_sellable: boolean;
+  level3_name: string;
+  level3_qty_in_level2: string;
+  level3_barcode: string;
+  level3_old_price: string;
+  level3_sell_price: string;
+  level3_sellable: boolean;
   unit: string;
-  main_unit: string;
-  sub_unit: string;
-  qty_per_main_unit: string;
   unit_raw: string;
   category: string;
   sub_category: string;
@@ -134,10 +148,24 @@ const defaults: FormData = {
   barcodes: "",
   group_id: "",
   brand_id: "",
+  level1_name: "وحدة",
+  level1_barcode: "",
+  level1_old_price: "0",
+  level1_sell_price: "0",
+  level1_sellable: true,
+  level2_name: "",
+  level2_qty_in_level1: "1",
+  level2_barcode: "",
+  level2_old_price: "0",
+  level2_sell_price: "0",
+  level2_sellable: true,
+  level3_name: "",
+  level3_qty_in_level2: "1",
+  level3_barcode: "",
+  level3_old_price: "0",
+  level3_sell_price: "0",
+  level3_sellable: true,
   unit: "وحدة",
-  main_unit: "",
-  sub_unit: "وحدة",
-  qty_per_main_unit: "1",
   unit_raw: "وحدة",
   category: "",
   sub_category: "",
@@ -209,6 +237,11 @@ type ItemApiResponse = {
     unit_name?: string | null;
     factor?: number | string | null;
     is_base?: boolean | null;
+    position?: number | null;
+    conversion_to_lowest?: number | string | null;
+    old_sell_price?: number | string | null;
+    sale_enabled?: boolean | null;
+    barcode?: string | null;
     main_unit?: string | null;
     sub_unit?: string | null;
     qty_per_main_unit?: number | string | null;
@@ -248,22 +281,125 @@ function formFromApi(data: ItemApiResponse): FormData {
   const item = data.item ?? {};
   const variants = data.variants ?? [];
   const itemUnits = data.units ?? [];
+  const hasPosition = itemUnits.some((u) => u.position != null);
+  if (hasPosition) {
+    const l1 = itemUnits.find((u) => u.position === 1);
+    const l2 = itemUnits.find((u) => u.position === 2);
+    const l3 = itemUnits.find((u) => u.position === 3);
+    const l2Conv = Number(l2?.conversion_to_lowest ?? l2?.factor ?? 1);
+    const l3Conv = Number(l3?.conversion_to_lowest ?? l3?.factor ?? 1);
+    return {
+      ...defaults,
+      name_ar: String(item.name_ar ?? ""),
+      name_en: String(item.name_en ?? ""),
+      sku: String(item.sku ?? ""),
+      barcodes: (data.barcodes ?? [])
+        .map((barcode) => barcode.barcode)
+        .join("\n"),
+      group_id: String(item.group_id ?? ""),
+      brand_id: String(item.brand_id ?? ""),
+      level1_name: String(l1?.unit_name ?? "وحدة"),
+      level1_barcode: String(l1?.barcode ?? ""),
+      level1_old_price: numberString(l1?.old_sell_price),
+      level1_sell_price: numberString(item.sell_price ?? l1?.sell_price ?? l1?.old_sell_price),
+      level1_sellable: l1?.sale_enabled !== false,
+      level2_name: String(l2?.unit_name ?? ""),
+      level2_qty_in_level1: l2 ? numberString(l2.factor ?? l2.conversion_to_lowest ?? "1", "1") : "1",
+      level2_barcode: String(l2?.barcode ?? ""),
+      level2_old_price: numberString(l2?.old_sell_price),
+      level2_sell_price: numberString(l2?.sell_price ?? l2?.old_sell_price),
+      level2_sellable: l2?.sale_enabled !== false,
+      level3_name: String(l3?.unit_name ?? ""),
+      level3_qty_in_level2: l3 ? numberString(Math.round(l3Conv / (l2Conv || 1)), "1") : "1",
+      level3_barcode: String(l3?.barcode ?? ""),
+      level3_old_price: numberString(l3?.old_sell_price),
+      level3_sell_price: numberString(l3?.sell_price ?? l3?.old_sell_price),
+      level3_sellable: l3?.sale_enabled !== false,
+      unit: String(l1?.unit_name ?? item.unit ?? "وحدة"),
+      unit_raw: String(l1?.unit_raw ?? item.unit ?? ""),
+      category: String(item.category ?? ""),
+      sub_category: String(item.sub_category ?? ""),
+      item_type: String(item.item_type ?? "stocked"),
+      product_type: String(item.product_type ?? "single"),
+      manufacturer_name: String(item.manufacturer_name ?? ""),
+      manufacturer_country: String(item.manufacturer_country ?? ""),
+      pharmacy_type: String(item.pharmacy_type ?? "medicine"),
+      generic_name: String(item.generic_name ?? ""),
+      active_ingredient: String(item.active_ingredient ?? ""),
+      therapeutic_class: String(item.therapeutic_class ?? ""),
+      dosage_form: String(item.dosage_form ?? "غير محدد"),
+      strength: String(item.strength ?? ""),
+      package_size: String(item.package_size ?? ""),
+      route_of_administration: String(item.route_of_administration ?? ""),
+      registration_number: String(item.registration_number ?? ""),
+      storage_condition: String(item.storage_condition ?? "درجة حرارة الغرفة"),
+      buy_price: numberString(item.buy_price),
+      purchase_price_including_tax: numberString(item.purchase_price_including_tax),
+      purchase_price_excluding_tax: numberString(item.purchase_price_excluding_tax),
+      profit_margin: numberString(item.profit_margin),
+      sell_price: numberString(item.sell_price ?? l1?.sell_price ?? l1?.old_sell_price),
+      old_sell_price: numberString(item.old_sell_price ?? l1?.old_sell_price),
+      manage_inventory: item.manage_inventory !== false,
+      not_for_sale: Boolean(item.not_for_sale),
+      min_stock: numberString(item.min_stock),
+      max_stock: numberString(item.max_stock),
+      opening_stock: numberString(item.opening_stock),
+      opening_stock_location: String(item.opening_stock_location ?? ""),
+      has_expiry: Boolean(item.has_expiry),
+      expiry_date: String(item.expiry_date ?? ""),
+      expiry_period_value: numberString(item.expiry_period_value),
+      expiry_period_unit: String(item.expiry_period_unit ?? "months"),
+      track_batch: Boolean(item.track_batch),
+      is_controlled: Boolean(item.is_controlled),
+      requires_prescription: Boolean(item.requires_prescription),
+      serial_tracking_enabled: Boolean(item.serial_tracking_enabled),
+      barcode_type: String(item.barcode_type ?? "C128"),
+      tax_name: String(item.tax_name ?? ""),
+      tax_percent: numberString(item.tax_percent),
+      selling_price_tax_type: String(item.selling_price_tax_type ?? "exclusive"),
+      variation_name: variants[0]?.name ?? String(item.variation_name ?? ""),
+      variation_values: variants.length
+        ? variants
+            .map((variant) => variant.value)
+            .filter(Boolean)
+            .join("|")
+        : Array.isArray(item.variation_values)
+          ? item.variation_values.join("|")
+          : "",
+      variation_skus: variants.length
+        ? variants
+            .map((variant) => variant.sku)
+            .filter(Boolean)
+            .join("|")
+        : Array.isArray(item.variation_skus)
+          ? item.variation_skus.join("|")
+          : "",
+      weight: numberString(item.weight),
+      rack: String(item.rack ?? ""),
+      shelf_row: String(item.shelf_row ?? ""),
+      position: String(item.position ?? ""),
+      product_locations: Array.isArray(item.product_locations)
+        ? item.product_locations.join("|")
+        : "",
+      custom_field_1: String(item.custom_field_1 ?? ""),
+      custom_field_2: String(item.custom_field_2 ?? ""),
+      custom_field_3: String(item.custom_field_3 ?? ""),
+      custom_field_4: String(item.custom_field_4 ?? ""),
+      product_description: String(item.product_description ?? ""),
+      notes: String(item.notes ?? ""),
+      image_url: String(item.image_url ?? ""),
+      branch_id: String(item.branch_id ?? ""),
+    };
+  }
   const baseUnit =
     itemUnits.find((unit) => unit.is_base) ??
     itemUnits.find((unit) => Number(unit.factor ?? 0) === 1);
   const packUnit = itemUnits.find(
     (unit) => !unit.is_base && Number(unit.factor ?? 0) > 1,
   );
-  const mainUnit = String(
-    packUnit?.main_unit ?? packUnit?.unit_name ?? item.unit ?? "",
-  );
-  const subUnit = String(
-    baseUnit?.sub_unit ?? baseUnit?.unit_name ?? item.unit ?? "",
-  );
-  const unitFactor = numberString(
-    packUnit?.qty_per_main_unit ?? packUnit?.factor ?? 1,
-    "1",
-  );
+  const l1name = String(baseUnit?.unit_name ?? baseUnit?.sub_unit ?? item.unit ?? "وحدة");
+  const l2name = String(packUnit?.unit_name ?? packUnit?.main_unit ?? "");
+  const l2qty = numberString(packUnit?.factor ?? packUnit?.qty_per_main_unit ?? 1, "1");
   return {
     ...defaults,
     name_ar: String(item.name_ar ?? ""),
@@ -274,13 +410,25 @@ function formFromApi(data: ItemApiResponse): FormData {
       .join("\n"),
     group_id: String(item.group_id ?? ""),
     brand_id: String(item.brand_id ?? ""),
-    unit: String(item.unit ?? ""),
-    main_unit: mainUnit,
-    sub_unit: subUnit,
-    qty_per_main_unit: unitFactor,
-    unit_raw: String(
-      baseUnit?.unit_raw ?? packUnit?.unit_raw ?? item.unit ?? "",
-    ),
+    level1_name: l1name,
+    level1_barcode: "",
+    level1_old_price: "0",
+    level1_sell_price: numberString(item.sell_price),
+    level1_sellable: true,
+    level2_name: l2name,
+    level2_qty_in_level1: l2qty,
+    level2_barcode: "",
+    level2_old_price: "0",
+    level2_sell_price: "0",
+    level2_sellable: true,
+    level3_name: "",
+    level3_qty_in_level2: "1",
+    level3_barcode: "",
+    level3_old_price: "0",
+    level3_sell_price: "0",
+    level3_sellable: true,
+    unit: l1name,
+    unit_raw: String(baseUnit?.unit_raw ?? item.unit ?? ""),
     category: String(item.category ?? ""),
     sub_category: String(item.sub_category ?? ""),
     item_type: String(item.item_type ?? "stocked"),
@@ -298,12 +446,8 @@ function formFromApi(data: ItemApiResponse): FormData {
     registration_number: String(item.registration_number ?? ""),
     storage_condition: String(item.storage_condition ?? "درجة حرارة الغرفة"),
     buy_price: numberString(item.buy_price),
-    purchase_price_including_tax: numberString(
-      item.purchase_price_including_tax,
-    ),
-    purchase_price_excluding_tax: numberString(
-      item.purchase_price_excluding_tax,
-    ),
+    purchase_price_including_tax: numberString(item.purchase_price_including_tax),
+    purchase_price_excluding_tax: numberString(item.purchase_price_excluding_tax),
     profit_margin: numberString(item.profit_margin),
     sell_price: numberString(item.sell_price),
     old_sell_price: numberString(item.old_sell_price),
@@ -392,6 +536,7 @@ export function ItemCreateView({
   const [quickBusy, setQuickBusy] = useState<"group" | "brand" | "unit" | null>(
     null,
   );
+  const [activeUnitLevels, setActiveUnitLevels] = useState(1);
 
   const branches = useMemo(
     () => (auth.branches ?? []) as BranchOption[],
@@ -479,19 +624,29 @@ export function ItemCreateView({
     };
   }, [duplicateFromId, effectivePharmacyId, itemId, mode, scopeQuery]);
 
+  useEffect(() => {
+    const count = form.level3_name ? 3 : form.level2_name ? 2 : 1;
+    setActiveUnitLevels(count);
+  }, [form.level2_name, form.level3_name]);
+
   const set = useCallback((key: keyof FormData, value: string | boolean) => {
     setForm((prev) => ({ ...prev, [key]: value }));
   }, []);
 
   const unitEquation = useMemo(() => {
-    const qty = Number(form.qty_per_main_unit) || 1;
-    if (form.main_unit.trim() && form.sub_unit.trim() && qty > 1) {
-      return `1 ${form.main_unit.trim()} = ${qty.toLocaleString("ar-EG")} ${form.sub_unit.trim()}`;
+    const l1 = form.level1_name.trim();
+    const l2 = form.level2_name.trim();
+    const l3 = form.level3_name.trim();
+    const q12 = Math.max(1, Number(form.level2_qty_in_level1) || 1);
+    const q23 = Math.max(1, Number(form.level3_qty_in_level2) || 1);
+    if (l3 && l2 && l1) {
+      return `1 ${l3} = ${q23.toLocaleString("ar-EG")} ${l2} = ${(q23 * q12).toLocaleString("ar-EG")} ${l1}`;
     }
-    return form.unit
-      ? `وحدة البيع الحالية: ${form.unit}`
-      : "حدد الوحدة ومعادلتها";
-  }, [form.main_unit, form.qty_per_main_unit, form.sub_unit, form.unit]);
+    if (l2 && l1 && q12 > 1) {
+      return `1 ${l2} = ${q12.toLocaleString("ar-EG")} ${l1}`;
+    }
+    return l1 ? `الوحدة الحالية: ${l1}` : "حدد الوحدة الأساسية";
+  }, [form.level1_name, form.level2_name, form.level3_name, form.level2_qty_in_level1, form.level3_qty_in_level2]);
 
   const pricingPreview = useMemo(() => {
     const buy =
@@ -500,7 +655,7 @@ export function ItemCreateView({
           form.buy_price ||
           form.purchase_price_including_tax,
       ) || 0;
-    const sell = Number(form.sell_price) || 0;
+    const sell = Number(form.level1_sell_price) || Number(form.sell_price) || 0;
     const profit = sell - buy;
     const margin =
       sell > 0 ? (profit / sell) * 100 : Number(form.profit_margin) || 0;
@@ -510,6 +665,7 @@ export function ItemCreateView({
     form.profit_margin,
     form.purchase_price_excluding_tax,
     form.purchase_price_including_tax,
+    form.level1_sell_price,
     form.sell_price,
   ]);
 
@@ -568,8 +724,8 @@ export function ItemCreateView({
             a.name.localeCompare(b.name, "ar"),
           ),
         );
+        set("level1_name", unit.name);
         set("unit", unit.name);
-        set("sub_unit", unit.name);
         set("unit_raw", unit.name);
       }
       setQuickLookup((prev) => ({ ...prev, [kind]: "" }));
@@ -582,11 +738,14 @@ export function ItemCreateView({
   }
 
   function buildPayload() {
-    const qtyPerMain = Math.max(1, Number(form.qty_per_main_unit) || 1);
-    const baseUnitName = form.sub_unit.trim() || form.unit.trim();
-    const mainUnitName = form.main_unit.trim();
-    const baseDefinition = units.find((unit) => unit.name === baseUnitName || unit.name === form.unit);
-    const mainDefinition = units.find((unit) => unit.name === mainUnitName);
+    const l1 = form.level1_name.trim() || "وحدة";
+    const l2 = form.level2_name.trim();
+    const l3 = form.level3_name.trim();
+    const q12 = Math.max(1, Number(form.level2_qty_in_level1) || 1);
+    const q23 = Math.max(1, Number(form.level3_qty_in_level2) || 1);
+    const l1Def = units.find((u) => u.name === l1);
+    const l2Def = l2 ? units.find((u) => u.name === l2) : undefined;
+    const l3Def = l3 ? units.find((u) => u.name === l3) : undefined;
     const policyFields = (definition?: UnitLookupOption) => ({
       unit_code: definition?.code ?? null,
       category: definition?.category ?? "other",
@@ -596,32 +755,58 @@ export function ItemCreateView({
       purchase_enabled: true,
       sale_enabled: true,
     });
-    const unitRows = [
-      baseUnitName
-        ? {
-            unit_name: baseUnitName,
-            factor: 1,
-            is_base: true,
-            main_unit: mainUnitName || baseUnitName,
-            sub_unit: baseUnitName,
-            qty_per_main_unit: qtyPerMain,
-            unit_raw: form.unit_raw || form.unit,
-            ...policyFields(baseDefinition),
-          }
-        : null,
-      mainUnitName && mainUnitName !== baseUnitName && qtyPerMain > 1
-        ? {
-            unit_name: mainUnitName,
-            factor: qtyPerMain,
-            is_base: false,
-            main_unit: mainUnitName,
-            sub_unit: baseUnitName || form.unit,
-            qty_per_main_unit: qtyPerMain,
-            unit_raw: form.unit_raw || form.unit,
-            ...policyFields(mainDefinition),
-          }
-        : null,
-    ].filter(Boolean);
+    const unitRows: Array<Record<string, unknown>> = [
+      {
+        unit_name: l1,
+        factor: 1,
+        position: 1,
+        conversion_to_lowest: 1,
+        is_base: true,
+        barcode: form.level1_barcode || null,
+        old_sell_price: Number(form.level1_old_price) || 0,
+        sale_enabled: form.level1_sellable,
+        sub_unit: l1,
+        unit_raw: form.unit_raw || l1,
+        ...policyFields(l1Def),
+      },
+    ];
+    if (l2) {
+      unitRows.push({
+        unit_name: l2,
+        factor: q12,
+        position: 2,
+        conversion_to_lowest: q12,
+        is_base: false,
+        parent: l1,
+        barcode: form.level2_barcode || null,
+        old_sell_price: Number(form.level2_old_price) || 0,
+        sale_enabled: form.level2_sellable,
+        qty_per_main_unit: q12,
+        main_unit: l3 || l2,
+        sub_unit: l1,
+        unit_raw: form.unit_raw || l1,
+        ...policyFields(l2Def),
+      });
+    }
+    if (l3) {
+      const conv = q23 * q12;
+      unitRows.push({
+        unit_name: l3,
+        factor: conv,
+        position: 3,
+        conversion_to_lowest: conv,
+        is_base: false,
+        parent: l2,
+        barcode: form.level3_barcode || null,
+        old_sell_price: Number(form.level3_old_price) || 0,
+        sale_enabled: form.level3_sellable,
+        qty_per_main_unit: conv,
+        main_unit: l3,
+        sub_unit: l1,
+        unit_raw: form.unit_raw || l1,
+        ...policyFields(l3Def),
+      });
+    }
     return {
       ...form,
       item_type: "stocked",
@@ -635,6 +820,8 @@ export function ItemCreateView({
       barcodes: lineToBarcodeRows(form.barcodes),
       product_locations: pipeToArray(form.product_locations),
       units: unitRows,
+      sell_price: Number(form.level1_sell_price) || 0,
+      old_sell_price: Number(form.level1_old_price) || 0,
       buy_price:
         Number(form.buy_price) ||
         Number(form.purchase_price_excluding_tax) ||
@@ -645,8 +832,6 @@ export function ItemCreateView({
       purchase_price_excluding_tax:
         Number(form.purchase_price_excluding_tax) || 0,
       profit_margin: Number(form.profit_margin) || 0,
-      sell_price: Number(form.sell_price) || 0,
-      old_sell_price: Number(form.old_sell_price) || 0,
       min_stock: Math.max(0, Number(form.min_stock) || 0),
       max_stock: Math.max(0, Number(form.max_stock) || 0),
       opening_stock: Math.max(0, Number(form.opening_stock) || 0),
@@ -656,20 +841,59 @@ export function ItemCreateView({
     };
   }
 
+  function handleAddLevel() {
+    const next = Math.min(3, activeUnitLevels + 1);
+    setActiveUnitLevels(next);
+  }
+
+  function handleRemoveLevel(level: number) {
+    if (level === 2) {
+      setForm((prev) => ({
+        ...prev,
+        level2_name: "",
+        level2_qty_in_level1: "1",
+        level2_barcode: "",
+        level2_old_price: "0",
+        level2_sell_price: "0",
+        level2_sellable: true,
+      }));
+      setActiveUnitLevels(1);
+    } else if (level === 3) {
+      setForm((prev) => ({
+        ...prev,
+        level3_name: "",
+        level3_qty_in_level2: "1",
+        level3_barcode: "",
+        level3_old_price: "0",
+        level3_sell_price: "0",
+        level3_sellable: true,
+      }));
+      setActiveUnitLevels(2);
+    }
+  }
+
   async function save() {
     if (!form.name_ar.trim()) {
       toast.error("اسم الصنف مطلوب");
       return;
     }
-    if (!form.unit.trim()) {
+    if (!form.level1_name.trim()) {
       toast.error("اختر الوحدة الأساسية للصنف");
       return;
     }
-    const conversionFactor = Number(form.qty_per_main_unit) || 1;
-    const mainDefinition = units.find((unit) => unit.name === form.main_unit.trim());
-    if ((mainDefinition?.quantity_mode ?? "discrete") === "discrete" && !Number.isInteger(conversionFactor)) {
-      toast.error("عدد الوحدات الفرعية داخل الوحدة الرئيسية يجب أن يكون رقمًا صحيحًا");
-      return;
+    if (form.level2_name.trim()) {
+      const qty = Number(form.level2_qty_in_level1) || 0;
+      if (qty < 1 || !Number.isInteger(qty)) {
+        toast.error("عدد وحدات المستوى الأول في المستوى الثاني يجب أن يكون رقمًا صحيحًا");
+        return;
+      }
+    }
+    if (form.level3_name.trim()) {
+      const qty = Number(form.level3_qty_in_level2) || 0;
+      if (qty < 1 || !Number.isInteger(qty)) {
+        toast.error("عدد وحدات المستوى الثاني في المستوى الثالث يجب أن يكون رقمًا صحيحًا");
+        return;
+      }
     }
     setSaving(true);
     const requestPath = mode === "edit" && itemId ? `/api/items/${itemId}` : "/api/items";
@@ -737,7 +961,7 @@ export function ItemCreateView({
         />
 
         <div className="grid gap-3 md:grid-cols-3">
-          <AccountingMetric label="معادلة الوحدة" value={unitEquation} />
+          <AccountingMetric label="تسلسل الوحدات" value={unitEquation} />
           <AccountingMetric
             label="ربح تقديري"
             value={`${pricingPreview.profit.toLocaleString("ar-EG", { maximumFractionDigits: 2 })} ج.م (${pricingPreview.margin.toLocaleString("ar-EG", { maximumFractionDigits: 1 })}% هامش)`}
@@ -877,15 +1101,15 @@ export function ItemCreateView({
                   ))}
                 </NativeSelect>
               </FormField>
-              <FormField id="unit" label="الوحدة الأساسية" required>
+              <FormField id="unit" label="الوحدة الأساسية">
                 <NativeSelect
                   value={form.unit}
                   onChange={(e) => {
-                    set("unit", e.target.value);
-                    if (!form.sub_unit || form.sub_unit === "وحدة")
-                      set("sub_unit", e.target.value);
+                    const v = e.target.value;
+                    set("unit", v);
+                    set("level1_name", v);
                     if (!form.unit_raw || form.unit_raw === "وحدة")
-                      set("unit_raw", e.target.value);
+                      set("unit_raw", v);
                   }}
                   className="h-11"
                 >
@@ -938,51 +1162,223 @@ export function ItemCreateView({
           </div>
         </AddItemSection>
 
-        <AddItemSection title="معادلات الوحدات" icon={<Package className="size-5" />}>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <FormField id="sub_unit" label="وحدة البيع / الفرعية">
-              <Input
-                value={form.sub_unit}
-                onChange={(e) => set("sub_unit", e.target.value)}
-                placeholder="مثال: شريط / قرص"
-                className="h-11 rounded-xl"
-              />
-            </FormField>
-            <FormField id="main_unit" label="الوحدة الرئيسية">
-              <Input
-                value={form.main_unit}
-                onChange={(e) => set("main_unit", e.target.value)}
-                placeholder="مثال: علبة"
-                className="h-11 rounded-xl"
-              />
-            </FormField>
-            <FormField id="qty_per_main_unit" label="عدد الفرعية داخل الرئيسية">
-              <Input
-                type="number"
-                min="1"
-                step="1"
-                inputMode="numeric"
-                value={form.qty_per_main_unit}
-                onChange={(e) => set("qty_per_main_unit", e.target.value)}
-                placeholder="مثال: 10"
-                className="h-11 rounded-xl"
-              />
-            </FormField>
-            <FormField id="unit_raw" label="نص الوحدة الأصلي">
-              <Input
-                value={form.unit_raw}
-                onChange={(e) => set("unit_raw", e.target.value)}
-                placeholder="النص الأصلي من ملف العميل"
-                className="h-11 rounded-xl"
-              />
-            </FormField>
-            <div className="rounded-2xl border border-sky-100 bg-white p-3 text-sm font-black text-sky-900 md:col-span-2 xl:col-span-4">
-              المعادلة الحالية:{" "}
-              {form.main_unit &&
-              form.sub_unit &&
-              Number(form.qty_per_main_unit) > 1
-                ? `1 ${form.main_unit} = ${form.qty_per_main_unit} ${form.sub_unit}`
-                : "حدد الوحدة الرئيسية والفرعية والعدد"}
+        <AddItemSection title="معادلات الوحدات والتسعير" icon={<Package className="size-5" />}>
+          <div className="space-y-4">
+            {activeUnitLevels >= 1 && (
+              <div className="rounded-2xl border border-sky-100 bg-white p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <h4 className="text-sm font-black text-sky-800">المستوى الأول - الوحدة الأساسية (الحد الأدنى)</h4>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                  <FormField id="level1_name" label="اسم الوحدة" required>
+                    <Input
+                      value={form.level1_name}
+                      onChange={(e) => set("level1_name", e.target.value)}
+                      placeholder="مثال: قرص / حباية / كيس"
+                      className="h-11 rounded-xl"
+                    />
+                  </FormField>
+                  <FormField id="level1_barcode" label="باركود">
+                    <Input
+                      value={form.level1_barcode}
+                      onChange={(e) => set("level1_barcode", e.target.value)}
+                      className="h-11 rounded-xl"
+                      dir="ltr"
+                    />
+                  </FormField>
+                  <FormField id="level1_sell_price" label="سعر البيع">
+                    <Input
+                      type="number"
+                      min="0"
+                      value={form.level1_sell_price}
+                      onChange={(e) => set("level1_sell_price", e.target.value)}
+                      className="h-11 rounded-xl"
+                    />
+                  </FormField>
+                  <FormField id="level1_old_price" label="سعر البيع القديم">
+                    <Input
+                      type="number"
+                      min="0"
+                      value={form.level1_old_price}
+                      onChange={(e) => set("level1_old_price", e.target.value)}
+                      className="h-11 rounded-xl"
+                    />
+                  </FormField>
+                  <div className="flex items-end pb-2">
+                    <InventoryToggle
+                      label="متاح للبيع"
+                      checked={form.level1_sellable}
+                      onChange={(value) => set("level1_sellable", value)}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+            {activeUnitLevels >= 2 && (
+              <div className="rounded-2xl border border-amber-100 bg-white p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <h4 className="text-sm font-black text-amber-800">المستوى الثاني - الوحدة المتوسطة</h4>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 text-rose-600 hover:text-rose-700"
+                    onClick={() => handleRemoveLevel(2)}
+                  >
+                    <Trash2 className="size-4" /> إزالة
+                  </Button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+                  <FormField id="level2_name" label="اسم الوحدة">
+                    <Input
+                      value={form.level2_name}
+                      onChange={(e) => set("level2_name", e.target.value)}
+                      placeholder="مثال: شريط"
+                      className="h-11 rounded-xl"
+                    />
+                  </FormField>
+                  <FormField id="level2_qty_in_level1" label={`عدد ${form.level1_name || "الوحدة الصغرى"} لكل ${form.level2_name || "وحدة"}`}>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="1"
+                      inputMode="numeric"
+                      value={form.level2_qty_in_level1}
+                      onChange={(e) => set("level2_qty_in_level1", e.target.value)}
+                      placeholder="مثال: 10"
+                      className="h-11 rounded-xl"
+                    />
+                  </FormField>
+                  <FormField id="level2_barcode" label="باركود">
+                    <Input
+                      value={form.level2_barcode}
+                      onChange={(e) => set("level2_barcode", e.target.value)}
+                      className="h-11 rounded-xl"
+                      dir="ltr"
+                    />
+                  </FormField>
+                  <FormField id="level2_sell_price" label="سعر البيع">
+                    <Input
+                      type="number"
+                      min="0"
+                      value={form.level2_sell_price}
+                      onChange={(e) => set("level2_sell_price", e.target.value)}
+                      className="h-11 rounded-xl"
+                    />
+                  </FormField>
+                  <FormField id="level2_old_price" label="سعر البيع القديم">
+                    <Input
+                      type="number"
+                      min="0"
+                      value={form.level2_old_price}
+                      onChange={(e) => set("level2_old_price", e.target.value)}
+                      className="h-11 rounded-xl"
+                    />
+                  </FormField>
+                  <div className="flex items-end pb-2">
+                    <InventoryToggle
+                      label="متاح للبيع"
+                      checked={form.level2_sellable}
+                      onChange={(value) => set("level2_sellable", value)}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+            {activeUnitLevels >= 3 && (
+              <div className="rounded-2xl border border-emerald-100 bg-white p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <h4 className="text-sm font-black text-emerald-800">المستوى الثالث - الوحدة الرئيسية (الحد الأعلى)</h4>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 text-rose-600 hover:text-rose-700"
+                    onClick={() => handleRemoveLevel(3)}
+                  >
+                    <Trash2 className="size-4" /> إزالة
+                  </Button>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+                  <FormField id="level3_name" label="اسم الوحدة">
+                    <Input
+                      value={form.level3_name}
+                      onChange={(e) => set("level3_name", e.target.value)}
+                      placeholder="مثال: علبة"
+                      className="h-11 rounded-xl"
+                    />
+                  </FormField>
+                  <FormField id="level3_qty_in_level2" label={`عدد ${form.level2_name || "الوحدة المتوسطة"} لكل ${form.level3_name || "وحدة"}`}>
+                    <Input
+                      type="number"
+                      min="1"
+                      step="1"
+                      inputMode="numeric"
+                      value={form.level3_qty_in_level2}
+                      onChange={(e) => set("level3_qty_in_level2", e.target.value)}
+                      placeholder="مثال: 3"
+                      className="h-11 rounded-xl"
+                    />
+                  </FormField>
+                  <FormField id="level3_barcode" label="باركود">
+                    <Input
+                      value={form.level3_barcode}
+                      onChange={(e) => set("level3_barcode", e.target.value)}
+                      className="h-11 rounded-xl"
+                      dir="ltr"
+                    />
+                  </FormField>
+                  <FormField id="level3_sell_price" label="سعر البيع">
+                    <Input
+                      type="number"
+                      min="0"
+                      value={form.level3_sell_price}
+                      onChange={(e) => set("level3_sell_price", e.target.value)}
+                      className="h-11 rounded-xl"
+                    />
+                  </FormField>
+                  <FormField id="level3_old_price" label="سعر البيع القديم">
+                    <Input
+                      type="number"
+                      min="0"
+                      value={form.level3_old_price}
+                      onChange={(e) => set("level3_old_price", e.target.value)}
+                      className="h-11 rounded-xl"
+                    />
+                  </FormField>
+                  <div className="flex items-end pb-2">
+                    <InventoryToggle
+                      label="متاح للبيع"
+                      checked={form.level3_sellable}
+                      onChange={(value) => set("level3_sellable", value)}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+            {activeUnitLevels < 3 && (
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 rounded-xl"
+                onClick={handleAddLevel}
+              >
+                <Plus className="size-4" />{" "}
+                {activeUnitLevels === 1 ? "إضافة مستوى أعلى" : "إضافة مستوى ثالث"}
+              </Button>
+            )}
+            <div className="rounded-2xl border border-sky-100 bg-white p-3 text-sm font-black text-sky-900">
+              {(() => {
+                const l1 = form.level1_name.trim();
+                const l2 = form.level2_name.trim();
+                const l3 = form.level3_name.trim();
+                const q12 = Math.max(1, Number(form.level2_qty_in_level1) || 1);
+                const q23 = Math.max(1, Number(form.level3_qty_in_level2) || 1);
+                if (l3 && l2)
+                  return `1 ${l3} = ${q23.toLocaleString("ar-EG")} ${l2} = ${(q23 * q12).toLocaleString("ar-EG")} ${l1}`;
+                if (l2) return `1 ${l2} = ${q12.toLocaleString("ar-EG")} ${l1}`;
+                return l1 ? `الوحدة الحالية: ${l1}` : "حدد اسم الوحدة الأساسية";
+              })()}
             </div>
           </div>
         </AddItemSection>
@@ -1018,7 +1414,7 @@ export function ItemCreateView({
           </div>
         </AddItemSection>
 
-        <AddItemSection title="التسعير والضرائب" icon={<Package className="size-5" />}>
+        <AddItemSection title="الشراء والضرائب" icon={<Package className="size-5" />}>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <FormField id="purchase_price_including_tax" label="سعر الشراء شامل الضريبة">
               <Input
@@ -1048,24 +1444,6 @@ export function ItemCreateView({
                 min="0"
                 value={form.buy_price}
                 onChange={(e) => set("buy_price", e.target.value)}
-                className="h-11 rounded-xl"
-              />
-            </FormField>
-            <FormField id="sell_price" label="سعر البيع">
-              <Input
-                type="number"
-                min="0"
-                value={form.sell_price}
-                onChange={(e) => set("sell_price", e.target.value)}
-                className="h-11 rounded-xl"
-              />
-            </FormField>
-            <FormField id="old_sell_price" label="سعر البيع القديم">
-              <Input
-                type="number"
-                min="0"
-                value={form.old_sell_price}
-                onChange={(e) => set("old_sell_price", e.target.value)}
                 className="h-11 rounded-xl"
               />
             </FormField>

@@ -48,7 +48,7 @@ import { useNetwork, useSyncStatus } from "@/hooks/use-data-layer"
 import { queueApiRequest } from "@/lib/sync/api-mutations"
 import { localDB } from "@/lib/sync/local-db"
 import { syncManager } from "@/lib/sync/sync-manager"
-import { loadOfflineCashierCatalog, loadOfflineOpenShift } from "@/features/sales/lib/offline-cashier"
+import { loadOfflineCashierCatalog, loadOfflineOpenShift, executeOfflineSale } from "@/features/sales/lib/offline-cashier"
 import { useSound } from "@/hooks/use-sound"
 import { cn } from "@/lib/utils"
 import { numberValue, escapeHtml, labelFromMap } from "@/lib/helpers"
@@ -72,6 +72,18 @@ type CashierProductBarcode = {
   is_primary?: boolean | null
 }
 
+type CashierProductUnit = {
+  id: string
+  unit_name: string
+  position: number
+  conversion_to_lowest: number
+  barcode: string | null
+  sell_price: number
+  old_sell_price: number | null
+  sale_enabled: boolean
+  is_base: boolean
+}
+
 type CashierProduct = {
   id: string
   name_ar: string
@@ -79,6 +91,7 @@ type CashierProduct = {
   sku?: string | null
   barcode?: string | null
   barcodes?: CashierProductBarcode[]
+  units?: CashierProductUnit[]
   unit?: string | null
   sell_price: number
   old_sell_price?: number | null
@@ -115,6 +128,11 @@ type CartLine = CashierProduct & {
   quantity: number
   discount: number
   unit_price: number
+  unitId: string | null
+  unitName: string
+  unitPosition: 1 | 2 | 3
+  conversionToBase: number
+  unitBarcode: string | null
 }
 
 type CustomerOption = { id: string; name: string; phone?: string | null }
@@ -426,6 +444,9 @@ export function CashierView() {
   const [closeSummaryOpen, setCloseSummaryOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [discountDialogOpen, setDiscountDialogOpen] = useState(false)
+  const [unitSelectorOpen, setUnitSelectorOpen] = useState(false)
+  const [unitSelectorProduct, setUnitSelectorProduct] = useState<CashierProduct | null>(null)
+  const [unitSelectorSource, setUnitSelectorSource] = useState<"barcode" | "search" | "catalog">("catalog")
   const [closingShift, setClosingShift] = useState(false)
   const [shiftClosedPendingReset, setShiftClosedPendingReset] = useState(false)
   const [openingCash, setOpeningCash] = useState("0")
@@ -688,6 +709,11 @@ export function CashierView() {
         quantity: line.quantity,
         discount: line.discount,
         unit_price: line.unit_price,
+        unitId: line.unitId,
+        unitName: line.unitName,
+        unitPosition: line.unitPosition,
+        conversionToBase: line.conversionToBase,
+        unitBarcode: line.unitBarcode,
       }
     }))
   }, [catalogProducts])
@@ -1090,6 +1116,14 @@ export function CashierView() {
       return
     }
 
+    const sellableUnits = (product.units ?? []).filter((u) => u.sale_enabled)
+    if (sellableUnits.length > 1 && !lines.find((line) => line.id === product.id)) {
+      setUnitSelectorProduct(product)
+      setUnitSelectorSource(source)
+      setUnitSelectorOpen(true)
+      return
+    }
+
     const existing = lines.find((line) => line.id === product.id)
     const step = quantityStep(product)
     if (existing && saleItemBehavior === "warn") {
@@ -1108,12 +1142,52 @@ export function CashierView() {
       const batchText = showBatchInSales && product.nearest_batch_number ? ` — تشغيلة ${product.nearest_batch_number}` : ""
       toast.info(`سيتم الخصم FEFO من الأقرب انتهاءً: ${expiryLabel(product.nearest_expiry)}${batchText}`, { id: `fefo-${product.id}`, duration: 2800 })
     }
+    const defaultUnit = sellableUnits.length === 1 ? sellableUnits[0] : null
     setLines((current) => existing
-      ? current.map((line) => line.id === product.id ? { ...line, ...product, quantity: nextQuantity } : line)
-      : [...current, { ...product, quantity: nextQuantity, discount: 0, unit_price: effectiveProductPrice(product) }])
+      ? current.map((line) => line.id === product.id
+        ? { ...line, ...product, quantity: nextQuantity, unit_price: effectiveProductPrice(product) }
+        : line)
+      : [...current, {
+          ...product,
+          quantity: nextQuantity,
+          discount: 0,
+          unit_price: defaultUnit?.sell_price ?? effectiveProductPrice(product),
+          unitId: defaultUnit?.id ?? null,
+          unitName: defaultUnit?.unit_name ?? (product.unit ?? ""),
+          unitPosition: (defaultUnit?.position ?? 1) as 1 | 2 | 3,
+          conversionToBase: defaultUnit?.conversion_to_lowest ?? 1,
+          unitBarcode: defaultUnit?.barcode ?? null,
+        }])
     dismissStockAlert(product.id)
     setQuery("")
     setSearchFocused(false)
+    if (audioOnScan) void play(source === "barcode" ? "barcode-scan" : "item-added", cashierSoundVolume)
+    window.setTimeout(() => searchInputRef.current?.focus(), 20)
+  }
+
+  function addProductWithUnit(product: CashierProduct, unit: CashierProductUnit, source: "barcode" | "search" | "catalog") {
+    void unlockAudio()
+    if (!allowNegativeStock && product.manage_inventory && product.available_qty <= 0) {
+      registerStockAlert(product)
+      return
+    }
+    const step = quantityStep(product)
+    setLines((current) => [...current, {
+      ...product,
+      quantity: step,
+      discount: 0,
+      unit_price: unit.sell_price,
+      unitId: unit.id,
+      unitName: unit.unit_name,
+      unitPosition: unit.position as 1 | 2 | 3,
+      conversionToBase: unit.conversion_to_lowest,
+      unitBarcode: unit.barcode ?? null,
+    }])
+    dismissStockAlert(product.id)
+    setQuery("")
+    setSearchFocused(false)
+    setUnitSelectorOpen(false)
+    setUnitSelectorProduct(null)
     if (audioOnScan) void play(source === "barcode" ? "barcode-scan" : "item-added", cashierSoundVolume)
     window.setTimeout(() => searchInputRef.current?.focus(), 20)
   }
@@ -1286,11 +1360,16 @@ export function CashierView() {
       coupon_code: couponApplied ? couponApplied.code : null,
       lines: lines.map((line) => ({
         item_id: line.id,
-        barcode: primaryProductBarcode(line),
-        unit: line.unit,
+        barcode: line.unitBarcode ?? primaryProductBarcode(line),
+        unit: line.unitName || line.unit,
         quantity: line.quantity,
         unit_price: line.unit_price,
         discount: line.discount,
+        unit_id: line.unitId,
+        unit_name_snapshot: line.unitName || line.unit || null,
+        unit_level: line.unitId ? (line.unitPosition === 3 ? "primary" : line.unitPosition === 2 ? "secondary" : "tertiary") : null,
+        conversion_to_base: line.conversionToBase,
+        base_quantity_deducted: Math.round(line.quantity * line.conversionToBase * 1000) / 1000,
       })),
       patient_name: patientName || null,
       doctor_name: doctorName || null,
@@ -1349,11 +1428,32 @@ export function CashierView() {
         toast.error(message, { duration: 7000 })
         void play("error", cashierSoundVolume)
       } else {
-        await queueApiRequest({ path: "/api/sales/cashier", method: "POST", body: { ...payload, saved_at: new Date().toISOString() }, label: "فاتورة بيع أوفلاين" })
-        await syncManager.refreshPending()
-        clearInvoice()
-        toast.warning("تم حفظ الفاتورة في طابور المزامنة الآمن", { duration: 3200 })
-        void play("notification", Math.min(cashierSoundVolume, 0.4))
+        let localSuccess = true
+        for (const line of lines) {
+          const sellLevel = line.unitPosition === 3 ? "primary" as const : line.unitPosition === 2 ? "secondary" as const : "tertiary" as const
+          const offlineResult = await executeOfflineSale({
+            itemId: line.id,
+            itemName: line.name_ar,
+            sellLevel,
+            sellQuantity: line.quantity,
+            pharmacyId: pharmacyId!,
+            branchId: branchId!,
+          })
+          if (!offlineResult.success) {
+            localSuccess = false
+            setSaleError(offlineResult.error ?? "فشل تنفيذ البيع محليًا")
+            toast.error(offlineResult.error ?? "فشل تنفيذ البيع محليًا", { duration: 7000 })
+            void play("error", cashierSoundVolume)
+            break
+          }
+        }
+        if (localSuccess) {
+          await queueApiRequest({ path: "/api/sales/cashier", method: "POST", body: { ...payload, saved_at: new Date().toISOString() }, label: "فاتورة بيع أوفلاين" })
+          await syncManager.refreshPending()
+          clearInvoice()
+          toast.warning("تم حفظ الفاتورة في طابور المزامنة الآمن", { duration: 3200 })
+          void play("notification", Math.min(cashierSoundVolume, 0.4))
+        }
       }
     } finally {
       setSaving(false)
@@ -1432,7 +1532,7 @@ export function CashierView() {
       event.preventDefault()
       const value = query.trim().toLowerCase()
       const exactMatch = value
-        ? products.find((product) => [product.sku, product.barcode, primaryProductBarcode(product), ...(product.barcodes ?? []).map((barcode) => barcode.barcode)].some((code) => code?.toLowerCase() === value))
+        ? products.find((product) => [product.sku, product.barcode, primaryProductBarcode(product), ...(product.barcodes ?? []).map((barcode) => barcode.barcode), ...(product.units ?? []).map((u) => u.barcode)].some((code) => code?.toLowerCase() === value))
         : null
       addProduct(exactMatch ?? products[0], exactMatch ? "barcode" : "search")
     }
@@ -1802,7 +1902,17 @@ export function CashierView() {
                                   <span className="text-[10px] font-black text-slate-400">فعلي {stockQuantityLabel(numberValue(product.physical_qty))}</span>
                                 ) : null}
                               </span>
-                              <span className="shrink-0 text-left text-lg font-black text-brand tabular-nums">{showItemPrice ? money(effectiveProductPrice(product), currency) : ""}</span>
+                              <span className="shrink-0 text-left text-lg font-black text-brand tabular-nums">
+                                {showItemPrice
+                                  ? (() => {
+                                      const sellableUnits = (product.units ?? []).filter((u) => u.sale_enabled)
+                                      if (sellableUnits.length > 1) {
+                                        return sellableUnits.map((u) => `${money(u.sell_price, currency)}/${u.unit_name}`).join(" • ")
+                                      }
+                                      return money(effectiveProductPrice(product), currency)
+                                    })()
+                                  : ""}
+                              </span>
                             </button>
                           )
                         })}
@@ -1923,7 +2033,15 @@ export function CashierView() {
                                 ) : null}
                               </span>
                               <span className="flex shrink-0 flex-col items-end gap-1">
-                                <span className="text-sm font-black text-brand tabular-nums">{showItemPrice ? money(effectiveProductPrice(product), currency) : ""}</span>
+                                <span className="text-sm font-black text-brand tabular-nums">
+                                {showItemPrice
+                                  ? (() => {
+                                      const sellableUnits = (product.units ?? []).filter((u) => u.sale_enabled)
+                                      if (sellableUnits.length > 1) return sellableUnits.map((u) => `${money(u.sell_price, currency)}/${u.unit_name}`).join(" • ")
+                                      return money(effectiveProductPrice(product), currency)
+                                    })()
+                                  : ""}
+                              </span>
                                 <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-black", low ? "bg-rose-100 text-rose-700" : "bg-emerald-50 text-emerald-700")}>
                                   {showItemStock ? (product.manage_inventory ? `صالح ${stockQuantityLabel(product.available_qty)}` : "خدمة") : ""}
                                 </span>
@@ -1963,7 +2081,7 @@ export function CashierView() {
                             {line.manage_inventory ? (
                               <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] font-black">
                                 <span className={cn("rounded-full px-2 py-0.5", line.available_qty > 0 ? "bg-emerald-50 text-emerald-700" : "bg-rose-50 text-rose-700")}>
-                                  صالح للبيع {stockQuantityLabel(line.available_qty)} {line.unit ?? ""}
+                                  صالح للبيع {stockQuantityLabel(line.available_qty)} {line.unitName || line.unit ?? ""}
                                 </span>
                                 {numberValue(line.physical_qty, line.available_qty) !== line.available_qty ? (
                                   <span className="rounded-full bg-slate-100 px-2 py-0.5 text-slate-500">فعلي {stockQuantityLabel(numberValue(line.physical_qty))}</span>
@@ -1982,16 +2100,19 @@ export function CashierView() {
                           <TableCell>
                             <div className="flex items-center justify-center gap-1">
                               <Button size="icon" variant="outline" className="size-8 rounded-lg" onClick={() => updateLine(line.id, { quantity: line.quantity - quantityStep(line) })}><Minus className="size-3" /></Button>
-                              <Input
-                                className="h-8 w-20 rounded-lg text-center font-black"
-                                dir="ltr"
-                                inputMode="decimal"
-                                min={quantityStep(line)}
-                                max={line.manage_inventory && !allowNegativeStock ? line.available_qty : undefined}
-                                step={quantityStep(line)}
-                                value={line.quantity}
-                                onChange={(e) => updateLine(line.id, { quantity: e.target.value })}
-                              />
+                              <div className="flex items-center gap-1">
+                                <Input
+                                  className="h-8 w-16 rounded-lg text-center font-black"
+                                  dir="ltr"
+                                  inputMode="decimal"
+                                  min={quantityStep(line)}
+                                  max={line.manage_inventory && !allowNegativeStock ? line.available_qty : undefined}
+                                  step={quantityStep(line)}
+                                  value={line.quantity}
+                                  onChange={(e) => updateLine(line.id, { quantity: e.target.value })}
+                                />
+                                <span className="text-xs font-black text-slate-500 whitespace-nowrap">{line.unitName || line.unit || ""}</span>
+                              </div>
                               <Button size="icon" variant="outline" className="size-8 rounded-lg" onClick={() => updateLine(line.id, { quantity: line.quantity + quantityStep(line) })}><Plus className="size-3" /></Button>
                             </div>
                           </TableCell>
@@ -2211,6 +2332,32 @@ export function CashierView() {
                 استخدام {money(calculatorResult, currency)} كمدفوع
               </Button>
             </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={unitSelectorOpen} onOpenChange={(open) => { if (!open) { setUnitSelectorOpen(false); setUnitSelectorProduct(null) } }}>
+          <DialogContent dir="rtl" className="z-[140] max-w-[400px] rounded-3xl border-slate-200 bg-white p-5 shadow-2xl">
+            <DialogHeader className="text-right">
+              <DialogTitle className="flex items-center gap-2 text-lg font-black text-slate-950">
+                <Package className="size-5 text-brand" /> اختر وحدة البيع
+              </DialogTitle>
+              <DialogDescription className="font-bold">
+                {unitSelectorProduct?.name_ar ?? ""} — اختر الوحدة التي تريد البيع بها
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-2 py-2">
+              {(unitSelectorProduct?.units ?? []).filter((u) => u.sale_enabled).map((unit) => (
+                <button
+                  key={unit.id}
+                  type="button"
+                  onClick={() => { if (unitSelectorProduct) addProductWithUnit(unitSelectorProduct, unit, unitSelectorSource) }}
+                  className="flex w-full items-center justify-between rounded-2xl border-2 border-transparent bg-slate-50 p-4 text-right transition hover:border-brand/30 hover:bg-brand/[0.03] hover:shadow-sm"
+                >
+                  <span className="font-black text-slate-950">{unit.unit_name}</span>
+                  <span className="text-lg font-black text-brand">{money(unit.sell_price, currency)}</span>
+                </button>
+              ))}
+            </div>
           </DialogContent>
         </Dialog>
       </section>
