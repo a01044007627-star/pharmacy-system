@@ -82,7 +82,7 @@ export class PayrollRepository {
     if (params.period) query = query.eq("period", params.period)
     const { data, error } = await query
     if (error) throw error
-    const rows = await this.relations.attachBranches((data ?? []) as PayrollRunRow[])
+    const rows = await this.relations.attachBranches((data ?? []) as unknown as PayrollRunRow[])
     return rows as PayrollRunRow[]
   }
 
@@ -95,7 +95,7 @@ export class PayrollRepository {
       .maybeSingle()
     if (error) throw error
     if (!data) throw new RouteHttpError("كشف الرواتب غير موجود", 404, "PAYROLL_RUN_NOT_FOUND")
-    const [run] = await this.relations.attachBranches([data as PayrollRunRow]) as PayrollRunRow[]
+    const [run] = await this.relations.attachBranches([data as unknown as PayrollRunRow]) as PayrollRunRow[]
     return run
   }
 
@@ -107,7 +107,7 @@ export class PayrollRepository {
       .eq("run_id", runId)
       .order("employee_name")
     if (error) throw error
-    const rows = await this.relations.attachEmployees((data ?? []) as PayrollLineRow[])
+    const rows = await this.relations.attachEmployees((data ?? []) as unknown as PayrollLineRow[])
     return rows as PayrollLineRow[]
   }
 

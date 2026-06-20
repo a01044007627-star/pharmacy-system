@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Ban, CalendarClock, Check, RefreshCw, X } from "lucide-react"
+import { CalendarClock, Check, RefreshCw, X, XCircle } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { EmptyState, SkeletonRows } from "@/components/shared/empty-state"
@@ -210,7 +210,7 @@ export function LeaveView() {
                   {canWrite ? <TableCell className="text-center"><div className="flex items-center justify-center gap-1">
                     {next.includes(LeaveStatus.Approved) ? <Button size="icon" variant="ghost" aria-label="اعتماد" className="text-emerald-600" onClick={() => void transition(record, LeaveStatus.Approved)}><Check className="size-4" /></Button> : null}
                     {next.includes(LeaveStatus.Rejected) ? <Button size="icon" variant="ghost" aria-label="رفض" className="text-rose-600" onClick={() => void transition(record, LeaveStatus.Rejected)}><X className="size-4" /></Button> : null}
-                    {next.includes(LeaveStatus.Cancelled) ? <Button size="icon" variant="ghost" aria-label="إلغاء" className="text-slate-500" onClick={() => void transition(record, LeaveStatus.Cancelled)}><Ban className="size-4" /></Button> : null}
+                    {next.includes(LeaveStatus.Cancelled) ? <Button size="icon" variant="ghost" aria-label="إلغاء" className="text-slate-500" onClick={() => void transition(record, LeaveStatus.Cancelled)}><XCircle className="size-4" /></Button> : null}
                     {next.length === 0 ? <span className="text-xs text-slate-400">مغلق</span> : null}
                   </div></TableCell> : null}
                 </TableRow>

@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Ban, CheckCircle2, DollarSign, RefreshCw, Wallet } from "lucide-react"
+import { CheckCircle2, DollarSign, RefreshCw, Wallet, XCircle } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { DashboardPageHeader } from "@/components/shared/page-ui"
@@ -193,7 +193,7 @@ export function PayrollView() {
                   <Button className="rounded-xl" disabled={saving} onClick={() => void runAction("pay")}><DollarSign className="size-4" /> صرف وتسجيل القيد</Button>
                 </>
               ) : null}
-              {canWrite && [PayrollRunStatus.Draft, PayrollRunStatus.Approved].includes(run.status) ? <Button variant="destructive" className="rounded-xl" disabled={saving} onClick={() => void runAction("cancel")}><Ban className="size-4" /> إلغاء</Button> : null}
+              {canWrite && [PayrollRunStatus.Draft, PayrollRunStatus.Approved].includes(run.status) ? <Button variant="destructive" className="rounded-xl" disabled={saving} onClick={() => void runAction("cancel")}><XCircle className="size-4" /> إلغاء</Button> : null}
             </div>
           </CardContent></Card>
         ) : null}
@@ -201,14 +201,14 @@ export function PayrollView() {
         <Card className="overflow-hidden rounded-3xl border-slate-200 shadow-sm">
           {loading ? <SkeletonRows count={7} /> : !run ? (
             <EmptyState icon={Wallet} title="لا يوجد كشف لهذه الفترة" description="أنشئ مسودة ليتم حساب الاستحقاقات من بيانات الموظفين والحضور والإجازات." />
-          ) : data.lines.length === 0 ? (
+          ) : data!.lines.length === 0 ? (
             <EmptyState icon={Wallet} title="الكشف بلا موظفين" description="راجع بيانات الموظفين النشطين ثم أعد إنشاء الكشف." />
           ) : (
             <Table className="min-w-[1350px]">
               <TableHeader><TableRow>
                 <TableHead className="text-right">الموظف</TableHead><TableHead className="text-right">الوظيفة</TableHead><TableHead className="text-center">نوع الراتب</TableHead><TableHead className="text-center">أيام مستحقة</TableHead><TableHead className="text-center">غياب</TableHead><TableHead className="text-center">إجازة مدفوعة</TableHead><TableHead className="text-center">ساعات</TableHead><TableHead className="text-center">الأساسي</TableHead><TableHead className="text-center">الإضافات</TableHead><TableHead className="text-center">الخصومات</TableHead><TableHead className="text-center">الصافي</TableHead><TableHead className="text-center">إجراء</TableHead>
               </TableRow></TableHeader>
-              <TableBody>{data.lines.map((line) => (
+              <TableBody>{data!.lines.map((line) => (
                 <TableRow key={line.id}>
                   <TableCell className="font-black text-brand">{line.employee_name}</TableCell>
                   <TableCell className="font-bold">{line.position ?? "—"}</TableCell>
