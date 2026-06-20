@@ -1,35 +1,27 @@
 import { NextResponse } from "next/server"
-import type { SupabaseClient } from "@supabase/supabase-js"
-import { createAdminClient } from "@/lib/supabase/admin"
-import { createClient } from "@/lib/supabase/server"
-import { getServerAuthScope } from "@/lib/auth/session"
-import { requireActivePharmacy, scopeCan } from "@/lib/auth/server-permissions"
+import { writeAuditLog } from "@/lib/audit/audit-log"
 import { HrRepository } from "@/lib/server/hr-repository"
-import { operationalErrorResponse } from "@/lib/server/tenant-request-context"
-
-function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
-  return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
-}
+import {
+  operationalErrorResponse,
+  RouteHttpError,
+  TenantRequestContext,
+} from "@/lib/server/tenant-request-context"
 
 function clean(value: unknown) {
-  return typeof value === "string" ? value.trim() : ""
+  return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : ""
 }
 
 export async function GET(request: Request) {
   try {
-    const url = new URL(request.url)
-    const scope = await getServerAuthScope({ requestedPharmacyId: url.searchParams.get("pharmacy_id") })
-    if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
-    if (!scopeCan(scope, "hr:read")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
-    const pharmacyId = requireActivePharmacy(scope)
-
-    const supabase = await createClient()
-    const db = getDbClient(supabase) as SupabaseClient
-    const repository = new HrRepository(db, pharmacyId)
+    const tenant = await TenantRequestContext.from(request, {
+      permission: "hr:read",
+      forbiddenMessage: "ليست لديك صلاحية عرض الحضور",
+    })
+    const repository = new HrRepository(tenant.db, tenant.pharmacyId)
     const records = await repository.listAttendance({
-      dateKey: clean(url.searchParams.get("date")) || undefined,
-      employeeId: clean(url.searchParams.get("employee_id")) || undefined,
-      limit: 100,
+      dateKey: tenant.text("date") || undefined,
+      employeeId: tenant.text("employee_id") || undefined,
+      limit: tenant.integer("limit", 100, 10, 500),
     })
 
     return NextResponse.json({ records })
@@ -40,27 +32,48 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
-    const scope = await getServerAuthScope({ requestedPharmacyId: clean(body.pharmacy_id) || null })
-    if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
-    if (!scopeCan(scope, "hr:write")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
-    const pharmacyId = requireActivePharmacy(scope)
+    const body = await request.json().catch(() => ({})) as Record<string, unknown>
+    const tenant = await TenantRequestContext.forMutation(request, body, {
+      permission: "hr:write",
+      forbiddenMessage: "ليست لديك صلاحية تسجيل الحضور",
+    })
     const employeeId = clean(body.employee_id)
-    if (!employeeId) return NextResponse.json({ error: "اختر الموظف" }, { status: 400 })
+    if (!employeeId) throw new RouteHttpError("اختر الموظف", 400, "EMPLOYEE_REQUIRED")
 
-    const supabase = await createClient()
-    const db = getDbClient(supabase) as SupabaseClient
-    const repository = new HrRepository(db, pharmacyId)
-    const action = clean(body.action)
+    const repository = new HrRepository(tenant.db, tenant.pharmacyId)
+    const action = clean(body.action) || "check-in"
 
     if (action === "check-out") {
-      return NextResponse.json(await repository.checkOut(employeeId))
+      const record = await repository.checkOut(employeeId)
+      await writeAuditLog(tenant.db, {
+        pharmacyId: tenant.pharmacyId,
+        branchId: tenant.branchId,
+        actorId: tenant.actorId,
+        eventType: "attendance.checked_out",
+        source: "hr",
+        description: "تم تسجيل انصراف الموظف",
+        metadata: { employee_id: employeeId, attendance_id: record?.id, hours_worked: record?.hours_worked },
+      })
+      return NextResponse.json(record)
+    }
+
+    if (action !== "check-in") {
+      throw new RouteHttpError("إجراء الحضور غير صالح", 400, "INVALID_ATTENDANCE_ACTION")
     }
 
     const record = await repository.checkIn({
       employeeId,
       notes: clean(body.notes) || null,
       status: clean(body.status) || null,
+    })
+    await writeAuditLog(tenant.db, {
+      pharmacyId: tenant.pharmacyId,
+      branchId: tenant.branchId,
+      actorId: tenant.actorId,
+      eventType: "attendance.checked_in",
+      source: "hr",
+      description: record?.status === "late" ? "تم تسجيل حضور متأخر" : "تم تسجيل حضور الموظف",
+      metadata: { employee_id: employeeId, attendance_id: record?.id, status: record?.status },
     })
     return NextResponse.json(record, { status: 201 })
   } catch (error) {

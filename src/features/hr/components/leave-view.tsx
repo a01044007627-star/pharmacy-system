@@ -1,11 +1,11 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
-import { CalendarClock, Check, RefreshCw, X } from "lucide-react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { Ban, CalendarClock, Check, RefreshCw, X } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
-import { DashboardPageHeader } from "@/components/shared/page-ui"
 import { EmptyState, SkeletonRows } from "@/components/shared/empty-state"
+import { DashboardPageHeader } from "@/components/shared/page-ui"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -14,28 +14,67 @@ import { Input } from "@/components/ui/input"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
+import { LeaveStatus, LeaveType } from "@/domain/hr/hr-types"
+import { leaveWorkflow } from "@/domain/hr/leave-workflow"
+import { apiClient } from "@/lib/http/api-client"
 import { cn } from "@/lib/utils"
 
 type LeaveRecord = {
   id: string
   employee_id: string
-  type: string
+  type: LeaveType
   start_date: string
   end_date: string
   days_used: number
   reason: string | null
-  status: string
+  status: LeaveStatus
   employee: { id: string; name: string; position: string | null } | null
+}
+
+type EmployeeOption = { id: string; name: string }
+type EmployeeResponse = { employees: EmployeeOption[] }
+
+type LeaveForm = {
+  employee_id: string
+  type: LeaveType
+  start_date: string
+  end_date: string
+  reason: string
+}
+
+const leaveTypeLabels: Record<LeaveType, string> = {
+  [LeaveType.Annual]: "سنوية",
+  [LeaveType.Sick]: "مرضية",
+  [LeaveType.Emergency]: "عارضة",
+  [LeaveType.Unpaid]: "بدون راتب",
+}
+
+const leaveStatusLabels: Record<LeaveStatus, string> = {
+  [LeaveStatus.Pending]: "قيد الانتظار",
+  [LeaveStatus.Approved]: "معتمد",
+  [LeaveStatus.Rejected]: "مرفوض",
+  [LeaveStatus.Cancelled]: "ملغي",
+}
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function defaultForm(): LeaveForm {
+  const today = todayKey()
+  return { employee_id: "", type: LeaveType.Annual, start_date: today, end_date: today, reason: "" }
 }
 
 export function LeaveView() {
   const auth = useAuth()
+  const canWrite = auth.isDeveloper || auth.isOwner || auth.can("hr:write")
   const [records, setRecords] = useState<LeaveRecord[]>([])
+  const [employees, setEmployees] = useState<EmployeeOption[]>([])
   const [loading, setLoading] = useState(true)
-  const [statusFilter, setStatusFilter] = useState("all")
+  const [saving, setSaving] = useState(false)
+  const [statusFilter, setStatusFilter] = useState<"all" | LeaveStatus>("all")
   const [open, setOpen] = useState(false)
-  const [form, setForm] = useState({ employee_id: "", date: new Date().toISOString().split("T")[0], reason: "" })
-  const [employees, setEmployees] = useState<{ id: string; name: string }[]>([])
+  const [form, setForm] = useState<LeaveForm>(() => defaultForm())
 
   const load = useCallback(async () => {
     if (!auth.activePharmacyId) {
@@ -45,10 +84,10 @@ export function LeaveView() {
     }
     setLoading(true)
     try {
-      const params = new URLSearchParams({ pharmacy_id: auth.activePharmacyId, status: statusFilter })
-      const response = await fetch(`/api/hr/leave?${params.toString()}`, { cache: "no-store" })
-      const data = await response.json().catch(() => ({})) as { records?: LeaveRecord[]; error?: string }
-      if (!response.ok) throw new Error(data.error ?? "فشل تحميل الإجازات")
+      const data = await apiClient.get<{ records: LeaveRecord[] }>("/api/hr/leave", {
+        query: { pharmacy_id: auth.activePharmacyId, status: statusFilter },
+        fallbackMessage: "فشل تحميل الإجازات",
+      })
       setRecords(data.records ?? [])
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "فشل تحميل الإجازات")
@@ -57,114 +96,168 @@ export function LeaveView() {
     }
   }, [auth.activePharmacyId, auth.loading, statusFilter])
 
-  useEffect(() => { void load() }, [load])
-
-  useEffect(() => {
-    if (!auth.activePharmacyId) return
-    fetch(`/api/hr/employees?pharmacy_id=${auth.activePharmacyId}&page_size=500`, { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d) => setEmployees((d.employees ?? []).map((e: { id: string; name: string }) => ({ id: e.id, name: e.name }))))
-      .catch(() => {})
+  const loadEmployees = useCallback(async () => {
+    if (!auth.activePharmacyId) return setEmployees([])
+    try {
+      const data = await apiClient.get<EmployeeResponse>("/api/hr/employees", {
+        query: { pharmacy_id: auth.activePharmacyId, is_active: "active", page_size: 100 },
+        fallbackMessage: "فشل تحميل الموظفين",
+      })
+      setEmployees(data.employees ?? [])
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "فشل تحميل الموظفين")
+    }
   }, [auth.activePharmacyId])
 
-  const handleAdd = async () => {
-    if (!form.employee_id) { toast.error("اختر الموظف"); return }
+  useEffect(() => { void load() }, [load])
+  useEffect(() => { void loadEmployees() }, [loadEmployees])
+
+  const createLeave = async () => {
+    if (!form.employee_id) return toast.error("اختر الموظف")
+    if (!form.start_date || !form.end_date) return toast.error("حدد فترة الإجازة")
+    if (form.end_date < form.start_date) return toast.error("تاريخ النهاية يجب ألا يسبق البداية")
+    if (!auth.activePharmacyId) return toast.error("اختر صيدلية أولًا")
+
+    setSaving(true)
     try {
-      const response = await fetch("/api/hr/leave", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...form, pharmacy_id: auth.activePharmacyId }) })
-      const data = await response.json().catch(() => ({})) as { error?: string }
-      if (!response.ok) throw new Error(data.error ?? "فشل تسجيل الإجازة")
-      toast.success("تم تسجيل الإجازة"); setOpen(false); setForm({ employee_id: "", date: new Date().toISOString().split("T")[0], reason: "" }); void load()
+      await apiClient.post("/api/hr/leave", {
+        ...form,
+        pharmacy_id: auth.activePharmacyId,
+      }, { fallbackMessage: "فشل تسجيل الإجازة" })
+      toast.success("تم إنشاء طلب الإجازة كطلب قيد المراجعة")
+      setOpen(false)
+      setForm(defaultForm())
+      await load()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "فشل تسجيل الإجازة")
+    } finally {
+      setSaving(false)
     }
   }
 
-  const handleStatus = async (id: string, status: string) => {
+  const transition = async (record: LeaveRecord, status: LeaveStatus) => {
+    if (!auth.activePharmacyId) return
     try {
-      const response = await fetch("/api/hr/leave", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, status, pharmacy_id: auth.activePharmacyId }) })
-      const data = await response.json().catch(() => ({})) as { error?: string }
-      if (!response.ok) throw new Error(data.error ?? "فشل تحديث الإجازة")
-      toast.success(status === "approved" ? "تم الموافقة" : "تم الرفض"); void load()
+      await apiClient.patch("/api/hr/leave", {
+        id: record.id,
+        status,
+        pharmacy_id: auth.activePharmacyId,
+      }, { fallbackMessage: "فشل تحديث الإجازة" })
+      toast.success(status === LeaveStatus.Approved ? "تم اعتماد الإجازة" : status === LeaveStatus.Rejected ? "تم رفض الإجازة" : "تم إلغاء الإجازة")
+      await load()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل التحديث")
+      toast.error(error instanceof Error ? error.message : "فشل تحديث الإجازة")
     }
   }
+
+  const summary = useMemo(() => ({
+    pending: records.filter((record) => record.status === LeaveStatus.Pending).length,
+    approved: records.filter((record) => record.status === LeaveStatus.Approved).length,
+    totalDays: records.filter((record) => record.status === LeaveStatus.Approved).reduce((sum, record) => sum + Number(record.days_used || 0), 0),
+  }), [records])
 
   return (
     <PageAccess permission="hr:read">
       <section dir="rtl" className="page-container space-y-4 py-4 text-right sm:py-6">
-        <DashboardPageHeader title="إدارة الإجازات" subtitle="إجازات الموظفين والموافقة عليها." icon={CalendarClock} actions={
-          <>
+        <DashboardPageHeader
+          title="إدارة الإجازات"
+          subtitle="طلبات إجازة متعددة الأيام مع دورة اعتماد وإلغاء مضبوطة."
+          icon={CalendarClock}
+          actions={<>
             <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()}><RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث</Button>
-            {auth.can("hr:write") ? <Button className="h-10 rounded-xl" onClick={() => setOpen(true)}>طلب إجازة</Button> : null}
-          </>
-        } />
+            {canWrite ? <Button className="h-10 rounded-xl" onClick={() => setOpen(true)}>طلب إجازة</Button> : null}
+          </>}
+        />
 
-        <Card className="rounded-3xl border-slate-200 shadow-sm">
-          <CardContent className="p-4">
-            <NativeSelect value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="max-w-xs">
-              <NativeSelectOption value="all">كل الإجازات</NativeSelectOption>
-              <NativeSelectOption value="pending">قيد الانتظار</NativeSelectOption>
-              <NativeSelectOption value="approved">موافَق</NativeSelectOption>
-              <NativeSelectOption value="rejected">مرفوض</NativeSelectOption>
-            </NativeSelect>
-          </CardContent>
-        </Card>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Summary label="قيد المراجعة" value={summary.pending} />
+          <Summary label="المعتمدة في النتائج" value={summary.approved} tone="text-emerald-700" />
+          <Summary label="أيام الإجازات المعتمدة" value={summary.totalDays} tone="text-brand" />
+        </div>
+
+        <Card className="rounded-3xl border-slate-200 shadow-sm"><CardContent className="p-4">
+          <NativeSelect value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)} className="max-w-xs">
+            <NativeSelectOption value="all">كل الإجازات</NativeSelectOption>
+            {Object.values(LeaveStatus).map((status) => <NativeSelectOption key={status} value={status}>{leaveStatusLabels[status]}</NativeSelectOption>)}
+          </NativeSelect>
+        </CardContent></Card>
 
         <Card className="overflow-hidden rounded-3xl border-slate-200 shadow-sm">
           {loading ? <SkeletonRows count={6} /> : records.length === 0 ? (
-            <EmptyState icon={CalendarClock} title="لا توجد إجازات" description="لم يتم تسجيل أي إجازات بعد." />
+            <EmptyState icon={CalendarClock} title="لا توجد إجازات" description="لا توجد طلبات مطابقة للحالة المختارة." />
           ) : (
-            <Table className="min-w-[900px]">
+            <Table className="min-w-[1050px]">
               <TableHeader><TableRow>
-                <TableHead className="text-right">الموظف</TableHead><TableHead className="text-right">الوظيفة</TableHead><TableHead className="text-center">التاريخ</TableHead>
-                <TableHead className="text-center">السبب</TableHead><TableHead className="text-center">الحالة</TableHead>
-                {auth.can("hr:write") ? <TableHead className="text-center">إجراء</TableHead> : null}
+                <TableHead className="text-right">الموظف</TableHead>
+                <TableHead className="text-right">الوظيفة</TableHead>
+                <TableHead className="text-center">النوع</TableHead>
+                <TableHead className="text-center">الفترة</TableHead>
+                <TableHead className="text-center">الأيام</TableHead>
+                <TableHead className="text-center">السبب</TableHead>
+                <TableHead className="text-center">الحالة</TableHead>
+                {canWrite ? <TableHead className="text-center">الإجراء</TableHead> : null}
               </TableRow></TableHeader>
-              <TableBody>{records.map((row) => (
-                <TableRow key={row.id}>
-                  <TableCell className="font-black text-brand">{row.employee?.name ?? "—"}</TableCell>
-                  <TableCell className="font-bold">{row.employee?.position ?? "—"}</TableCell>
-                  <TableCell className="text-center text-xs font-bold">{new Date(`${row.start_date}T00:00:00`).toLocaleDateString("ar-EG")}</TableCell>
-                  <TableCell className="text-center text-xs font-bold max-w-[200px] truncate">{row.reason ?? "—"}</TableCell>
-                  <TableCell className="text-center">
-                    <Badge variant="outline" className={cn("font-black", row.status === "approved" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : row.status === "rejected" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-amber-200 bg-amber-50 text-amber-700")}>
-                      {row.status === "approved" ? "موافَق" : row.status === "rejected" ? "مرفوض" : "قيد الانتظار"}
-                    </Badge>
-                  </TableCell>
-                  {auth.can("hr:write") ? (
-                    <TableCell className="text-center">
-                      {row.status === "pending" ? (
-                        <div className="flex items-center justify-center gap-1">
-                          <Button size="icon" variant="ghost" className="text-emerald-600" onClick={() => void handleStatus(row.id, "approved")}><Check className="size-4" /></Button>
-                          <Button size="icon" variant="ghost" className="text-rose-600" onClick={() => void handleStatus(row.id, "rejected")}><X className="size-4" /></Button>
-                        </div>
-                      ) : <span className="text-xs text-slate-400">—</span>}
-                    </TableCell>
-                  ) : null}
+              <TableBody>{records.map((record) => {
+                const next = leaveWorkflow.next(record.status)
+                return <TableRow key={record.id}>
+                  <TableCell className="font-black text-brand">{record.employee?.name ?? "—"}</TableCell>
+                  <TableCell className="font-bold">{record.employee?.position ?? "—"}</TableCell>
+                  <TableCell className="text-center font-bold">{leaveTypeLabels[record.type] ?? record.type}</TableCell>
+                  <TableCell className="text-center text-xs font-bold">{formatDate(record.start_date)} — {formatDate(record.end_date)}</TableCell>
+                  <TableCell className="text-center font-black">{Number(record.days_used || 0).toLocaleString("ar-EG")}</TableCell>
+                  <TableCell className="max-w-[220px] truncate text-center text-xs font-bold">{record.reason ?? "—"}</TableCell>
+                  <TableCell className="text-center"><StatusBadge status={record.status} /></TableCell>
+                  {canWrite ? <TableCell className="text-center"><div className="flex items-center justify-center gap-1">
+                    {next.includes(LeaveStatus.Approved) ? <Button size="icon" variant="ghost" aria-label="اعتماد" className="text-emerald-600" onClick={() => void transition(record, LeaveStatus.Approved)}><Check className="size-4" /></Button> : null}
+                    {next.includes(LeaveStatus.Rejected) ? <Button size="icon" variant="ghost" aria-label="رفض" className="text-rose-600" onClick={() => void transition(record, LeaveStatus.Rejected)}><X className="size-4" /></Button> : null}
+                    {next.includes(LeaveStatus.Cancelled) ? <Button size="icon" variant="ghost" aria-label="إلغاء" className="text-slate-500" onClick={() => void transition(record, LeaveStatus.Cancelled)}><Ban className="size-4" /></Button> : null}
+                    {next.length === 0 ? <span className="text-xs text-slate-400">مغلق</span> : null}
+                  </div></TableCell> : null}
                 </TableRow>
-              ))}</TableBody>
+              })}</TableBody>
             </Table>
           )}
         </Card>
 
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog open={open} onOpenChange={(value) => { setOpen(value); if (!value) setForm(defaultForm()) }}>
           <DialogContent className="max-w-md">
-            <DialogHeader><DialogTitle className="font-black text-lg">طلب إجازة</DialogTitle></DialogHeader>
+            <DialogHeader><DialogTitle className="text-lg font-black">طلب إجازة</DialogTitle></DialogHeader>
             <div className="grid gap-3">
-              <div><label className="mb-1 block text-xs font-black text-slate-700">الموظف</label>
-                <NativeSelect value={form.employee_id} onChange={(e) => setForm((p) => ({ ...p, employee_id: e.target.value }))}>
-                  <NativeSelectOption value="">اختر موظفاً</NativeSelectOption>
-                  {employees.map((emp) => <NativeSelectOption key={emp.id} value={emp.id}>{emp.name}</NativeSelectOption>)}
-                </NativeSelect>
+              <Field label="الموظف *"><NativeSelect value={form.employee_id} onChange={(event) => setForm((previous) => ({ ...previous, employee_id: event.target.value }))}><NativeSelectOption value="">اختر موظفًا</NativeSelectOption>{employees.map((employee) => <NativeSelectOption key={employee.id} value={employee.id}>{employee.name}</NativeSelectOption>)}</NativeSelect></Field>
+              <Field label="نوع الإجازة"><NativeSelect value={form.type} onChange={(event) => setForm((previous) => ({ ...previous, type: event.target.value as LeaveType }))}>{Object.values(LeaveType).map((type) => <NativeSelectOption key={type} value={type}>{leaveTypeLabels[type]}</NativeSelectOption>)}</NativeSelect></Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="من *"><Input type="date" value={form.start_date} onChange={(event) => setForm((previous) => ({ ...previous, start_date: event.target.value, end_date: previous.end_date < event.target.value ? event.target.value : previous.end_date }))} /></Field>
+                <Field label="إلى *"><Input type="date" min={form.start_date} value={form.end_date} onChange={(event) => setForm((previous) => ({ ...previous, end_date: event.target.value }))} /></Field>
               </div>
-              <div><label className="mb-1 block text-xs font-black text-slate-700">التاريخ</label><Input type="date" value={form.date} onChange={(e) => setForm((p) => ({ ...p, date: e.target.value }))} className="h-10 rounded-xl" /></div>
-              <div><label className="mb-1 block text-xs font-black text-slate-700">السبب</label><Input value={form.reason} onChange={(e) => setForm((p) => ({ ...p, reason: e.target.value }))} className="h-10 rounded-xl" /></div>
+              <Field label="السبب"><Input value={form.reason} onChange={(event) => setForm((previous) => ({ ...previous, reason: event.target.value }))} /></Field>
             </div>
-            <DialogFooter><Button variant="outline" onClick={() => setOpen(false)}>إلغاء</Button><Button onClick={() => void handleAdd()}>إرسال الطلب</Button></DialogFooter>
+            <DialogFooter><Button variant="outline" disabled={saving} onClick={() => setOpen(false)}>إلغاء</Button><Button disabled={saving} onClick={() => void createLeave()}>{saving ? "جارٍ الحفظ..." : "إرسال الطلب"}</Button></DialogFooter>
           </DialogContent>
         </Dialog>
       </section>
     </PageAccess>
   )
+}
+
+function Summary({ label, value, tone = "text-slate-950" }: { label: string; value: number; tone?: string }) {
+  return <Card className="rounded-2xl border-slate-200 shadow-sm"><CardContent className="p-4"><p className="text-xs font-black text-slate-400">{label}</p><p className={cn("mt-2 text-xl font-black", tone)}>{value.toLocaleString("ar-EG")}</p></CardContent></Card>
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return <div><label className="mb-1 block text-xs font-black text-slate-700">{label}</label><div className="[&_input]:h-10 [&_input]:rounded-xl">{children}</div></div>
+}
+
+function formatDate(value: string) {
+  return new Date(`${value.slice(0, 10)}T00:00:00`).toLocaleDateString("ar-EG")
+}
+
+function StatusBadge({ status }: { status: LeaveStatus }) {
+  const tone = status === LeaveStatus.Approved
+    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+    : status === LeaveStatus.Rejected
+      ? "border-rose-200 bg-rose-50 text-rose-700"
+      : status === LeaveStatus.Cancelled
+        ? "border-slate-200 bg-slate-50 text-slate-600"
+        : "border-amber-200 bg-amber-50 text-amber-700"
+  return <Badge variant="outline" className={cn("font-black", tone)}>{leaveStatusLabels[status]}</Badge>
 }

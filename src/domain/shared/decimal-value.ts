@@ -11,12 +11,19 @@ function safeDecimal(value: DecimalInput, fallback = 0): Decimal {
   }
 }
 
+/**
+ * Immutable money value object.
+ *
+ * Calculations keep full decimal precision internally and only round at the
+ * system boundary (number/string/JSON). This avoids cumulative rounding drift
+ * in tax, discount, payroll and inventory valuation calculations.
+ */
 export class Money {
   static readonly SCALE = 2
   private readonly value: Decimal
 
   private constructor(value: DecimalInput) {
-    this.value = safeDecimal(value).toDecimalPlaces(Money.SCALE, Decimal.ROUND_HALF_UP)
+    this.value = safeDecimal(value)
   }
 
   static zero() {
@@ -71,12 +78,28 @@ export class Money {
     return this.value.isZero()
   }
 
+  equals(other: DecimalInput | Money) {
+    return this.value.equals(other instanceof Money ? other.value : safeDecimal(other))
+  }
+
+  greaterThan(other: DecimalInput | Money) {
+    return this.value.greaterThan(other instanceof Money ? other.value : safeDecimal(other))
+  }
+
+  lessThan(other: DecimalInput | Money) {
+    return this.value.lessThan(other instanceof Money ? other.value : safeDecimal(other))
+  }
+
+  private rounded() {
+    return this.value.toDecimalPlaces(Money.SCALE, Decimal.ROUND_HALF_UP)
+  }
+
   toNumber() {
-    return this.value.toNumber()
+    return this.rounded().toNumber()
   }
 
   toFixed() {
-    return this.value.toFixed(Money.SCALE)
+    return this.rounded().toFixed(Money.SCALE)
   }
 
   toJSON() {

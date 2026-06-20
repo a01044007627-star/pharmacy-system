@@ -12,4 +12,8 @@ describe("Money", () => {
   it("clamps non-negative amounts", () => {
     expect(Money.nonNegative(-5).toNumber()).toBe(0)
   })
+
+  it("does not accumulate intermediate rounding drift", () => {
+    expect(Money.from(100).divide(3).multiply(3).toNumber()).toBe(100)
+  })
 })

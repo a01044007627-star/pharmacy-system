@@ -1,35 +1,28 @@
 import { NextResponse } from "next/server"
-import type { SupabaseClient } from "@supabase/supabase-js"
-import { createAdminClient } from "@/lib/supabase/admin"
-import { createClient } from "@/lib/supabase/server"
-import { getServerAuthScope } from "@/lib/auth/session"
-import { requireActivePharmacy, scopeCan } from "@/lib/auth/server-permissions"
+import { LeaveStatus } from "@/domain/hr/hr-types"
+import { writeAuditLog } from "@/lib/audit/audit-log"
 import { HrRepository } from "@/lib/server/hr-repository"
-import { operationalErrorResponse } from "@/lib/server/tenant-request-context"
-
-function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
-  return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
-}
+import {
+  operationalErrorResponse,
+  RouteHttpError,
+  TenantRequestContext,
+} from "@/lib/server/tenant-request-context"
 
 function clean(value: unknown) {
-  return typeof value === "string" ? value.trim() : ""
+  return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : ""
 }
 
 export async function GET(request: Request) {
   try {
-    const url = new URL(request.url)
-    const scope = await getServerAuthScope({ requestedPharmacyId: url.searchParams.get("pharmacy_id") })
-    if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
-    if (!scopeCan(scope, "hr:read")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
-    const pharmacyId = requireActivePharmacy(scope)
-
-    const supabase = await createClient()
-    const db = getDbClient(supabase) as SupabaseClient
-    const repository = new HrRepository(db, pharmacyId)
+    const tenant = await TenantRequestContext.from(request, {
+      permission: "hr:read",
+      forbiddenMessage: "ليست لديك صلاحية عرض الإجازات",
+    })
+    const repository = new HrRepository(tenant.db, tenant.pharmacyId)
     const records = await repository.listLeave({
-      status: clean(url.searchParams.get("status")) || undefined,
-      employeeId: clean(url.searchParams.get("employee_id")) || undefined,
-      limit: 100,
+      status: tenant.text("status") || undefined,
+      employeeId: tenant.text("employee_id") || undefined,
+      limit: tenant.integer("limit", 100, 10, 500),
     })
 
     return NextResponse.json({ records })
@@ -40,23 +33,31 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
-    const scope = await getServerAuthScope({ requestedPharmacyId: clean(body.pharmacy_id) || null })
-    if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
-    if (!scopeCan(scope, "hr:write")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
-    const pharmacyId = requireActivePharmacy(scope)
+    const body = await request.json().catch(() => ({})) as Record<string, unknown>
+    const tenant = await TenantRequestContext.forMutation(request, body, {
+      permission: "hr:write",
+      forbiddenMessage: "ليست لديك صلاحية تسجيل الإجازات",
+    })
     const employeeId = clean(body.employee_id)
-    if (!employeeId) return NextResponse.json({ error: "اختر الموظف" }, { status: 400 })
+    if (!employeeId) throw new RouteHttpError("اختر الموظف", 400, "EMPLOYEE_REQUIRED")
 
-    const supabase = await createClient()
-    const db = getDbClient(supabase) as SupabaseClient
-    const repository = new HrRepository(db, pharmacyId)
+    const repository = new HrRepository(tenant.db, tenant.pharmacyId)
     const record = await repository.createLeave({
       employeeId,
       type: clean(body.type),
       startDate: clean(body.start_date) || clean(body.date),
       endDate: clean(body.end_date),
       reason: clean(body.reason) || null,
+    })
+
+    await writeAuditLog(tenant.db, {
+      pharmacyId: tenant.pharmacyId,
+      branchId: tenant.branchId,
+      actorId: tenant.actorId,
+      eventType: "leave.created",
+      source: "hr",
+      description: "تم إنشاء طلب إجازة جديد",
+      metadata: { leave_id: record.id, employee_id: employeeId, start_date: record.start_date, end_date: record.end_date },
     })
 
     return NextResponse.json(record, { status: 201 })
@@ -67,25 +68,38 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
-    const scope = await getServerAuthScope({ requestedPharmacyId: clean(body.pharmacy_id) || null })
-    if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
-    if (!scopeCan(scope, "hr:write")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
-    const pharmacyId = requireActivePharmacy(scope)
-    const recordId = clean(body.id)
-    if (!recordId) return NextResponse.json({ error: "اختر السجل" }, { status: 400 })
+    const body = await request.json().catch(() => ({})) as Record<string, unknown>
+    const tenant = await TenantRequestContext.forMutation(request, body, {
+      permission: "hr:write",
+      forbiddenMessage: "ليست لديك صلاحية تحديث الإجازات",
+    })
+    const id = clean(body.id)
+    const status = clean(body.status)
+    if (!id) throw new RouteHttpError("اختر طلب الإجازة", 400, "LEAVE_REQUIRED")
+    if (!status) throw new RouteHttpError("اختر الحالة الجديدة", 400, "LEAVE_STATUS_REQUIRED")
 
-    const supabase = await createClient()
-    const db = getDbClient(supabase) as SupabaseClient
-    const repository = new HrRepository(db, pharmacyId)
-    const record = await repository.updateLeaveStatus({
-      id: recordId,
-      status: clean(body.status) || "approved",
-      actorId: scope.user.id,
+    const repository = new HrRepository(tenant.db, tenant.pharmacyId)
+    const record = await repository.updateLeaveStatus({ id, status, actorId: tenant.actorId })
+
+    await writeAuditLog(tenant.db, {
+      pharmacyId: tenant.pharmacyId,
+      branchId: tenant.branchId,
+      actorId: tenant.actorId,
+      eventType: `leave.${record.status}`,
+      source: "hr",
+      description: leaveStatusDescription(record.status as LeaveStatus),
+      metadata: { leave_id: record.id, employee_id: record.employee_id, status: record.status },
     })
 
     return NextResponse.json(record)
   } catch (error) {
     return operationalErrorResponse(error, "hr/leave PATCH failed", "فشل تحديث الإجازة", 400)
   }
+}
+
+function leaveStatusDescription(status: LeaveStatus) {
+  if (status === LeaveStatus.Approved) return "تم اعتماد طلب الإجازة"
+  if (status === LeaveStatus.Rejected) return "تم رفض طلب الإجازة"
+  if (status === LeaveStatus.Cancelled) return "تم إلغاء طلب الإجازة"
+  return "تم تحديث طلب الإجازة"
 }

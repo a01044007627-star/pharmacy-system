@@ -91,13 +91,53 @@ requireText("src/app/api/purchases/orders/route.ts", ["sell_price", "received_qu
 requireText("src/app/api/purchases/orders/[orderId]/receive/route.ts", ["sellPrices", "receive_purchase_order_complete_v1"])
 requireText("src/features/purchases/components/purchase-order-receive-dialog.tsx", ["line.sell_price", "client_request_id"])
 
+requireText("src/domain/hr/payroll/payroll-types.ts", ["SalaryType", "PayrollRunStatus", "PayrollPaymentMethod"])
+requireText("src/domain/hr/payroll/payroll-calculator.ts", ["export class PayrollCalculator", "PayrollPeriod", "explicit_attendance_records"])
+requireText("src/domain/hr/payroll/payroll-workflow.ts", ["payrollRunWorkflow", "PayrollRunStatus.Approved", "PayrollRunStatus.Paid"])
+requireText("src/lib/server/payroll-repository.ts", ["export class PayrollRepository", "calculateDraftLines", "create_payroll_run_v1", "pay_payroll_run_v1"])
+requireText("src/app/api/hr/payroll/route.ts", ["PayrollRepository", "financials:write", "update-line", "payrollRunWorkflow"])
+requireText("src/features/hr/components/payroll-view.tsx", ["apiClient", "PayrollLineAdjustmentDialog", "صرف وتسجيل القيد"])
+rejectText("src/features/hr/components/payroll-view.tsx", ["await fetch("])
+requireText("supabase/migrations/20260621113000_payroll_domain_operations.sql", [
+  "pharmacy_payroll_runs",
+  "pharmacy_payroll_lines",
+  "create_payroll_run_v1",
+  "update_payroll_line_v1",
+  "transition_payroll_run_v1",
+  "pay_payroll_run_v1",
+  "trg_enforce_payroll_run_transition",
+  "pharmacy_financial_movements",
+])
+
+requireText("src/domain/hr/hr-types.ts", ["AttendanceStatus", "LeaveType", "LeaveStatus"])
+requireText("src/domain/hr/attendance-policy.ts", ["export class AttendancePolicy", "graceMinutes", "cairoMinutesOfDay"])
+requireText("src/domain/hr/leave-workflow.ts", ["leaveWorkflow", "LeaveStatus.Approved", "LeaveStatus.Cancelled"])
+requireText("src/lib/server/hr-repository.ts", ["export class HrRepository", "deactivateEmployee", "leaveWorkflow.assertTransition", "Money.nonNegative"])
+requireText("src/app/api/hr/employees/route.ts", ["TenantRequestContext", "HrRepository", "employee.deactivated"])
+rejectText("src/app/api/hr/employees/route.ts", [".delete()", "user_id: scope.user.id"])
+for (const view of [
+  "src/features/hr/components/employees-view.tsx",
+  "src/features/hr/components/attendance-view.tsx",
+  "src/features/hr/components/leave-view.tsx",
+]) {
+  requireText(view, ["apiClient"])
+  rejectText(view, ["await fetch(", "fetch(`/api/hr/"])
+}
+requireText("supabase/migrations/20260621114000_hr_workflow_integrity.sql", [
+  "enforce_employee_integrity_v1",
+  "prevent_employee_hard_delete_v1",
+  "enforce_leave_transition_v1",
+  "pharmacy_leave_valid_period",
+  "hr.attendanceGraceMinutes",
+])
+
 
 for (const generatedSql of ["supabase/deploy.sql", "supabase/final-repair.sql"]) {
   const content = read(generatedSql)
   if (!content.includes("20260621111000_domain_units_delivery_workflows.sql")) {
     failures.push(`${generatedSql} does not include the latest domain migration`)
   }
-  if (!content.includes("Normalize legacy aliases") || !content.includes("receive_purchase_order_complete_v1") || !content.includes("pharmacy_purchase_order_receipts")) {
+  if (!content.includes("Normalize legacy aliases") || !content.includes("receive_purchase_order_complete_v1") || !content.includes("pharmacy_purchase_order_receipts") || !content.includes("pay_payroll_run_v1") || !content.includes("pharmacy_payroll_lines") || !content.includes("enforce_leave_transition_v1") || !content.includes("prevent_employee_hard_delete_v1")) {
     failures.push(`${generatedSql} is stale; rebuild it after domain migration changes`)
   }
 }
@@ -118,6 +158,9 @@ for (const file of businessFiles) {
 if (migration.length > 0) notices.push("Domain SQL migration is present in fresh-deploy and existing-database repair scripts")
 notices.push("Money, quantity policy and state machines are centralized and audited")
 notices.push("Operational UIs use the shared HTTP client and legal workflow transitions")
+notices.push("Payroll calculation, approval, payment and accounting are centralized and audited")
+notices.push("Employee lifecycle and leave transitions are protected in API, domain and database layers")
+notices.push("Attendance status is derived from shift time and a centralized grace-period policy")
 
 if (failures.length > 0) {
   console.error(`Domain architecture audit failed (${failures.length})`)

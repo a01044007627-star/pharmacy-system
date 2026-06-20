@@ -1,16 +1,17 @@
 {
   "date": "2026-06-20",
+  "versionSource": "pharmacy-system(37).zip",
   "status": "static-audited-awaiting-live-environment-verification",
-  "sourceFiles": 513,
-  "typescriptSyntaxFilesChecked": 514,
+  "sourceFiles": 525,
+  "typescriptSyntaxFilesChecked": 523,
   "typescriptSyntaxFailures": 0,
-  "sqlFiles": 62,
+  "sqlFiles": 64,
   "apiRoutes": 92,
   "apiReferences": 98,
-  "referencedTables": 70,
-  "createdTables": 117,
-  "referencedRpcFunctions": 31,
-  "createdFunctions": 93,
+  "referencedTables": 73,
+  "createdTables": 119,
+  "referencedRpcFunctions": 35,
+  "createdFunctions": 104,
   "missingTables": [],
   "missingFunctions": [],
   "missingApiRoutes": [],
@@ -19,11 +20,22 @@
     "operationalLoading": "passed",
     "domainArchitecture": "passed"
   },
+  "domainRuntimeSmokeTests": {
+    "payrollMidMonthHireProration": "passed",
+    "payrollMidMonthDeactivationProration": "passed",
+    "hourlyPayroll": "passed",
+    "attendanceGracePolicy": "passed",
+    "hourlyPaidLeaveCompensation": "passed"
+  },
   "fullVerification": {
-    "typecheck": "not-executed-missing-local-type-definitions",
-    "tests": "not-executed-dependencies-not-installed",
-    "eslint": "not-executed-dependencies-not-installed",
-    "productionBuild": "not-executed-dependencies-not-installed"
+    "syntaxParser": "passed",
+    "typecheck": "not-executed-dependency-installation-unavailable",
+    "tests": "not-executed-dependency-installation-unavailable",
+    "eslint": "not-executed-dependency-installation-unavailable",
+    "productionBuild": "not-executed-dependency-installation-unavailable",
+    "installationAttempt": "pnpm offline install failed because required tarballs were not present; network resolution was unavailable",
+    "runnerNode": "22.16.0",
+    "requiredNode": "20.x"
   },
   "liveDatabaseExecuted": false,
   "existingDatabaseRepairFile": "supabase/final-repair.sql",
@@ -41,6 +53,12 @@
     "workflowStateMachines": "src/domain/workflows/operational-workflows.ts",
     "quantityRepository": "src/features/inventory/server/item-quantity-policy-repository.ts",
     "atomicPurchaseOrderReceipt": "receive_purchase_order_complete_v1",
-    "duplicateReceiptProtection": "pharmacy_purchase_order_receipts"
+    "duplicateReceiptProtection": "pharmacy_purchase_order_receipts",
+    "payrollCalculator": "src/domain/hr/payroll/payroll-calculator.ts",
+    "payrollRepository": "src/lib/server/payroll-repository.ts",
+    "atomicPayrollPayment": "pay_payroll_run_v1",
+    "employeeRepository": "src/lib/server/hr-repository.ts",
+    "attendancePolicy": "src/domain/hr/attendance-policy.ts",
+    "leaveWorkflow": "src/domain/hr/leave-workflow.ts"
   }
 }
