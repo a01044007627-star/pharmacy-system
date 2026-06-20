@@ -1,58 +1,46 @@
 {
   "date": "2026-06-20",
-  "status": "code-verified",
-  "sourceFiles": 487,
-  "sqlFiles": 60,
-  "apiRoutes": 91,
-  "apiReferences": 97,
-  "referencedTables": 69,
-  "createdTables": 116,
-  "referencedRpcFunctions": 30,
-  "createdFunctions": 90,
+  "status": "static-audited-awaiting-live-environment-verification",
+  "sourceFiles": 513,
+  "typescriptSyntaxFilesChecked": 514,
+  "typescriptSyntaxFailures": 0,
+  "sqlFiles": 62,
+  "apiRoutes": 92,
+  "apiReferences": 98,
+  "referencedTables": 70,
+  "createdTables": 117,
+  "referencedRpcFunctions": 31,
+  "createdFunctions": 93,
   "missingTables": [],
   "missingFunctions": [],
   "missingApiRoutes": [],
-  "tests": {
-    "passed": 39,
-    "total": 39,
-    "suites": 10
+  "architectureAudits": {
+    "project": "passed",
+    "operationalLoading": "passed",
+    "domainArchitecture": "passed"
   },
-  "typescript": "passed",
-  "eslint": "passed",
-  "productionBuild": "passed",
-  "npmProductionAudit": {
-    "critical": 0,
-    "high": 1,
-    "moderate": 0,
-    "low": 0,
-    "remaining": "xlsx@0.18.5"
+  "fullVerification": {
+    "typecheck": "not-executed-missing-local-type-definitions",
+    "tests": "not-executed-dependencies-not-installed",
+    "eslint": "not-executed-dependencies-not-installed",
+    "productionBuild": "not-executed-dependencies-not-installed"
   },
   "liveDatabaseExecuted": false,
   "existingDatabaseRepairFile": "supabase/final-repair.sql",
   "freshDatabaseBundle": "supabase/deploy.sql",
   "packageManager": {
-    "name": "npm",
-    "version": "10.9.2",
-    "lockfile": "package-lock.json",
-    "vercelInstallCommand": "npm ci",
-    "vercelBuildCommand": "npm run build",
+    "name": "pnpm",
+    "version": "10.12.1",
+    "lockfile": "pnpm-lock.yaml",
     "node": "20.x"
   },
-  "cleanCodeRefactor": {
-    "httpClient": "src/lib/http/api-client.ts",
-    "typedApiError": "src/lib/http/api-error.ts",
-    "settingsRepository": "src/features/settings/services/settings-entity-service.ts",
-    "genericCrudService": "src/features/settings/services/settings-crud-service.ts",
-    "typedSettingsServices": true,
-    "offlinePermissionErrorsQueued": false
-  },
-  "npmCi": {
-    "status": "passed",
-    "installedPackages": 811
-  },
-  "apiAudit": {
-    "missingTables": 0,
-    "missingFunctions": 0,
-    "missingApiRoutes": 0
+  "domainRefactor": {
+    "moneyValueObject": "src/domain/shared/decimal-value.ts",
+    "unitPolicy": "src/domain/inventory/units/unit-policy.ts",
+    "unitCatalog": "src/domain/inventory/units/unit-catalog.ts",
+    "workflowStateMachines": "src/domain/workflows/operational-workflows.ts",
+    "quantityRepository": "src/features/inventory/server/item-quantity-policy-repository.ts",
+    "atomicPurchaseOrderReceipt": "receive_purchase_order_complete_v1",
+    "duplicateReceiptProtection": "pharmacy_purchase_order_receipts"
   }
 }

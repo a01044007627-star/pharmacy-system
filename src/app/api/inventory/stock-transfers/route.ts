@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
 import { writeAuditLog } from "@/lib/audit/audit-log"
+import { ItemQuantityPolicyRepository } from "@/features/inventory/server/item-quantity-policy-repository"
 
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
@@ -138,12 +139,14 @@ export async function POST(request: Request) {
     assertBranchScope(scope, fromBranchId)
     assertBranchScope(scope, toBranchId)
 
-    const validLines = normalizeLines(body.lines)
-    if (validLines.length === 0) return NextResponse.json({ error: "أضف على الأقل صنفًا واحدًا بكمية صحيحة" }, { status: 400 })
+    const candidateLines = normalizeLines(body.lines)
+    if (candidateLines.length === 0) return NextResponse.json({ error: "أضف على الأقل صنفًا واحدًا بكمية صحيحة" }, { status: 400 })
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
     const pharmacyId = scope.activePharmacyId
+    const quantityPolicies = new ItemQuantityPolicyRepository(db, pharmacyId)
+    const validLines = await quantityPolicies.normalizeTransactionLines(candidateLines, { label: "كمية التحويل" }) as TransferLine[]
     const now = new Date().toISOString()
     const transferNumber = `TRF-${Date.now().toString(36).toUpperCase()}`
 

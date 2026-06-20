@@ -189,7 +189,7 @@ export async function PATCH(request: Request, context: Context) {
 
     const [barcodes, units, itemVariants] = await Promise.all([
       db.from("pharmacy_item_barcodes").select("id,barcode,is_primary").eq("item_id", itemId).eq("pharmacy_id", pharmacyId),
-      db.from("pharmacy_item_units").select("id,unit_name,factor,barcode,sell_price,is_base,main_unit,sub_unit,qty_per_main_unit,unit_raw").eq("item_id", itemId).eq("pharmacy_id", pharmacyId),
+      db.from("pharmacy_item_units").select("id,unit_name,factor,barcode,sell_price,is_base,main_unit,sub_unit,qty_per_main_unit,unit_raw,unit_id,unit_code,category,quantity_mode,quantity_scale,allows_fraction,purchase_enabled,sale_enabled").eq("item_id", itemId).eq("pharmacy_id", pharmacyId),
       db.from("pharmacy_item_variants").select("id,name,value,sku,sell_price,purchase_price").eq("item_id", itemId).eq("pharmacy_id", pharmacyId).order("created_at"),
     ])
 

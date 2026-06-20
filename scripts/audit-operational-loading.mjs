@@ -58,8 +58,8 @@ if (stockBalances.includes('.textSearch("item_id"')) {
 }
 
 const stockCounts = await read("src/app/api/inventory/stock-counts/route.ts")
-if (!stockCounts.includes('status: "posted"')) {
-  failures.push("stock counts: new count records must use canonical posted status")
+if (!stockCounts.includes("StockCountStatus.Posted") || !stockCounts.includes("StockCountStatus.Draft")) {
+  failures.push("stock counts: draft/posted canonical workflow statuses are not used")
 }
 if (/status:\s*variance\s*===\s*0\s*\?\s*["']matched["']/.test(stockCounts)) {
   failures.push("stock counts: legacy matched/variance values are still written")
@@ -94,8 +94,9 @@ if (/Promise\.all\s*\([\s\S]{0,500}barcode-papers/.test(barcodeView)) {
 }
 
 const purchaseOrders = await read("src/app/api/purchases/orders/route.ts")
-const expectedStatuses = '["draft", "sent", "partial", "received", "cancelled"]'
-if (!purchaseOrders.includes(expectedStatuses)) failures.push("purchase orders: API status enum does not match database constraint")
+for (const token of ["PurchaseOrderStatus.Draft", "PurchaseOrderStatus.Sent", "PurchaseOrderStatus.Partial", "PurchaseOrderStatus.Received", "PurchaseOrderStatus.Cancelled"]) {
+  if (!purchaseOrders.includes(token)) failures.push(`purchase orders: missing canonical status ${token}`)
+}
 
 if (failures.length > 0) {
   console.error(JSON.stringify({ ok: false, failures }, null, 2))

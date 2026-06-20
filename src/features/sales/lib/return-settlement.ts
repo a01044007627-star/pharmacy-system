@@ -1,11 +1,9 @@
+import { Money } from "@/domain/shared/decimal-value"
+
 export type ReturnSettlement = {
   total: number
   dueReduction: number
   refundAmount: number
-}
-
-function money(value: number) {
-  return Math.round((value + Number.EPSILON) * 100) / 100
 }
 
 export function calculateReturnSettlement(
@@ -13,10 +11,15 @@ export function calculateReturnSettlement(
   currentDue: number,
   currentPaid: number,
 ): ReturnSettlement {
-  const total = money(Math.max(0, Number(returnTotal) || 0))
-  const due = money(Math.max(0, Number(currentDue) || 0))
-  const paid = money(Math.max(0, Number(currentPaid) || 0))
-  const dueReduction = money(Math.min(due, total))
-  const refundAmount = money(Math.min(Math.max(total - dueReduction, 0), paid))
-  return { total, dueReduction, refundAmount }
+  const total = Money.nonNegative(returnTotal)
+  const due = Money.nonNegative(currentDue)
+  const paid = Money.nonNegative(currentPaid)
+  const dueReduction = due.min(total)
+  const refundAmount = total.subtract(dueReduction).max(0).min(paid)
+
+  return {
+    total: total.toNumber(),
+    dueReduction: dueReduction.toNumber(),
+    refundAmount: refundAmount.toNumber(),
+  }
 }

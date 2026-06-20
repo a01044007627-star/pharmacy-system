@@ -7,6 +7,8 @@ import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
 import { writeAuditLog } from "@/lib/audit/audit-log"
 import { OperationalRelationsRepository } from "@/lib/server/operational-relations-repository"
 import { operationalErrorResponse, TenantRequestContext } from "@/lib/server/tenant-request-context"
+import { Money } from "@/domain/shared/decimal-value"
+import { ItemQuantityPolicyRepository } from "@/features/inventory/server/item-quantity-policy-repository"
 
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
@@ -45,7 +47,10 @@ export async function GET(request: Request) {
       if (itemsResult.error) throw itemsResult.error
       if (suppliersResult.error) throw suppliersResult.error
       const items = (itemsResult.data ?? []).filter((item) => !context.branchId || !item.branch_id || item.branch_id === context.branchId)
-      return NextResponse.json({ items, suppliers: suppliersResult.data ?? [], branchId: context.branchId })
+      const quantityPolicies = new ItemQuantityPolicyRepository(context.db, context.pharmacyId)
+      const policies = await quantityPolicies.describeBaseUnits(items.map((item) => item.id))
+      const enrichedItems = items.map((item) => ({ ...item, ...policies.get(item.id) }))
+      return NextResponse.json({ items: enrichedItems, suppliers: suppliersResult.data ?? [], branchId: context.branchId })
     }
 
     const { page, pageSize, offset } = context.pagination()
@@ -98,11 +103,12 @@ export async function POST(request: Request) {
     const branchId = clean(body.branch_id) || scope.activeBranchId
     if (!branchId) return NextResponse.json({ error: "اختر الفرع المستلم" }, { status: 400 })
     assertBranchScope(scope, branchId)
-    const lines = Array.isArray(body.lines) ? body.lines : []
-    if (lines.length === 0) return NextResponse.json({ error: "أضف صنفاً واحداً على الأقل" }, { status: 400 })
+    const rawLines = Array.isArray(body.lines) ? body.lines as Record<string, unknown>[] : []
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
+    const quantityPolicies = new ItemQuantityPolicyRepository(db, scope.activePharmacyId)
+    const lines = await quantityPolicies.normalizeTransactionLines(rawLines, { label: "كمية الشراء" })
     const { data, error } = await db.rpc("create_received_purchase_complete_v1", {
       p_pharmacy_id: scope.activePharmacyId,
       p_branch_id: branchId,
@@ -111,10 +117,10 @@ export async function POST(request: Request) {
       p_supplier_id: clean(body.supplier_id) || null,
       p_supplier_name: clean(body.supplier_name) || "مورد نقدي",
       p_payment_method: clean(body.payment_method) || "cash",
-      p_paid_amount: Math.max(0, Number(body.paid_amount) || 0),
-      p_header_discount: Math.max(0, Number(body.header_discount) || 0),
-      p_tax_total: Math.max(0, Number(body.tax_total) || 0),
-      p_shipping_fee: Math.max(0, Number(body.shipping_fee) || 0),
+      p_paid_amount: Money.nonNegative(body.paid_amount as number).toNumber(),
+      p_header_discount: Money.nonNegative(body.header_discount as number).toNumber(),
+      p_tax_total: Money.nonNegative(body.tax_total as number).toNumber(),
+      p_shipping_fee: Money.nonNegative(body.shipping_fee as number).toNumber(),
       p_notes: clean(body.notes) || null,
       p_purchase_date: clean(body.purchase_date) || new Date().toISOString(),
       p_lines: lines,

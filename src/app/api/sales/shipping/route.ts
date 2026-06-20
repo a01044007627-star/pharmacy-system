@@ -1,33 +1,30 @@
 import { NextResponse } from "next/server"
-import type { SupabaseClient } from "@supabase/supabase-js"
-import { createAdminClient } from "@/lib/supabase/admin"
-import { createClient } from "@/lib/supabase/server"
-import { getServerAuthScope } from "@/lib/auth/session"
+import {
+  DeliveryStatus,
+  deliveryWorkflow,
+  isEnumValue,
+} from "@/domain/workflows/operational-workflows"
+import { deliveryLifecycleService } from "@/domain/delivery/delivery-lifecycle-service"
 import { OperationalRelationsRepository } from "@/lib/server/operational-relations-repository"
 import { operationalErrorResponse, TenantRequestContext } from "@/lib/server/tenant-request-context"
-import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
 
-function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
-  return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
+const STATUS_LABELS: Record<DeliveryStatus, string> = {
+  [DeliveryStatus.Pending]: "قيد الانتظار",
+  [DeliveryStatus.Confirmed]: "مؤكد",
+  [DeliveryStatus.Preparing]: "قيد التحضير",
+  [DeliveryStatus.Shipped]: "قيد التوصيل",
+  [DeliveryStatus.Delivered]: "تم التوصيل",
+  [DeliveryStatus.Cancelled]: "ملغي",
+  [DeliveryStatus.Returned]: "مرتجع",
 }
 
 function clean(value: unknown) {
-  return typeof value === "string" ? value.trim() : ""
+  return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : ""
 }
 
-const SHIPPING_STATUSES = ["pending", "confirmed", "preparing", "shipped", "delivered", "cancelled", "returned"] as const
-
-function shippingStatusLabel(value: string) {
-  const labels: Record<string, string> = {
-    pending: "قيد الانتظار",
-    confirmed: "مؤكد",
-    preparing: "قيد التحضير",
-    shipped: "قيد التوصيل",
-    delivered: "تم التوصيل",
-    cancelled: "ملغي",
-    returned: "مرتجع",
-  }
-  return labels[value] ?? value
+function isMissingDeliveryColumn(error: unknown) {
+  const message = String((error as { message?: unknown })?.message ?? error ?? "")
+  return /assigned_employee_id|delivery_agent_name|dispatched_at|delivered_at|returned_at|cancelled_at|delivery_notes|failure_reason|proof_of_delivery_url|collected_amount|schema cache|column .* does not exist/i.test(message)
 }
 
 export async function GET(request: Request) {
@@ -43,7 +40,7 @@ export async function GET(request: Request) {
     let ordersQuery = context.db
       .from("pharmacy_orders")
       .select(
-        "id,pharmacy_id,branch_id,order_number,customer_id,customer_name,shipping_address_id,shipping_fee,subtotal,discount_total,tax_total,total,paid_amount,due_amount,payment_method,payment_status,status,notes,created_at,updated_at",
+        "id,pharmacy_id,branch_id,order_number,customer_id,customer_name,shipping_address_id,shipping_fee,subtotal,discount_total,tax_total,total,paid_amount,due_amount,payment_method,payment_status,status,notes,assigned_employee_id,delivery_agent_name,dispatched_at,delivered_at,returned_at,cancelled_at,delivery_notes,failure_reason,proof_of_delivery_url,collected_amount,created_at,updated_at",
         { count: "exact" },
       )
       .eq("pharmacy_id", context.pharmacyId)
@@ -51,31 +48,52 @@ export async function GET(request: Request) {
       .range(offset, offset + pageSize - 1)
 
     if (context.branchId) ordersQuery = ordersQuery.eq("branch_id", context.branchId)
-    if (query) ordersQuery = ordersQuery.or(`order_number.ilike.%${query}%,customer_name.ilike.%${query}%`)
-    if (status && status !== "all") ordersQuery = ordersQuery.eq("status", status)
+    if (query) ordersQuery = ordersQuery.or(`order_number.ilike.%${query}%,customer_name.ilike.%${query}%,delivery_agent_name.ilike.%${query}%`)
+    if (status && status !== "all") {
+      if (!isEnumValue(DeliveryStatus, status)) throw new Error("حالة التوصيل غير صالحة")
+      ordersQuery = ordersQuery.eq("status", status)
+    }
 
-    const { data, error, count } = await ordersQuery
-    if (error) throw error
+    let result: any = await ordersQuery
+    if (result.error && isMissingDeliveryColumn(result.error)) {
+      let legacyQuery = context.db
+        .from("pharmacy_orders")
+        .select(
+          "id,pharmacy_id,branch_id,order_number,customer_id,customer_name,shipping_address_id,shipping_fee,subtotal,discount_total,tax_total,total,paid_amount,due_amount,payment_method,payment_status,status,notes,created_at,updated_at",
+          { count: "exact" },
+        )
+        .eq("pharmacy_id", context.pharmacyId)
+        .order("created_at", { ascending: false })
+        .range(offset, offset + pageSize - 1)
+      if (context.branchId) legacyQuery = legacyQuery.eq("branch_id", context.branchId)
+      if (query) legacyQuery = legacyQuery.or(`order_number.ilike.%${query}%,customer_name.ilike.%${query}%`)
+      if (status && status !== "all") legacyQuery = legacyQuery.eq("status", status)
+      result = await legacyQuery
+    }
+    if (result.error) throw result.error
 
     const relations = new OperationalRelationsRepository(context.db, context.pharmacyId)
-    const withBranches = await relations.attachBranches(data ?? [])
-    const withCustomers = await relations.attachCustomers(withBranches)
-    const withAddresses = await relations.attachShippingAddresses(withCustomers)
-    const orders = withAddresses.map((order) => ({
+    const withBranches = await relations.attachBranches(result.data ?? []) as any
+    const withCustomers = await relations.attachCustomers(withBranches) as any
+    const withAddresses = await relations.attachShippingAddresses(withCustomers) as any
+    const orders = withAddresses.map((order: any) => ({
       ...order,
       customer_phone: order.shipping_address?.phone ?? order.customer?.phone ?? null,
       shipping_address_text: order.shipping_address?.address ?? order.customer?.address ?? null,
       shipping_status: order.status,
+      allowed_statuses: isEnumValue(DeliveryStatus, order.status)
+        ? deliveryWorkflow.selectableFrom(order.status)
+        : [],
     }))
 
     return NextResponse.json({
       orders,
-      statuses: SHIPPING_STATUSES.map((value) => ({ value, label: shippingStatusLabel(value) })),
+      statuses: deliveryWorkflow.values().map((value) => ({ value, label: STATUS_LABELS[value] })),
       pagination: {
         page,
         pageSize,
-        total: count ?? orders.length,
-        totalPages: Math.max(1, Math.ceil((count ?? orders.length) / pageSize)),
+        total: result.count ?? orders.length,
+        totalPages: Math.max(1, Math.ceil((result.count ?? orders.length) / pageSize)),
       },
     })
   } catch (error) {
@@ -86,43 +104,45 @@ export async function GET(request: Request) {
 export async function PATCH(request: Request) {
   try {
     const body = await request.json().catch(() => ({})) as Record<string, unknown>
-    const scope = await getServerAuthScope({
-      requestedPharmacyId: clean(body.pharmacy_id) || null,
-      requestedBranchId: clean(body.branch_id) || null,
+    const context = await TenantRequestContext.forMutation(request, body, {
+      anyPermissions: ["sales:write", "delivery:write"],
+      forbiddenMessage: "ليست لديك صلاحية تحديث حالة الشحن",
     })
-    if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
-    if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولًا" }, { status: 400 })
-    if (!scopeCan(scope, "sales:write")) return NextResponse.json({ error: "ليست لديك صلاحية تحديث حالة الشحن" }, { status: 403 })
-
     const id = clean(body.id)
-    if (!id) return NextResponse.json({ error: "معرف الطلب مطلوب" }, { status: 400 })
-    const newStatus = clean(body.status)
-    if (!newStatus || !SHIPPING_STATUSES.includes(newStatus as typeof SHIPPING_STATUSES[number])) {
-      return NextResponse.json({ error: "حالة غير صالحة" }, { status: 400 })
-    }
+    if (!id) throw new Error("معرف الطلب مطلوب")
+    if (!isEnumValue(DeliveryStatus, body.status)) throw new Error("حالة التوصيل غير صالحة")
 
-    const supabase = await createClient()
-    const db = getDbClient(supabase) as SupabaseClient
-    const { data: existing, error: existingError } = await db
+    const { data: existing, error: existingError } = await context.db
       .from("pharmacy_orders")
-      .select("id,branch_id,status")
+      .select("id,branch_id,status,total,paid_amount,due_amount,payment_method,delivery_agent_name")
       .eq("id", id)
-      .eq("pharmacy_id", scope.activePharmacyId)
+      .eq("pharmacy_id", context.pharmacyId)
       .maybeSingle()
     if (existingError) throw existingError
     if (!existing) return NextResponse.json({ error: "الطلب غير موجود" }, { status: 404 })
-    if (existing.branch_id) assertBranchScope(scope, existing.branch_id)
+    const updates = deliveryLifecycleService.prepareUpdate(existing, body)
+    const status = updates.status as DeliveryStatus
 
-    const { data, error } = await db
+    let result: any = await context.db
       .from("pharmacy_orders")
-      .update({ status: newStatus, updated_at: new Date().toISOString() })
+      .update(updates)
       .eq("id", id)
-      .eq("pharmacy_id", scope.activePharmacyId)
-      .select("id,order_number,status")
+      .eq("pharmacy_id", context.pharmacyId)
+      .select("id,order_number,status,assigned_employee_id,delivery_agent_name,dispatched_at,delivered_at,returned_at,cancelled_at,delivery_notes,failure_reason,proof_of_delivery_url,collected_amount,updated_at")
       .maybeSingle()
-    if (error) throw error
 
-    return NextResponse.json(data ?? {})
+    if (result.error && isMissingDeliveryColumn(result.error)) {
+      result = await context.db
+        .from("pharmacy_orders")
+        .update({ status, updated_at: updates.updated_at })
+        .eq("id", id)
+        .eq("pharmacy_id", context.pharmacyId)
+        .select("id,order_number,status,updated_at")
+        .maybeSingle()
+    }
+    if (result.error) throw result.error
+
+    return NextResponse.json({ order: result.data })
   } catch (error) {
     return operationalErrorResponse(error, "shipping PATCH failed", "فشل تحديث حالة الطلب", 400)
   }

@@ -5,6 +5,8 @@ import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { scopeCan, assertBranchScope } from "@/lib/auth/server-permissions"
 import { writeAuditLog } from "@/lib/audit/audit-log"
+import { Money } from "@/domain/shared/decimal-value"
+import { ItemQuantityPolicyRepository } from "@/features/inventory/server/item-quantity-policy-repository"
 
 
 type CashierItemRow = {
@@ -250,8 +252,9 @@ export async function POST(request: Request) {
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
     const pharmacyId = scope.activePharmacyId
-    const lines = Array.isArray(body.lines) ? body.lines : []
-    if (lines.length === 0) return NextResponse.json({ error: "أضف صنفًا واحدًا على الأقل" }, { status: 400 })
+    const rawLines = Array.isArray(body.lines) ? body.lines as Record<string, unknown>[] : []
+    const quantityPolicies = new ItemQuantityPolicyRepository(db, pharmacyId)
+    const lines = await quantityPolicies.normalizeTransactionLines(rawLines, { label: "كمية البيع" })
     const shiftId = clean(body.shift_id)
     if (!shiftId) throw new Error("لازم تفتح جلسة الكاشير وتكتب نقدية الدرج قبل البيع")
     const clientRequestId = clean(body.client_request_id) || crypto.randomUUID()
@@ -319,11 +322,11 @@ export async function POST(request: Request) {
       p_client_request_id: clientRequestId,
       p_customer_name: clean(body.customer_name) || "زبون نقدي",
       p_payment_method: clean(body.payment_method) || "cash",
-      p_paid_amount: Math.max(0, n(body.paid_amount)),
-      p_invoice_discount: invoiceDiscount,
-      p_tax_total: Math.max(0, n(body.tax_total)),
-      p_shipping_fee: Math.max(0, n(body.shipping_fee)),
-      p_rounding_adj: n(body.rounding_adj),
+      p_paid_amount: Money.nonNegative(body.paid_amount).toNumber(),
+      p_invoice_discount: Money.nonNegative(invoiceDiscount).toNumber(),
+      p_tax_total: Money.nonNegative(body.tax_total).toNumber(),
+      p_shipping_fee: Money.nonNegative(body.shipping_fee).toNumber(),
+      p_rounding_adj: Money.from(body.rounding_adj as number).toNumber(),
       p_notes: clean(body.notes) || null,
       p_coupon_code: couponCode,
       p_patient_name: patientName,

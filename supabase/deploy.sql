@@ -12836,3 +12836,587 @@ GRANT EXECUTE ON FUNCTION public.get_daily_sales_summary(UUID,DATE,DATE,UUID) TO
 NOTIFY pgrst,'reload schema';
 COMMIT;
 
+-- ===== 20260621111000_domain_units_delivery_workflows.sql =====
+BEGIN;
+
+-- ============================================================================
+-- DOMAIN UNITS: categorized units, quantity precision and integer enforcement
+-- ============================================================================
+
+ALTER TABLE public.pharmacy_units
+  ADD COLUMN IF NOT EXISTS code TEXT,
+  ADD COLUMN IF NOT EXISTS symbol TEXT,
+  ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'other',
+  ADD COLUMN IF NOT EXISTS quantity_mode TEXT NOT NULL DEFAULT 'discrete',
+  ADD COLUMN IF NOT EXISTS quantity_scale SMALLINT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS allows_fraction BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS is_system BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 1000;
+
+UPDATE public.pharmacy_units
+SET
+  category = CASE
+    WHEN lower(trim(unit_name)) IN ('علبة','علبه','عبوة','عبوه','كرتونة','كرتونه','شريط','زجاجة','زجاجه','أنبوبة','انبوبه','كيس') THEN 'package'
+    WHEN lower(trim(unit_name)) IN ('قرص','حباية','حبايه','كبسولة','كبسوله','أمبول','امبول','فيال','حقنة','حقنه','سرنجة','سرنجه','لبوس','لبوسة','لبوسه','لاصقة','لاصقه','نقطة','نقطه','جرعة','جرعه','قطعة','قطعه','وحدة','وحده') THEN 'dosage'
+    WHEN lower(trim(unit_name)) IN ('ملليلتر','مل','ملي','لتر','ml','l') THEN 'volume'
+    WHEN lower(trim(unit_name)) IN ('ملليجرام','مجم','جرام','جم','كيلوجرام','كجم','mg','g','kg') THEN 'mass'
+    WHEN lower(trim(unit_name)) IN ('سنتيمتر','سم','متر','cm','m') THEN 'length'
+    WHEN lower(trim(unit_name)) IN ('خدمة','خدمه') THEN 'service'
+    ELSE COALESCE(NULLIF(category,''),'other')
+  END,
+  quantity_mode = CASE
+    WHEN lower(trim(unit_name)) IN ('ملليلتر','مل','ملي','لتر','ml','l','ملليجرام','مجم','جرام','جم','كيلوجرام','كجم','mg','g','kg','سنتيمتر','سم','متر','cm','m') THEN 'continuous'
+    ELSE 'discrete'
+  END,
+  quantity_scale = CASE
+    WHEN lower(trim(unit_name)) IN ('سنتيمتر','سم','متر','cm','m') THEN 2
+    WHEN lower(trim(unit_name)) IN ('ملليلتر','مل','ملي','لتر','ml','l','ملليجرام','مجم','جرام','جم','كيلوجرام','كجم','mg','g','kg') THEN 3
+    ELSE 0
+  END,
+  allows_fraction = CASE
+    WHEN lower(trim(unit_name)) IN ('ملليلتر','مل','ملي','لتر','ml','l','ملليجرام','مجم','جرام','جم','كيلوجرام','كجم','mg','g','kg','سنتيمتر','سم','متر','cm','m') THEN true
+    ELSE false
+  END,
+  updated_at = now();
+
+ALTER TABLE public.pharmacy_units
+  DROP CONSTRAINT IF EXISTS pharmacy_units_category_check,
+  ADD CONSTRAINT pharmacy_units_category_check
+    CHECK (category IN ('package','dosage','volume','mass','length','service','other')) NOT VALID,
+  DROP CONSTRAINT IF EXISTS pharmacy_units_quantity_mode_check,
+  ADD CONSTRAINT pharmacy_units_quantity_mode_check
+    CHECK (quantity_mode IN ('discrete','continuous')) NOT VALID,
+  DROP CONSTRAINT IF EXISTS pharmacy_units_quantity_scale_check,
+  ADD CONSTRAINT pharmacy_units_quantity_scale_check
+    CHECK (quantity_scale BETWEEN 0 AND 6) NOT VALID,
+  DROP CONSTRAINT IF EXISTS pharmacy_units_fraction_policy_check,
+  ADD CONSTRAINT pharmacy_units_fraction_policy_check
+    CHECK (
+      (quantity_mode = 'discrete' AND quantity_scale = 0 AND allows_fraction = false)
+      OR
+      (quantity_mode = 'continuous' AND quantity_scale BETWEEN 0 AND 6 AND allows_fraction = (quantity_scale > 0))
+    ) NOT VALID;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_pharmacy_units_code
+  ON public.pharmacy_units(pharmacy_id, upper(code))
+  WHERE code IS NOT NULL AND trim(code) <> '';
+
+CREATE INDEX IF NOT EXISTS idx_pharmacy_units_category_active
+  ON public.pharmacy_units(pharmacy_id, category, is_active, sort_order, unit_name);
+
+ALTER TABLE public.pharmacy_item_units
+  ADD COLUMN IF NOT EXISTS unit_id UUID REFERENCES public.pharmacy_units(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS unit_code TEXT,
+  ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'other',
+  ADD COLUMN IF NOT EXISTS quantity_mode TEXT NOT NULL DEFAULT 'discrete',
+  ADD COLUMN IF NOT EXISTS quantity_scale SMALLINT NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS allows_fraction BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS purchase_enabled BOOLEAN NOT NULL DEFAULT true,
+  ADD COLUMN IF NOT EXISTS sale_enabled BOOLEAN NOT NULL DEFAULT true;
+
+UPDATE public.pharmacy_item_units item_unit
+SET unit_id = unit.id,
+    unit_code = COALESCE(item_unit.unit_code, unit.code),
+    category = COALESCE(NULLIF(unit.category,''), 'other'),
+    quantity_mode = COALESCE(NULLIF(unit.quantity_mode,''), 'discrete'),
+    quantity_scale = COALESCE(unit.quantity_scale, 0),
+    allows_fraction = COALESCE(unit.allows_fraction, false)
+FROM public.pharmacy_units unit
+WHERE unit.pharmacy_id = item_unit.pharmacy_id
+  AND lower(trim(unit.unit_name)) = lower(trim(item_unit.unit_name));
+
+UPDATE public.pharmacy_item_units
+SET
+  category = CASE
+    WHEN lower(trim(unit_name)) IN ('علبة','علبه','عبوة','عبوه','كرتونة','كرتونه','شريط','زجاجة','زجاجه','أنبوبة','انبوبه','كيس') THEN 'package'
+    WHEN lower(trim(unit_name)) IN ('قرص','حباية','حبايه','كبسولة','كبسوله','أمبول','امبول','فيال','حقنة','حقنه','سرنجة','سرنجه','لبوس','لبوسة','لبوسه','لاصقة','لاصقه','نقطة','نقطه','جرعة','جرعه','قطعة','قطعه','وحدة','وحده') THEN 'dosage'
+    WHEN lower(trim(unit_name)) IN ('ملليلتر','مل','ملي','لتر','ml','l') THEN 'volume'
+    WHEN lower(trim(unit_name)) IN ('ملليجرام','مجم','جرام','جم','كيلوجرام','كجم','mg','g','kg') THEN 'mass'
+    WHEN lower(trim(unit_name)) IN ('سنتيمتر','سم','متر','cm','m') THEN 'length'
+    ELSE COALESCE(NULLIF(category,''),'other')
+  END,
+  quantity_mode = CASE
+    WHEN lower(trim(unit_name)) IN ('ملليلتر','مل','ملي','لتر','ml','l','ملليجرام','مجم','جرام','جم','كيلوجرام','كجم','mg','g','kg','سنتيمتر','سم','متر','cm','m') THEN 'continuous'
+    ELSE 'discrete'
+  END,
+  quantity_scale = CASE
+    WHEN lower(trim(unit_name)) IN ('سنتيمتر','سم','متر','cm','m') THEN 2
+    WHEN lower(trim(unit_name)) IN ('ملليلتر','مل','ملي','لتر','ml','l','ملليجرام','مجم','جرام','جم','كيلوجرام','كجم','mg','g','kg') THEN 3
+    ELSE 0
+  END,
+  allows_fraction = CASE
+    WHEN lower(trim(unit_name)) IN ('ملليلتر','مل','ملي','لتر','ml','l','ملليجرام','مجم','جرام','جم','كيلوجرام','كجم','mg','g','kg','سنتيمتر','سم','متر','cm','m') THEN true
+    ELSE false
+  END,
+  factor = CASE WHEN lower(trim(unit_name)) IN ('ملليلتر','مل','ملي','لتر','ml','l','ملليجرام','مجم','جرام','جم','كيلوجرام','كجم','mg','g','kg','سنتيمتر','سم','متر','cm','m') THEN factor ELSE GREATEST(round(factor),1) END,
+  qty_per_main_unit = CASE WHEN lower(trim(unit_name)) IN ('ملليلتر','مل','ملي','لتر','ml','l','ملليجرام','مجم','جرام','جم','كيلوجرام','كجم','mg','g','kg','سنتيمتر','سم','متر','cm','m') THEN COALESCE(qty_per_main_unit,factor,1) ELSE GREATEST(round(COALESCE(qty_per_main_unit,factor,1)),1) END,
+  updated_at = now();
+
+ALTER TABLE public.pharmacy_item_units
+  DROP CONSTRAINT IF EXISTS pharmacy_item_units_category_check,
+  ADD CONSTRAINT pharmacy_item_units_category_check
+    CHECK (category IN ('package','dosage','volume','mass','length','service','other')) NOT VALID,
+  DROP CONSTRAINT IF EXISTS pharmacy_item_units_quantity_mode_check,
+  ADD CONSTRAINT pharmacy_item_units_quantity_mode_check
+    CHECK (quantity_mode IN ('discrete','continuous')) NOT VALID,
+  DROP CONSTRAINT IF EXISTS pharmacy_item_units_quantity_scale_check,
+  ADD CONSTRAINT pharmacy_item_units_quantity_scale_check
+    CHECK (quantity_scale BETWEEN 0 AND 6) NOT VALID,
+  DROP CONSTRAINT IF EXISTS pharmacy_item_units_fraction_policy_check,
+  ADD CONSTRAINT pharmacy_item_units_fraction_policy_check
+    CHECK (
+      (quantity_mode = 'discrete' AND quantity_scale = 0 AND allows_fraction = false AND factor = trunc(factor) AND COALESCE(qty_per_main_unit,1) = trunc(COALESCE(qty_per_main_unit,1)))
+      OR
+      (quantity_mode = 'continuous' AND quantity_scale BETWEEN 0 AND 6 AND allows_fraction = (quantity_scale > 0))
+    ) NOT VALID;
+
+CREATE INDEX IF NOT EXISTS idx_item_units_unit_policy
+  ON public.pharmacy_item_units(pharmacy_id, item_id, quantity_mode, sale_enabled, purchase_enabled);
+
+CREATE OR REPLACE FUNCTION public.apply_unit_domain_policy()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+  v_unit public.pharmacy_units%ROWTYPE;
+BEGIN
+  NEW.unit_name := trim(NEW.unit_name);
+  IF NEW.unit_name = '' THEN RAISE EXCEPTION 'unit_name_required'; END IF;
+
+  IF TG_TABLE_NAME = 'pharmacy_units' THEN
+    NEW.code := NULLIF(upper(trim(NEW.code)), '');
+    NEW.category := COALESCE(NULLIF(NEW.category,''),'other');
+    NEW.quantity_mode := COALESCE(NULLIF(NEW.quantity_mode,''),'discrete');
+    IF NEW.quantity_mode = 'discrete' THEN
+      NEW.quantity_scale := 0;
+      NEW.allows_fraction := false;
+    ELSE
+      NEW.quantity_scale := LEAST(GREATEST(COALESCE(NEW.quantity_scale,3),0),6);
+      NEW.allows_fraction := NEW.quantity_scale > 0;
+    END IF;
+    NEW.updated_at := now();
+    RETURN NEW;
+  END IF;
+
+  IF NEW.unit_id IS NOT NULL THEN
+    SELECT * INTO v_unit
+    FROM public.pharmacy_units
+    WHERE id = NEW.unit_id AND pharmacy_id = NEW.pharmacy_id;
+    IF NOT FOUND THEN RAISE EXCEPTION 'unit_not_in_pharmacy'; END IF;
+  ELSE
+    SELECT * INTO v_unit
+    FROM public.pharmacy_units
+    WHERE pharmacy_id = NEW.pharmacy_id
+      AND lower(trim(unit_name)) = lower(trim(NEW.unit_name))
+    ORDER BY is_active DESC, created_at
+    LIMIT 1;
+    IF FOUND THEN NEW.unit_id := v_unit.id; END IF;
+  END IF;
+
+  IF FOUND THEN
+    NEW.unit_name := v_unit.unit_name;
+    NEW.unit_code := COALESCE(NEW.unit_code,v_unit.code);
+    NEW.category := v_unit.category;
+    NEW.quantity_mode := v_unit.quantity_mode;
+    NEW.quantity_scale := v_unit.quantity_scale;
+    NEW.allows_fraction := v_unit.allows_fraction;
+  ELSIF lower(trim(NEW.unit_name)) IN ('ملليلتر','مل','ملي','لتر','ml','l','ملليجرام','مجم','جرام','جم','كيلوجرام','كجم','mg','g','kg','سنتيمتر','سم','متر','cm','m') THEN
+    NEW.category := CASE
+      WHEN lower(trim(NEW.unit_name)) IN ('ملليلتر','مل','ملي','لتر','ml','l') THEN 'volume'
+      WHEN lower(trim(NEW.unit_name)) IN ('سنتيمتر','سم','متر','cm','m') THEN 'length'
+      ELSE 'mass'
+    END;
+    NEW.quantity_mode := 'continuous';
+    NEW.quantity_scale := CASE WHEN NEW.category = 'length' THEN 2 ELSE 3 END;
+    NEW.allows_fraction := true;
+  END IF;
+
+  NEW.category := COALESCE(NULLIF(NEW.category,''),'other');
+  NEW.quantity_mode := COALESCE(NULLIF(NEW.quantity_mode,''),'discrete');
+  IF NEW.quantity_mode = 'discrete' THEN
+    NEW.quantity_scale := 0;
+    NEW.allows_fraction := false;
+    IF NEW.factor <> trunc(NEW.factor) OR COALESCE(NEW.qty_per_main_unit,1) <> trunc(COALESCE(NEW.qty_per_main_unit,1)) THEN
+      RAISE EXCEPTION 'discrete_unit_requires_integer_factor';
+    END IF;
+  ELSE
+    NEW.quantity_scale := LEAST(GREATEST(COALESCE(NEW.quantity_scale,3),0),6);
+    NEW.allows_fraction := NEW.quantity_scale > 0;
+  END IF;
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_pharmacy_units_domain_policy ON public.pharmacy_units;
+CREATE TRIGGER trg_pharmacy_units_domain_policy
+BEFORE INSERT OR UPDATE ON public.pharmacy_units
+FOR EACH ROW EXECUTE FUNCTION public.apply_unit_domain_policy();
+
+DROP TRIGGER IF EXISTS trg_item_units_domain_policy ON public.pharmacy_item_units;
+CREATE TRIGGER trg_item_units_domain_policy
+BEFORE INSERT OR UPDATE ON public.pharmacy_item_units
+FOR EACH ROW EXECUTE FUNCTION public.apply_unit_domain_policy();
+
+-- ============================================================================
+-- DELIVERY LIFECYCLE: assignment, timestamps, proof and collection
+-- ============================================================================
+
+ALTER TABLE public.pharmacy_orders
+  ADD COLUMN IF NOT EXISTS assigned_employee_id UUID REFERENCES public.pharmacy_employees(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS delivery_agent_name TEXT,
+  ADD COLUMN IF NOT EXISTS dispatched_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS delivery_notes TEXT,
+  ADD COLUMN IF NOT EXISTS failure_reason TEXT,
+  ADD COLUMN IF NOT EXISTS proof_of_delivery_url TEXT,
+  ADD COLUMN IF NOT EXISTS collected_amount NUMERIC(14,2) NOT NULL DEFAULT 0;
+
+ALTER TABLE public.pharmacy_orders
+  DROP CONSTRAINT IF EXISTS pharmacy_orders_collected_amount_check,
+  ADD CONSTRAINT pharmacy_orders_collected_amount_check
+    CHECK (collected_amount >= 0) NOT VALID;
+
+CREATE INDEX IF NOT EXISTS idx_orders_delivery_assignment
+  ON public.pharmacy_orders(pharmacy_id, assigned_employee_id, status, created_at DESC);
+
+-- ============================================================================
+-- DATABASE STATE MACHINES: protect operational workflows from invalid jumps
+-- ============================================================================
+
+-- Normalize legacy aliases before strict workflow guards are installed.
+UPDATE public.pharmacy_stock_counts
+SET status = CASE
+  WHEN status IN ('matched','variance') THEN 'posted'
+  WHEN status = 'void' THEN 'cancelled'
+  ELSE status
+END,
+updated_at = now()
+WHERE status IN ('matched','variance','void');
+
+UPDATE public.pharmacy_purchase_orders
+SET status = CASE
+  WHEN status IN ('pending','approved') THEN 'sent'
+  WHEN status = 'ordered' THEN 'partial'
+  ELSE status
+END,
+updated_at = now()
+WHERE status IN ('pending','approved','ordered');
+
+
+CREATE OR REPLACE FUNCTION public.enforce_operational_status_transition()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = public
+AS $$
+DECLARE
+  v_allowed BOOLEAN := false;
+BEGIN
+  IF NEW.status IS NOT DISTINCT FROM OLD.status THEN RETURN NEW; END IF;
+
+  IF TG_TABLE_NAME = 'pharmacy_purchase_orders' THEN
+    v_allowed := CASE OLD.status
+      WHEN 'draft' THEN NEW.status IN ('sent','cancelled')
+      WHEN 'sent' THEN NEW.status IN ('partial','received','cancelled')
+      WHEN 'partial' THEN NEW.status IN ('received','cancelled')
+      ELSE false
+    END;
+  ELSIF TG_TABLE_NAME = 'pharmacy_orders' THEN
+    v_allowed := CASE OLD.status
+      WHEN 'pending' THEN NEW.status IN ('confirmed','cancelled')
+      WHEN 'confirmed' THEN NEW.status IN ('preparing','cancelled')
+      WHEN 'preparing' THEN NEW.status IN ('shipped','cancelled')
+      WHEN 'shipped' THEN NEW.status IN ('delivered','returned')
+      WHEN 'delivered' THEN NEW.status IN ('returned')
+      ELSE false
+    END;
+    IF NEW.status = 'shipped' AND NEW.dispatched_at IS NULL THEN NEW.dispatched_at := now(); END IF;
+    IF NEW.status = 'delivered' AND NEW.delivered_at IS NULL THEN NEW.delivered_at := now(); END IF;
+    IF NEW.status = 'returned' AND NEW.returned_at IS NULL THEN NEW.returned_at := now(); END IF;
+    IF NEW.status = 'cancelled' AND NEW.cancelled_at IS NULL THEN NEW.cancelled_at := now(); END IF;
+  ELSIF TG_TABLE_NAME = 'pharmacy_stock_counts' THEN
+    v_allowed := CASE OLD.status
+      WHEN 'draft' THEN NEW.status IN ('posted','cancelled')
+      WHEN 'posted' THEN NEW.status IN ('approved','cancelled')
+      ELSE false
+    END;
+  END IF;
+
+  IF NOT v_allowed THEN
+    RAISE EXCEPTION 'invalid_status_transition:%:%:%', TG_TABLE_NAME, OLD.status, NEW.status
+      USING ERRCODE = '23514';
+  END IF;
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_purchase_order_status_transition ON public.pharmacy_purchase_orders;
+CREATE TRIGGER trg_purchase_order_status_transition
+BEFORE UPDATE OF status ON public.pharmacy_purchase_orders
+FOR EACH ROW EXECUTE FUNCTION public.enforce_operational_status_transition();
+
+DROP TRIGGER IF EXISTS trg_delivery_status_transition ON public.pharmacy_orders;
+CREATE TRIGGER trg_delivery_status_transition
+BEFORE UPDATE OF status ON public.pharmacy_orders
+FOR EACH ROW EXECUTE FUNCTION public.enforce_operational_status_transition();
+
+DROP TRIGGER IF EXISTS trg_stock_count_status_transition ON public.pharmacy_stock_counts;
+CREATE TRIGGER trg_stock_count_status_transition
+BEFORE UPDATE OF status ON public.pharmacy_stock_counts
+FOR EACH ROW EXECUTE FUNCTION public.enforce_operational_status_transition();
+
+NOTIFY pgrst, 'reload schema';
+COMMIT;
+
+-- ===== 20260621112000_atomic_purchase_order_receiving.sql =====
+BEGIN;
+
+-- One durable receipt record per client request protects stock, accounting and
+-- order progress from duplicate submissions caused by retries or unstable networks.
+CREATE TABLE IF NOT EXISTS public.pharmacy_purchase_order_receipts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  pharmacy_id UUID NOT NULL REFERENCES public.pharmacies(id) ON DELETE CASCADE,
+  order_id UUID NOT NULL REFERENCES public.pharmacy_purchase_orders(id) ON DELETE CASCADE,
+  purchase_id UUID REFERENCES public.pharmacy_purchases(id) ON DELETE RESTRICT,
+  client_request_id TEXT NOT NULL,
+  lines JSONB NOT NULL DEFAULT '[]'::JSONB,
+  created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(pharmacy_id, client_request_id)
+);
+
+CREATE INDEX IF NOT EXISTS pharmacy_purchase_order_receipts_order_idx
+  ON public.pharmacy_purchase_order_receipts(pharmacy_id, order_id, created_at DESC);
+
+ALTER TABLE public.pharmacy_purchase_order_receipts ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.pharmacy_purchase_order_receipts FROM anon, authenticated;
+GRANT ALL ON TABLE public.pharmacy_purchase_order_receipts TO service_role;
+
+CREATE OR REPLACE FUNCTION public.receive_purchase_order_complete_v1(
+  p_pharmacy_id UUID,
+  p_order_id UUID,
+  p_actor_id UUID,
+  p_client_request_id TEXT,
+  p_paid_amount NUMERIC,
+  p_payment_method TEXT,
+  p_header_discount NUMERIC,
+  p_tax_total NUMERIC,
+  p_shipping_fee NUMERIC,
+  p_notes TEXT,
+  p_purchase_date TIMESTAMPTZ,
+  p_lines JSONB
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+DECLARE
+  v_actor_id UUID := COALESCE(auth.uid(), p_actor_id);
+  v_order public.pharmacy_purchase_orders%ROWTYPE;
+  v_receipt public.pharmacy_purchase_order_receipts%ROWTYPE;
+  v_existing_purchase public.pharmacy_purchases%ROWTYPE;
+  v_received JSONB;
+  v_order_line JSONB;
+  v_updated_lines JSONB;
+  v_purchase_result JSONB;
+  v_purchase_id UUID;
+  v_item_id UUID;
+  v_received_qty NUMERIC;
+  v_ordered_qty NUMERIC;
+  v_already_received NUMERIC;
+  v_quantity_mode TEXT;
+  v_unit_name TEXT;
+  v_all_received BOOLEAN := false;
+  v_receipt_paid NUMERIC := 0;
+BEGIN
+  IF v_actor_id IS NULL THEN RAISE EXCEPTION 'يجب تسجيل الدخول أولاً'; END IF;
+  IF NOT public.user_has_permission(p_pharmacy_id, 'purchases:write', v_actor_id) THEN
+    RAISE EXCEPTION 'ليست لديك صلاحية استلام أوامر الشراء';
+  END IF;
+  IF p_client_request_id IS NULL OR length(btrim(p_client_request_id)) < 8 THEN
+    RAISE EXCEPTION 'معرف عملية الاستلام غير صالح';
+  END IF;
+  IF p_lines IS NULL OR jsonb_typeof(p_lines) <> 'array' OR jsonb_array_length(p_lines) = 0 THEN
+    RAISE EXCEPTION 'أضف صنفًا واحدًا على الأقل للاستلام';
+  END IF;
+
+  SELECT * INTO v_order
+  FROM public.pharmacy_purchase_orders
+  WHERE id = p_order_id AND pharmacy_id = p_pharmacy_id
+  FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'أمر الشراء غير موجود'; END IF;
+
+  -- A committed record means the exact request was already completed. Returning
+  -- its result is safe and avoids adding quantities a second time.
+  SELECT * INTO v_receipt
+  FROM public.pharmacy_purchase_order_receipts
+  WHERE pharmacy_id = p_pharmacy_id AND client_request_id = p_client_request_id
+  LIMIT 1;
+  IF FOUND THEN
+    IF v_receipt.order_id <> p_order_id THEN
+      RAISE EXCEPTION 'معرف طلب الاستلام مستخدم مسبقًا لأمر شراء مختلف';
+    END IF;
+    IF v_receipt.purchase_id IS NULL THEN
+      RAISE EXCEPTION 'عملية الاستلام السابقة لم تكتمل بصورة صحيحة';
+    END IF;
+    SELECT * INTO v_existing_purchase
+    FROM public.pharmacy_purchases
+    WHERE id = v_receipt.purchase_id AND pharmacy_id = p_pharmacy_id;
+    RETURN jsonb_build_object(
+      'order', to_jsonb(v_order),
+      'purchase_result', jsonb_build_object(
+        'duplicate', true,
+        'purchase', CASE WHEN v_existing_purchase.id IS NULL THEN NULL ELSE to_jsonb(v_existing_purchase) END
+      ),
+      'complete', v_order.status = 'received',
+      'duplicate', true
+    );
+  END IF;
+
+  IF v_order.branch_id IS NULL THEN RAISE EXCEPTION 'أمر الشراء غير مرتبط بفرع مستلم'; END IF;
+  IF v_order.status NOT IN ('sent','partial') THEN
+    RAISE EXCEPTION 'لا يمكن الاستلام من حالة أمر الشراء الحالية';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(p_lines) AS received(value)
+    GROUP BY received.value->>'item_id'
+    HAVING count(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'لا يمكن تكرار الصنف داخل دفعة الاستلام';
+  END IF;
+
+  FOR v_received IN SELECT value FROM jsonb_array_elements(p_lines) AS received(value)
+  LOOP
+    BEGIN
+      v_item_id := NULLIF(v_received->>'item_id','')::UUID;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE EXCEPTION 'معرف صنف غير صالح داخل دفعة الاستلام';
+    END;
+    v_received_qty := COALESCE((v_received->>'quantity')::NUMERIC,0);
+    IF v_item_id IS NULL OR v_received_qty <= 0 THEN
+      RAISE EXCEPTION 'كمية الاستلام يجب أن تكون أكبر من صفر';
+    END IF;
+
+    SELECT value INTO v_order_line
+    FROM jsonb_array_elements(v_order.lines) AS ordered(value)
+    WHERE ordered.value->>'item_id' = v_item_id::TEXT
+    LIMIT 1;
+    IF v_order_line IS NULL THEN RAISE EXCEPTION 'الصنف غير موجود داخل أمر الشراء'; END IF;
+
+    v_ordered_qty := COALESCE((v_order_line->>'quantity')::NUMERIC,0);
+    v_already_received := COALESCE((v_order_line->>'received_quantity')::NUMERIC,0);
+    IF v_already_received + v_received_qty > v_ordered_qty THEN
+      RAISE EXCEPTION 'الكمية المستلمة تتجاوز الكمية المتبقية للصنف %', COALESCE(v_order_line->>'item_name',v_item_id::TEXT);
+    END IF;
+
+    v_unit_name := COALESCE(NULLIF(btrim(v_received->>'unit'),''), NULLIF(btrim(v_order_line->>'unit'),''), 'وحدة');
+    SELECT quantity_mode INTO v_quantity_mode
+    FROM public.pharmacy_item_units
+    WHERE pharmacy_id = p_pharmacy_id
+      AND item_id = v_item_id
+      AND (lower(trim(unit_name)) = lower(trim(v_unit_name)) OR is_base = true)
+    ORDER BY (lower(trim(unit_name)) = lower(trim(v_unit_name))) DESC, is_base DESC, factor ASC
+    LIMIT 1;
+    v_quantity_mode := COALESCE(v_quantity_mode, CASE
+      WHEN lower(trim(v_unit_name)) IN ('ملليلتر','مل','ملي','لتر','ml','l','ملليجرام','مجم','جرام','جم','كيلوجرام','كجم','mg','g','kg','سنتيمتر','سم','متر','cm','m') THEN 'continuous'
+      ELSE 'discrete'
+    END);
+    IF v_quantity_mode = 'discrete' AND v_received_qty <> trunc(v_received_qty) THEN
+      RAISE EXCEPTION 'الوحدة المعدودة لا تقبل كمية كسرية للصنف %', COALESCE(v_order_line->>'item_name',v_item_id::TEXT);
+    END IF;
+  END LOOP;
+
+  -- Reserve the idempotency key before invoking the purchase operation. The row
+  -- lives in the same transaction and is rolled back if any later step fails.
+  BEGIN
+    INSERT INTO public.pharmacy_purchase_order_receipts(
+      pharmacy_id, order_id, purchase_id, client_request_id, lines, created_by
+    ) VALUES (
+      p_pharmacy_id, p_order_id, NULL, p_client_request_id, p_lines, v_actor_id
+    )
+    RETURNING * INTO v_receipt;
+  EXCEPTION WHEN unique_violation THEN
+    RAISE EXCEPTION 'معرف طلب الاستلام مستخدم مسبقًا';
+  END;
+
+  SELECT COALESCE(jsonb_agg(
+    ordered.value || jsonb_build_object(
+      'received_quantity',
+      COALESCE((ordered.value->>'received_quantity')::NUMERIC,0) + COALESCE((
+        SELECT sum((received.value->>'quantity')::NUMERIC)
+        FROM jsonb_array_elements(p_lines) AS received(value)
+        WHERE received.value->>'item_id' = ordered.value->>'item_id'
+      ),0)
+    ) ORDER BY ordered.ordinality
+  ), '[]'::JSONB)
+  INTO v_updated_lines
+  FROM jsonb_array_elements(v_order.lines) WITH ORDINALITY AS ordered(value, ordinality);
+
+  v_purchase_result := public.create_received_purchase_complete_v1(
+    p_pharmacy_id,
+    v_order.branch_id,
+    v_actor_id,
+    p_client_request_id,
+    v_order.supplier_id,
+    v_order.supplier_name,
+    COALESCE(NULLIF(btrim(p_payment_method),''),'cash'),
+    GREATEST(COALESCE(p_paid_amount,0),0),
+    GREATEST(COALESCE(p_header_discount,0),0),
+    GREATEST(COALESCE(p_tax_total,0),0),
+    GREATEST(COALESCE(p_shipping_fee,0),0),
+    COALESCE(NULLIF(btrim(p_notes),''),'استلام من أمر شراء ' || COALESCE(v_order.order_number,v_order.id::TEXT)),
+    COALESCE(p_purchase_date,now()),
+    p_lines
+  );
+
+  BEGIN
+    v_purchase_id := NULLIF(v_purchase_result->'purchase'->>'id','')::UUID;
+  EXCEPTION WHEN OTHERS THEN
+    v_purchase_id := NULL;
+  END;
+  IF v_purchase_id IS NULL THEN
+    RAISE EXCEPTION 'تعذر ربط عملية الاستلام بفاتورة الشراء';
+  END IF;
+
+  UPDATE public.pharmacy_purchase_order_receipts
+  SET purchase_id = v_purchase_id, lines = p_lines
+  WHERE id = v_receipt.id;
+
+  SELECT COALESCE(bool_and(
+    COALESCE((line.value->>'received_quantity')::NUMERIC,0) >= COALESCE((line.value->>'quantity')::NUMERIC,0)
+  ),false)
+  INTO v_all_received
+  FROM jsonb_array_elements(v_updated_lines) AS line(value);
+
+  v_receipt_paid := GREATEST(COALESCE((v_purchase_result->'purchase'->>'paid_amount')::NUMERIC,0),0);
+  UPDATE public.pharmacy_purchase_orders
+  SET lines = v_updated_lines,
+      status = CASE WHEN v_all_received THEN 'received' ELSE 'partial' END,
+      paid_amount = LEAST(total, COALESCE(paid_amount,0) + v_receipt_paid),
+      due_amount = GREATEST(total - LEAST(total, COALESCE(paid_amount,0) + v_receipt_paid),0),
+      updated_at = now()
+  WHERE id = v_order.id
+  RETURNING * INTO v_order;
+
+  RETURN jsonb_build_object(
+    'order', to_jsonb(v_order),
+    'purchase_result', v_purchase_result,
+    'complete', v_all_received,
+    'duplicate', false
+  );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.receive_purchase_order_complete_v1(UUID,UUID,UUID,TEXT,NUMERIC,TEXT,NUMERIC,NUMERIC,NUMERIC,TEXT,TIMESTAMPTZ,JSONB) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.receive_purchase_order_complete_v1(UUID,UUID,UUID,TEXT,NUMERIC,TEXT,NUMERIC,NUMERIC,NUMERIC,TEXT,TIMESTAMPTZ,JSONB) TO authenticated,service_role;
+
+NOTIFY pgrst, 'reload schema';
+COMMIT;
+

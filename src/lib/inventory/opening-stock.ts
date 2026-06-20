@@ -1,3 +1,4 @@
+import { roundMoney } from "@/domain/shared/decimal-value"
 import type { SupabaseClient } from "@supabase/supabase-js"
 
 function numberValue(value: unknown, fallback = 0) {
@@ -124,7 +125,7 @@ export async function addOpeningStock(db: SupabaseClient, payload: OpeningStockP
       direction: "in",
       quantity,
       unit_price: unitPrice,
-      total_value: Number((quantity * unitPrice).toFixed(2)),
+      total_value: roundMoney(quantity * unitPrice),
       movement_type: "opening_stock",
       source_table: "pharmacy_items",
       source_id: payload.itemId,
@@ -176,7 +177,7 @@ export async function adjustOpeningStock(db: SupabaseClient, payload: OpeningSto
       direction: "out",
       quantity,
       unit_price: unitPrice,
-      total_value: Number((quantity * unitPrice).toFixed(2)),
+      total_value: roundMoney(quantity * unitPrice),
       movement_type: "opening_stock_adjustment",
       source_table: "pharmacy_items",
       source_id: payload.itemId,

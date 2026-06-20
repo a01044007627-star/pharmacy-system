@@ -3,6 +3,7 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-permissions"
+import { ItemQuantityPolicyRepository } from "@/features/inventory/server/item-quantity-policy-repository"
 
 function getDbClient() {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : null
@@ -80,14 +81,21 @@ export async function POST(request: Request) {
     const db = getDbClient() ?? supabase
     const pharmacyId = scope.activePharmacyId
     const branchId = clean(body.branch_id) || scope.activeBranchId
-    if (branchId) assertBranchScope(scope, branchId)
+    if (!branchId) return NextResponse.json({ error: "اختر الفرع قبل تسجيل التالف" }, { status: 400 })
+    assertBranchScope(scope, branchId)
+    const quantityPolicies = new ItemQuantityPolicyRepository(db, pharmacyId)
+    const [line] = await quantityPolicies.normalizeTransactionLines([{
+      item_id: itemId,
+      unit: clean(body.unit) || undefined,
+      quantity: body.quantity,
+    }], { label: "كمية التالف" })
     const now = new Date().toISOString()
 
     const { data, error } = await db.from("pharmacy_damaged_stock").insert({
       pharmacy_id: pharmacyId,
       branch_id: branchId,
       item_id: itemId,
-      quantity: Math.max(0, Number(body.quantity) || 1),
+      quantity: line.quantity,
       reason: clean(body.reason) || "تالف",
       notes: clean(body.notes) || null,
       recorded_by: scope.user.id,

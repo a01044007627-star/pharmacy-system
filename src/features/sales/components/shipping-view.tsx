@@ -14,7 +14,9 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
+import { apiClient } from "@/lib/http/api-client"
 import { cn } from "@/lib/utils"
+import { ShippingOrderUpdateDialog } from "@/features/sales/components/shipping-order-update-dialog"
 
 type OrderRow = {
   id: string
@@ -24,6 +26,12 @@ type OrderRow = {
   total: number
   shipping_fee: number
   created_at: string
+  delivery_agent_name?: string | null
+  delivery_notes?: string | null
+  failure_reason?: string | null
+  proof_of_delivery_url?: string | null
+  collected_amount?: number | null
+  allowed_statuses?: string[]
   branch?: { id: string; name: string } | null
 }
 
@@ -79,9 +87,10 @@ export function ShippingView() {
         page: String(page),
         page_size: "25",
       })
-      const response = await fetch(`/api/sales/shipping?${params.toString()}`, { cache: "no-store" })
-      const data = await response.json().catch(() => ({})) as ResponseData
-      if (!response.ok) throw new Error(data.error ?? "فشل تحميل طلبات الشحن")
+      const data = await apiClient.get<ResponseData>(`/api/sales/shipping?${params.toString()}`, {
+        cache: "no-store",
+        fallbackMessage: "فشل تحميل طلبات الشحن",
+      })
       setRows(data.orders ?? [])
       setStatusOptions(data.statuses ?? [])
       setTotalPages(data.pagination?.totalPages ?? 1)
@@ -97,22 +106,7 @@ export function ShippingView() {
     return () => window.clearTimeout(timeout)
   }, [load])
 
-  async function updateStatus(order: OrderRow, newStatus: string) {
-    if (order.status === newStatus) return
-    try {
-      const response = await fetch("/api/sales/shipping", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: order.id, status: newStatus, pharmacy_id: auth.activePharmacyId }),
-      })
-      const data = await response.json().catch(() => ({})) as { error?: string }
-      if (!response.ok) throw new Error(data.error ?? "فشل تحديث حالة الطلب")
-      toast.success("تم تحديث حالة الطلب")
-      await load()
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل تحديث حالة الطلب")
-    }
-  }
+
 
   return (
     <PageAccess permission="sales:read">
@@ -174,17 +168,8 @@ export function ShippingView() {
                     <TableCell className="text-center text-xs font-bold">{new Date(order.created_at).toLocaleString("ar-EG")}</TableCell>
                     <TableCell>
                       <div className="flex items-center justify-center gap-1">
-                        {(auth.isDeveloper || auth.can("sales:write")) ? (
-                          <NativeSelect
-                            value={order.status}
-                            onChange={(event) => void updateStatus(order, event.target.value)}
-                            className="w-36"
-                            selectClassName="h-8 text-xs rounded-xl"
-                          >
-                            {statusOptions.map((opt) => (
-                              <NativeSelectOption key={opt.value} value={opt.value}>{opt.label}</NativeSelectOption>
-                            ))}
-                          </NativeSelect>
+                        {(auth.isDeveloper || auth.can("sales:write") || auth.can("delivery:write")) ? (
+                          <ShippingOrderUpdateDialog order={order} statuses={statusOptions} onUpdated={load} />
                         ) : (
                           <span className="text-xs font-bold text-slate-400">—</span>
                         )}

@@ -1,3 +1,4 @@
+import { roundMoney as normalizeMoney } from "@/domain/shared/decimal-value"
 import type { DashboardHomePayload } from "@/features/dashboard-home/types"
 
 export type DailyProfitRow = {
@@ -48,7 +49,7 @@ export type DailyProfitSummary = {
 }
 
 function roundMoney(value: number) {
-  return Math.round((Number.isFinite(value) ? value : 0) * 100) / 100
+  return normalizeMoney(Number.isFinite(value) ? value : 0)
 }
 
 function startOfLocalDay(date = new Date()) {

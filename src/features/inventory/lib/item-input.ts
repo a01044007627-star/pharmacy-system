@@ -1,15 +1,8 @@
+import { unitPolicyService } from "@/domain/inventory/units/unit-policy"
+import type { ItemUnitInput } from "@/domain/inventory/units/unit-types"
+
 export type BarcodeInput = { barcode?: unknown; is_primary?: boolean }
-export type UnitInput = {
-  unit_name?: unknown
-  factor?: unknown
-  barcode?: unknown
-  sell_price?: unknown
-  is_base?: boolean
-  main_unit?: unknown
-  sub_unit?: unknown
-  qty_per_main_unit?: unknown
-  unit_raw?: unknown
-}
+export type UnitInput = ItemUnitInput
 
 const ARABIC_DIGITS = "٠١٢٣٤٥٦٧٨٩"
 const PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
@@ -58,8 +51,14 @@ export function normalizeBarcodeInputs(
     })
     .map((entry, index) => ({ ...entry, is_primary: index === 0 }))
 
+  const unitNames = new Set<string>()
   const units = rawUnits
-    .map((entry) => {
+    .map((entry, index) => {
+      const normalized = unitPolicyService.normalizeItemUnit(entry, index)
+      const unitKey = normalizeItemName(normalized.unit_name)
+      if (unitNames.has(unitKey)) throw new Error(`الوحدة مكررة داخل الصنف: ${normalized.unit_name}`)
+      unitNames.add(unitKey)
+
       const barcode = normalizeBarcode(entry.barcode)
       let acceptedBarcode: string | null = barcode || null
       if (barcode && seen.has(barcode)) {
@@ -69,29 +68,24 @@ export function normalizeBarcodeInputs(
         seen.add(barcode)
       }
 
-      return {
-        unit_name: cleanItemText(entry.unit_name),
-        factor: Math.max(0.001, finiteNonNegative(entry.factor, 1) || 1),
-        barcode: acceptedBarcode,
-        sell_price: entry.sell_price === null || entry.sell_price === undefined || entry.sell_price === ""
-          ? null
-          : finiteNonNegative(entry.sell_price),
-        is_base: Boolean(entry.is_base),
-        main_unit: cleanItemText(entry.main_unit) || null,
-        sub_unit: cleanItemText(entry.sub_unit) || null,
-        qty_per_main_unit: Math.max(0, finiteNonNegative(entry.qty_per_main_unit)),
-        unit_raw: cleanItemText(entry.unit_raw) || null,
-      }
+      return { ...normalized, barcode: acceptedBarcode }
     })
     .filter((entry) => entry.unit_name)
 
   const baseIndex = units.findIndex((unit) => unit.is_base)
+  const normalizedUnits = units.map((unit, index) => {
+    const isBase = baseIndex >= 0 ? index === baseIndex : index === 0
+    return {
+      ...unit,
+      is_base: isBase,
+      factor: isBase ? 1 : unit.factor,
+      qty_per_main_unit: isBase && unit.main_unit === unit.sub_unit ? 1 : unit.qty_per_main_unit,
+    }
+  })
+
   return {
     barcodes,
-    units: units.map((unit, index) => ({
-      ...unit,
-      is_base: baseIndex >= 0 ? index === baseIndex : index === 0,
-    })),
+    units: normalizedUnits,
     duplicates: Array.from(duplicates),
     all: Array.from(seen),
   }

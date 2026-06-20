@@ -398,7 +398,7 @@ export async function GET(request: Request) {
           fetchRelatedByItemIds<(ItemSubUnitRow & { item_id: string })>(
             "sub-units",
             itemIds,
-            (ids) => db.from("pharmacy_item_units").select("id, item_id, unit_name, factor, barcode, sell_price, is_base, main_unit, sub_unit, qty_per_main_unit, unit_raw").eq("pharmacy_id", pharmacyId).in("item_id", ids),
+            (ids) => db.from("pharmacy_item_units").select("id, item_id, unit_name, factor, barcode, sell_price, is_base, main_unit, sub_unit, qty_per_main_unit, unit_raw, unit_id, unit_code, category, quantity_mode, quantity_scale, allows_fraction, purchase_enabled, sale_enabled").eq("pharmacy_id", pharmacyId).in("item_id", ids),
           ),
           fetchRelatedByItemIds<(ItemBatchRow & { item_id: string })>(
             "batches",

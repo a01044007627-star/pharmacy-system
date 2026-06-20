@@ -390,7 +390,7 @@ export async function GET(request: Request) {
         selectedBranchId,
       ), "orders") : Promise.resolve([]),
       includeTables ? readRows(
-        db.from("pharmacy_purchase_orders").select("id,supplier_name,total,status,expected_date,created_at").eq("pharmacy_id", pharmacyId).in("status", ["pending", "approved", "ordered"]).order("created_at", { ascending: false }).limit(60),
+        db.from("pharmacy_purchase_orders").select("id,supplier_name,total,status,expected_date,created_at").eq("pharmacy_id", pharmacyId).in("status", ["draft", "sent", "partial"]).order("created_at", { ascending: false }).limit(60),
         "purchase-orders",
       ) : Promise.resolve([]),
       includeTables ? readRows(applyPharmacyBranchScope(

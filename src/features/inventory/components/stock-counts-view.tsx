@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { CheckCircle2, ClipboardList, Loader2, Plus, RefreshCw, Search } from "lucide-react"
+import { CheckCircle2, ClipboardList, Loader2, Plus, RefreshCw, Search, Send, XCircle } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { DashboardPageHeader } from "@/components/shared/page-ui"
@@ -56,13 +56,14 @@ function effectiveStatus(status: string, variance: number) {
 }
 
 function statusLabel(status: string, variance: number) {
-  const labels: Record<string, string> = { matched: "مطابق", variance: "فروقات", approved: "معتمد", void: "ملغي" }
+  const labels: Record<string, string> = { draft: "مسودة", matched: "مطابق", variance: "فروقات", posted: "مرحّل للمراجعة", approved: "معتمد", void: "ملغي", cancelled: "ملغي" }
   const value = effectiveStatus(status, variance)
   return labels[value] ?? value
 }
 
 function statusColor(status: string, variance: number) {
   const value = effectiveStatus(status, variance)
+  if (value === "draft") return "border-slate-200 bg-slate-50 text-slate-700"
   if (value === "matched") return "border-emerald-200 bg-emerald-50 text-emerald-700"
   if (value === "approved") return "border-blue-200 bg-blue-50 text-blue-700"
   if (value === "void") return "border-rose-200 bg-rose-50 text-rose-700"
@@ -86,7 +87,7 @@ export function StockCountsView() {
 
   const [showAdd, setShowAdd] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [approvingId, setApprovingId] = useState<string | null>(null)
+  const [processingId, setProcessingId] = useState<string | null>(null)
   const [itemSearch, setItemSearch] = useState("")
   const [itemOptions, setItemOptions] = useState<ItemSearchRow[]>([])
   const [itemsLoading, setItemsLoading] = useState(false)
@@ -97,6 +98,7 @@ export function StockCountsView() {
   const [countedQty, setCountedQty] = useState("0")
   const [unit, setUnit] = useState("")
   const [notes, setNotes] = useState("")
+  const [saveAsDraft, setSaveAsDraft] = useState(false)
   const loadControllerRef = useRef<AbortController | null>(null)
 
   const canWrite = auth.can("inventory:stocktake") || auth.isDeveloper
@@ -193,6 +195,7 @@ export function StockCountsView() {
     setCountedQty("0")
     setUnit("")
     setNotes("")
+    setSaveAsDraft(false)
     setItemSearch("")
     setItemOptions([])
   }
@@ -223,10 +226,11 @@ export function StockCountsView() {
           counted_qty: Number(countedQty) || 0,
           unit: unit.trim() || null,
           notes: notes.trim() || null,
+          save_as_draft: saveAsDraft,
         }),
         timeoutMs: 25000,
       })
-      toast.success("تم تسجيل الجرد")
+      toast.success(saveAsDraft ? "تم حفظ مسودة الجرد" : "تم تسجيل الجرد وترحيله للمراجعة")
       setShowAdd(false)
       resetForm()
       void load()
@@ -235,20 +239,25 @@ export function StockCountsView() {
     } finally { setSaving(false) }
   }
 
-  async function approve(row: StockCountRow) {
-    setApprovingId(row.id)
+  async function transition(row: StockCountRow, action: "post" | "approve" | "cancel") {
+    setProcessingId(row.id)
     try {
       await apiRequest<{ error?: string }>("/api/inventory/stock-counts", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "approve", count_id: row.id, pharmacy_id: auth.activePharmacyId }),
+        body: JSON.stringify({ action, count_id: row.id, pharmacy_id: auth.activePharmacyId }),
         timeoutMs: 25000,
       })
-      toast.success("تم اعتماد الجرد وتسوية المخزون")
+      const messages = {
+        post: "تم ترحيل مسودة الجرد للمراجعة",
+        approve: "تم اعتماد الجرد وتسوية المخزون",
+        cancel: "تم إلغاء سجل الجرد",
+      }
+      toast.success(messages[action])
       void load()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل اعتماد الجرد")
-    } finally { setApprovingId(null) }
+      toast.error(error instanceof Error ? error.message : "فشل تحديث الجرد")
+    } finally { setProcessingId(null) }
   }
 
   return (
@@ -284,9 +293,10 @@ export function StockCountsView() {
             </NativeSelect>
             <NativeSelect value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setPage(1) }}>
               <NativeSelectOption value="all">كل الحالات</NativeSelectOption>
-              <NativeSelectOption value="matched">مطابق</NativeSelectOption>
-              <NativeSelectOption value="variance">فروقات</NativeSelectOption>
+              <NativeSelectOption value="draft">مسودة</NativeSelectOption>
+              <NativeSelectOption value="posted">مرحّل للمراجعة</NativeSelectOption>
               <NativeSelectOption value="approved">معتمد</NativeSelectOption>
+              <NativeSelectOption value="cancelled">ملغي</NativeSelectOption>
             </NativeSelect>
           </CardContent>
         </Card>
@@ -338,11 +348,24 @@ export function StockCountsView() {
                     <TableCell className="text-center text-xs font-bold">{new Date(row.created_at).toLocaleString("ar-EG")}</TableCell>
                     {canWrite ? (
                       <TableCell className="text-center">
-                        {["posted", "variance", "matched"].includes(row.status) ? (
-                          <Button size="sm" variant="outline" className="h-8 rounded-xl border-emerald-200 text-emerald-700 hover:bg-emerald-50" disabled={approvingId === row.id} onClick={() => void approve(row)}>
-                            {approvingId === row.id ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />} اعتماد
-                          </Button>
-                        ) : <span className="text-xs font-black text-slate-400">—</span>}
+                        <div className="flex flex-wrap items-center justify-center gap-1">
+                          {row.status === "draft" ? (
+                            <Button size="sm" variant="outline" className="h-8 rounded-xl border-blue-200 text-blue-700 hover:bg-blue-50" disabled={processingId === row.id} onClick={() => void transition(row, "post")}>
+                              {processingId === row.id ? <Loader2 className="size-3 animate-spin" /> : <Send className="size-3" />} ترحيل
+                            </Button>
+                          ) : null}
+                          {row.status === "posted" ? (
+                            <Button size="sm" variant="outline" className="h-8 rounded-xl border-emerald-200 text-emerald-700 hover:bg-emerald-50" disabled={processingId === row.id} onClick={() => void transition(row, "approve")}>
+                              {processingId === row.id ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />} اعتماد
+                            </Button>
+                          ) : null}
+                          {["draft", "posted"].includes(row.status) ? (
+                            <Button size="sm" variant="ghost" className="h-8 rounded-xl text-rose-600" disabled={processingId === row.id} onClick={() => void transition(row, "cancel")}>
+                              <XCircle className="size-3" /> إلغاء
+                            </Button>
+                          ) : null}
+                          {["approved", "cancelled"].includes(row.status) ? <span className="text-xs font-black text-slate-400">—</span> : null}
+                        </div>
                       </TableCell>
                     ) : null}
                   </TableRow>
@@ -404,11 +427,15 @@ export function StockCountsView() {
                 <div className="space-y-1.5"><Label className="font-black">الوحدة</Label><Input value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="مثال: كرتونة، شريط..." className="h-11 rounded-xl" /></div>
               </div>
               <div className="space-y-1.5"><Label className="font-black">ملاحظات</Label><Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="اختياري..." className="min-h-20 rounded-xl" /></div>
+              <label className="flex items-center gap-2 rounded-2xl border border-slate-200 p-3 text-sm font-black">
+                <input type="checkbox" checked={saveAsDraft} onChange={(event) => setSaveAsDraft(event.target.checked)} />
+                حفظ كمسودة بدون ترحيلها للاعتماد
+              </label>
             </div>
             <DialogFooter>
               <Button variant="outline" className="rounded-xl" onClick={() => setShowAdd(false)}>إلغاء</Button>
               <Button className="rounded-xl" disabled={saving || !selectedItemId || !selectedBranchId} onClick={() => void addRecord()}>
-                {saving ? <Loader2 className="size-4 animate-spin" /> : null} تسجيل
+                {saving ? <Loader2 className="size-4 animate-spin" /> : null} {saveAsDraft ? "حفظ المسودة" : "تسجيل وترحيل"}
               </Button>
             </DialogFooter>
           </DialogContent>

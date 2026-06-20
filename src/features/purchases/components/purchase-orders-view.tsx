@@ -14,7 +14,10 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
+import { apiClient } from "@/lib/http/api-client"
 import { cn } from "@/lib/utils"
+import { PurchaseOrderCreateDialog } from "@/features/purchases/components/purchase-order-create-dialog"
+import { PurchaseOrderReceiveDialog, type PurchaseOrderLine } from "@/features/purchases/components/purchase-order-receive-dialog"
 
 type OrderRow = {
   id: string
@@ -26,7 +29,9 @@ type OrderRow = {
   due_amount: number
   order_date: string
   notes?: string | null
+  lines?: PurchaseOrderLine[] | null
   branch?: { id: string; name: string } | null
+  allowed_statuses?: string[]
 }
 
 type StatusOption = { value: string; label: string }
@@ -79,9 +84,10 @@ export function PurchaseOrdersView() {
         page: String(page),
         page_size: "25",
       })
-      const response = await fetch(`/api/purchases/orders?${params.toString()}`, { cache: "no-store" })
-      const data = await response.json().catch(() => ({})) as ResponseData
-      if (!response.ok) throw new Error(data.error ?? "فشل تحميل أوامر الشراء")
+      const data = await apiClient.get<ResponseData>(`/api/purchases/orders?${params.toString()}`, {
+        cache: "no-store",
+        fallbackMessage: "فشل تحميل أوامر الشراء",
+      })
       setRows(data.orders ?? [])
       setStatusOptions(data.statuses ?? [])
       setTotalPages(data.pagination?.totalPages ?? 1)
@@ -100,13 +106,11 @@ export function PurchaseOrdersView() {
   async function updateStatus(order: OrderRow, newStatus: string) {
     if (order.status === newStatus) return
     try {
-      const response = await fetch("/api/purchases/orders", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: order.id, status: newStatus, pharmacy_id: auth.activePharmacyId }),
-      })
-      const data = await response.json().catch(() => ({})) as { error?: string }
-      if (!response.ok) throw new Error(data.error ?? "فشل تحديث حالة الأمر")
+      await apiClient.patch("/api/purchases/orders", {
+        id: order.id,
+        status: newStatus,
+        pharmacy_id: auth.activePharmacyId,
+      }, { fallbackMessage: "فشل تحديث حالة الأمر" })
       toast.success("تم تحديث حالة أمر الشراء")
       await load()
     } catch (error) {
@@ -122,9 +126,12 @@ export function PurchaseOrdersView() {
           subtitle="إدارة أوامر الشراء للموردين - متابعة الحالات والموافقات."
           icon={ClipboardList}
           actions={(
-            <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()} disabled={loading}>
-              <RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              {(auth.isDeveloper || auth.can("purchases:write")) ? <PurchaseOrderCreateDialog onCreated={load} /> : null}
+              <Button variant="outline" className="h-10 rounded-xl" onClick={() => void load()} disabled={loading}>
+                <RefreshCw className={cn("size-4", loading && "animate-spin")} /> تحديث
+              </Button>
+            </div>
           )}
         />
 
@@ -177,7 +184,10 @@ export function PurchaseOrdersView() {
                     </TableCell>
                     <TableCell className="text-center text-xs font-bold">{new Date(order.order_date).toLocaleString("ar-EG")}</TableCell>
                     <TableCell>
-                      <div className="flex items-center justify-center gap-1">
+                      <div className="flex flex-wrap items-center justify-center gap-1">
+                        {(auth.isDeveloper || auth.can("purchases:write")) && ["sent", "partial"].includes(order.status) ? (
+                          <PurchaseOrderReceiveDialog order={order} onReceived={load} />
+                        ) : null}
                         {(auth.isDeveloper || auth.can("purchases:write")) ? (
                           <NativeSelect
                             value={order.status}
@@ -185,9 +195,11 @@ export function PurchaseOrdersView() {
                             className="w-36"
                             selectClassName="h-8 text-xs rounded-xl"
                           >
-                            {statusOptions.map((opt) => (
-                              <NativeSelectOption key={opt.value} value={opt.value}>{opt.label}</NativeSelectOption>
-                            ))}
+                            {statusOptions
+                              .filter((option) => option.value === order.status || (order.allowed_statuses ?? []).includes(option.value))
+                              .map((opt) => (
+                                <NativeSelectOption key={opt.value} value={opt.value}>{opt.label}</NativeSelectOption>
+                              ))}
                           </NativeSelect>
                         ) : (
                           <span className="text-xs font-bold text-slate-400">—</span>

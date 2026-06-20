@@ -20,7 +20,7 @@ export class RouteHttpError extends Error {
   }
 }
 
-type TenantRequestContextOptions = {
+export type TenantRequestContextOptions = {
   permission?: Permission
   anyPermissions?: Permission[]
   forbiddenMessage?: string
@@ -33,6 +33,7 @@ export class TenantRequestContext {
   readonly db: SupabaseClient
   readonly pharmacyId: string
   readonly branchId: string | null
+  readonly actorId: string
 
   private constructor(params: {
     url: URL
@@ -40,19 +41,51 @@ export class TenantRequestContext {
     db: SupabaseClient
     pharmacyId: string
     branchId: string | null
+    actorId: string
   }) {
     this.url = params.url
     this.scope = params.scope
     this.db = params.db
     this.pharmacyId = params.pharmacyId
     this.branchId = params.branchId
+    this.actorId = params.actorId
   }
 
   static async from(request: Request, options: TenantRequestContextOptions) {
     const url = new URL(request.url)
-    const requestedBranchId = url.searchParams.get("branch_id")
-    const scope = await getServerAuthScope({
+    return TenantRequestContext.create({
+      url,
+      options,
       requestedPharmacyId: url.searchParams.get("pharmacy_id"),
+      requestedBranchId: url.searchParams.get("branch_id"),
+    })
+  }
+
+  static async forMutation(
+    request: Request,
+    body: Record<string, unknown>,
+    options: TenantRequestContextOptions,
+  ) {
+    const url = new URL(request.url)
+    const value = (key: string) => typeof body[key] === "string" ? String(body[key]).trim() : null
+    return TenantRequestContext.create({
+      url,
+      options,
+      requestedPharmacyId: value("pharmacy_id") ?? url.searchParams.get("pharmacy_id"),
+      requestedBranchId: value("branch_id") ?? url.searchParams.get("branch_id"),
+    })
+  }
+
+  private static async create(params: {
+    url: URL
+    options: TenantRequestContextOptions
+    requestedPharmacyId: string | null
+    requestedBranchId: string | null
+  }) {
+    const { url, options } = params
+    const requestedBranchId = params.requestedBranchId
+    const scope = await getServerAuthScope({
+      requestedPharmacyId: params.requestedPharmacyId,
       requestedBranchId: requestedBranchId === "all" ? null : requestedBranchId,
     })
 
@@ -90,6 +123,7 @@ export class TenantRequestContext {
       db,
       pharmacyId: scope.activePharmacyId,
       branchId,
+      actorId: scope.user.id,
     })
   }
 

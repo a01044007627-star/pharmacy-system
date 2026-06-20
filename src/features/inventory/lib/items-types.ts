@@ -39,6 +39,14 @@ export type ItemSubUnitRow = {
   sub_unit?: string | null
   qty_per_main_unit?: number | string | null
   unit_raw?: string | null
+  unit_id?: string | null
+  unit_code?: string | null
+  category?: string | null
+  quantity_mode?: "discrete" | "continuous" | null
+  quantity_scale?: number | string | null
+  allows_fraction?: boolean | null
+  purchase_enabled?: boolean | null
+  sale_enabled?: boolean | null
 }
 
 export type ItemBatchRow = {

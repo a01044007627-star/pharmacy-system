@@ -1,3 +1,5 @@
+import { Money } from "@/domain/shared/decimal-value"
+
 export type PurchaseTotals = {
   subtotal: number
   lineDiscount: number
@@ -15,23 +17,35 @@ export type PurchaseCalculationLine = {
   discount: number
 }
 
-function money(value: number) {
-  return Math.round((value + Number.EPSILON) * 100) / 100
-}
-
 export function calculatePurchaseTotals(
   lines: PurchaseCalculationLine[],
   values: { headerDiscount?: number; tax?: number; shipping?: number; paid?: number } = {},
 ): PurchaseTotals {
-  const subtotal = money(lines.reduce((sum, line) => sum + Math.max(0, line.quantity) * Math.max(0, line.buyPrice), 0))
-  const lineDiscount = money(lines.reduce((sum, line) => {
-    const gross = Math.max(0, line.quantity) * Math.max(0, line.buyPrice)
-    return sum + Math.min(gross, Math.max(0, line.discount))
-  }, 0))
-  const headerDiscount = money(Math.min(Math.max(0, subtotal - lineDiscount), Math.max(0, values.headerDiscount ?? 0)))
-  const tax = money(Math.max(0, values.tax ?? 0))
-  const shipping = money(Math.max(0, values.shipping ?? 0))
-  const total = money(Math.max(0, subtotal - lineDiscount - headerDiscount + tax + shipping))
-  const paid = money(Math.min(total, Math.max(0, values.paid ?? total)))
-  return { subtotal, lineDiscount, headerDiscount, tax, shipping, total, paid, due: money(total - paid) }
+  let subtotal = Money.zero()
+  let lineDiscount = Money.zero()
+
+  for (const line of lines) {
+    const gross = Money.nonNegative(line.buyPrice).multiply(Math.max(0, Number(line.quantity) || 0))
+    subtotal = subtotal.add(gross)
+    lineDiscount = lineDiscount.add(Money.nonNegative(line.discount).min(gross))
+  }
+
+  const netBeforeHeader = subtotal.subtract(lineDiscount).max(0)
+  const headerDiscount = Money.nonNegative(values.headerDiscount).min(netBeforeHeader)
+  const tax = Money.nonNegative(values.tax)
+  const shipping = Money.nonNegative(values.shipping)
+  const total = netBeforeHeader.subtract(headerDiscount).add(tax).add(shipping).max(0)
+  const paid = Money.nonNegative(values.paid ?? total.toNumber()).min(total)
+  const due = total.subtract(paid).max(0)
+
+  return {
+    subtotal: subtotal.toNumber(),
+    lineDiscount: lineDiscount.toNumber(),
+    headerDiscount: headerDiscount.toNumber(),
+    tax: tax.toNumber(),
+    shipping: shipping.toNumber(),
+    total: total.toNumber(),
+    paid: paid.toNumber(),
+    due: due.toNumber(),
+  }
 }

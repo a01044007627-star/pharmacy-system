@@ -43,6 +43,14 @@ import { cacheItemDetail, queueItemApiRequest, readCachedItemDetail } from "@/fe
 import { apiRequest, isRequestAbort } from "@/lib/http/api-client"
 import { network } from "@/lib/network";
 
+type UnitLookupOption = LookupOption & {
+  code?: string | null;
+  category?: string | null;
+  quantity_mode?: "discrete" | "continuous" | null;
+  quantity_scale?: number | null;
+  allows_fraction?: boolean | null;
+};
+
 type UploadResult = {
   serverData?: { url?: string | null };
   ufsUrl?: string | null;
@@ -375,7 +383,7 @@ export function ItemCreateView({
   const [loading, setLoading] = useState(mode === "edit");
   const [groups, setGroups] = useState<LookupOption[]>([]);
   const [brands, setBrands] = useState<LookupOption[]>([]);
-  const [units, setUnits] = useState<LookupOption[]>([]);
+  const [units, setUnits] = useState<UnitLookupOption[]>([]);
   const [quickLookup, setQuickLookup] = useState({
     group: "",
     brand: "",
@@ -403,11 +411,11 @@ export function ItemCreateView({
         const [gData, bData, uData] = await Promise.all([
           apiRequest<{ groups?: LookupOption[] }>(`/api/items/groups${scopeQuery}`, { cache: "no-store", signal: controller.signal, timeoutMs: 15000, retries: 1 }),
           apiRequest<{ brands?: LookupOption[] }>(`/api/items/brands${scopeQuery}`, { cache: "no-store", signal: controller.signal, timeoutMs: 15000, retries: 1 }),
-          apiRequest<{ units?: Array<{ id: string; unit_name: string }> }>(`/api/items/units${scopeQuery}`, { cache: "no-store", signal: controller.signal, timeoutMs: 15000, retries: 1 }),
+          apiRequest<{ units?: Array<{ id: string; unit_name: string; code?: string | null; category?: string | null; quantity_mode?: "discrete" | "continuous" | null; quantity_scale?: number | null; allows_fraction?: boolean | null }> }>(`/api/items/units${scopeQuery}`, { cache: "no-store", signal: controller.signal, timeoutMs: 15000, retries: 1 }),
         ]);
         setGroups(gData.groups ?? []);
         setBrands(bData.brands ?? []);
-        setUnits((uData.units ?? []).map((u) => ({ id: u.id, name: u.unit_name })));
+        setUnits((uData.units ?? []).map((u) => ({ id: u.id, name: u.unit_name, code: u.code, category: u.category, quantity_mode: u.quantity_mode, quantity_scale: u.quantity_scale, allows_fraction: u.allows_fraction })));
       } catch (error) {
         if (!isRequestAbort(error)) toast.error(error instanceof Error ? error.message : "فشل تحميل بيانات التصنيف");
       }
@@ -523,7 +531,7 @@ export function ItemCreateView({
       const data = await apiRequest<{
         group?: LookupOption;
         brand?: LookupOption;
-        unit?: { id: string; unit_name?: string; name?: string };
+        unit?: { id: string; unit_name?: string; name?: string; code?: string | null; category?: string | null; quantity_mode?: "discrete" | "continuous" | null; quantity_scale?: number | null; allows_fraction?: boolean | null };
         error?: string;
       }>(endpoint, {
         method: "POST",
@@ -546,9 +554,14 @@ export function ItemCreateView({
         );
         set("brand_id", data.brand.id);
       } else if (kind === "unit" && data.unit) {
-        const unit = {
+        const unit: UnitLookupOption = {
           id: data.unit.id,
           name: data.unit.unit_name ?? data.unit.name ?? name,
+          code: data.unit.code,
+          category: data.unit.category,
+          quantity_mode: data.unit.quantity_mode,
+          quantity_scale: data.unit.quantity_scale,
+          allows_fraction: data.unit.allows_fraction,
         };
         setUnits((prev) =>
           [...prev.filter((u) => u.name !== unit.name), unit].sort((a, b) =>
@@ -572,6 +585,17 @@ export function ItemCreateView({
     const qtyPerMain = Math.max(1, Number(form.qty_per_main_unit) || 1);
     const baseUnitName = form.sub_unit.trim() || form.unit.trim();
     const mainUnitName = form.main_unit.trim();
+    const baseDefinition = units.find((unit) => unit.name === baseUnitName || unit.name === form.unit);
+    const mainDefinition = units.find((unit) => unit.name === mainUnitName);
+    const policyFields = (definition?: UnitLookupOption) => ({
+      unit_code: definition?.code ?? null,
+      category: definition?.category ?? "other",
+      quantity_mode: definition?.quantity_mode ?? "discrete",
+      quantity_scale: definition?.quantity_scale ?? 0,
+      allows_fraction: definition?.allows_fraction ?? false,
+      purchase_enabled: true,
+      sale_enabled: true,
+    });
     const unitRows = [
       baseUnitName
         ? {
@@ -582,6 +606,7 @@ export function ItemCreateView({
             sub_unit: baseUnitName,
             qty_per_main_unit: qtyPerMain,
             unit_raw: form.unit_raw || form.unit,
+            ...policyFields(baseDefinition),
           }
         : null,
       mainUnitName && mainUnitName !== baseUnitName && qtyPerMain > 1
@@ -593,6 +618,7 @@ export function ItemCreateView({
             sub_unit: baseUnitName || form.unit,
             qty_per_main_unit: qtyPerMain,
             unit_raw: form.unit_raw || form.unit,
+            ...policyFields(mainDefinition),
           }
         : null,
     ].filter(Boolean);
@@ -637,6 +663,12 @@ export function ItemCreateView({
     }
     if (!form.unit.trim()) {
       toast.error("اختر الوحدة الأساسية للصنف");
+      return;
+    }
+    const conversionFactor = Number(form.qty_per_main_unit) || 1;
+    const mainDefinition = units.find((unit) => unit.name === form.main_unit.trim());
+    if ((mainDefinition?.quantity_mode ?? "discrete") === "discrete" && !Number.isInteger(conversionFactor)) {
+      toast.error("عدد الوحدات الفرعية داخل الوحدة الرئيسية يجب أن يكون رقمًا صحيحًا");
       return;
     }
     setSaving(true);
@@ -928,6 +960,8 @@ export function ItemCreateView({
               <Input
                 type="number"
                 min="1"
+                step="1"
+                inputMode="numeric"
                 value={form.qty_per_main_unit}
                 onChange={(e) => set("qty_per_main_unit", e.target.value)}
                 placeholder="مثال: 10"
