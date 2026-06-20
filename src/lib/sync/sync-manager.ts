@@ -26,6 +26,7 @@ const CORE_OFFLINE_TABLES = [
   "pharmacy_stock_balances",
   "pharmacy_partners",
   "pharmacy_patients",
+  "pharmacy_patient_visits",
   "pharmacy_settings",
   "pharmacy_tax_rates",
   "pharmacy_shifts",
@@ -51,6 +52,8 @@ const CORE_OFFLINE_TABLES = [
   "pharmacy_damaged_stock",
   "pharmacy_stock_counts",
   "pharmacy_payments",
+  "pharmacy_partner_balance_ledger",
+  "pharmacy_partner_communications",
   "pharmacy_loyalty_points",
   "pharmacy_loyalty_transactions",
   "pharmacy_loyalty_balances",
@@ -66,6 +69,13 @@ const CORE_OFFLINE_TABLES = [
 const MAX_RETRIES = 5
 const CORE_SYNC_INTERVAL = 6 * 60 * 60 * 1000
 const CORE_SYNC_KEY = "pharmacy-core-offline-sync"
+
+class PermanentSyncError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+    this.name = "PermanentSyncError"
+  }
+}
 
 export class SyncManager {
   private isSyncing = false
@@ -171,7 +181,14 @@ export class SyncManager {
               body: apiRequest.method === "DELETE" && !apiRequest.body ? undefined : JSON.stringify(apiRequest.body ?? {}),
             })
             const payload = await response.json().catch(() => ({})) as { error?: string }
-            if (!response.ok) throw new Error(payload.error ?? `فشل مزامنة ${apiRequest.label ?? "العملية"}`)
+            if (!response.ok) {
+              const message = payload.error ?? `فشل مزامنة ${apiRequest.label ?? "العملية"}`
+              // أخطاء التحقق والصلاحيات والتعارضات لن تتحسن بإعادة المحاولة.
+              if (response.status >= 400 && response.status < 500 && ![408, 409, 425, 429].includes(response.status)) {
+                throw new PermanentSyncError(message, response.status)
+              }
+              throw new Error(message)
+            }
           } else if (operation === "create") {
             const { error } = await supabase.from(table).insert(data)
             if (error) throw error
@@ -196,7 +213,8 @@ export class SyncManager {
           await localDB.addSyncLog({ id: `sync_${mutation.id}_${Date.now()}`, table, action: operation, status: "success", timestamp: new Date().toISOString(), details: "تمت مزامنة التغيير المحلي مع الخادم" })
         } catch (error) {
           failedCount += 1
-          const newRetryCount = retryCount + 1
+          const permanent = error instanceof PermanentSyncError
+          const newRetryCount = permanent ? MAX_RETRIES : retryCount + 1
 
           if (newRetryCount >= MAX_RETRIES) {
             await localDB.addDeadLetter({
@@ -213,7 +231,16 @@ export class SyncManager {
             await localDB.updateMutationRetry(mutation.id, newRetryCount)
           }
 
-          await localDB.addSyncLog({ id: `sync_failed_${mutation.id}_${Date.now()}`, table, action: operation, status: "failed", timestamp: new Date().toISOString(), details: error instanceof Error ? error.message : "فشل مزامنة تغيير محلي وسيعاد المحاولة لاحقًا" })
+          await localDB.addSyncLog({
+            id: `sync_failed_${mutation.id}_${Date.now()}`,
+            table,
+            action: operation,
+            status: "failed",
+            timestamp: new Date().toISOString(),
+            details: permanent
+              ? `${error instanceof Error ? error.message : "عملية غير صالحة"} — نُقلت للمراجعة ولن تتكرر تلقائيًا`
+              : error instanceof Error ? error.message : "فشل مزامنة تغيير محلي وسيعاد المحاولة لاحقًا",
+          })
           if (!(await network.check())) break
         }
       }

@@ -96,6 +96,9 @@ type CartLine = CashierProduct & {
   unit_price: number
 }
 
+type CustomerOption = { id: string; name: string; phone?: string | null }
+type PatientOption = { id: string; partner_id?: string | null; name: string; phone?: string | null }
+
 type RecentSale = {
   id: string
   invoice_number: string
@@ -291,6 +294,8 @@ export function CashierView() {
   const [recentSales, setRecentSales] = useState<RecentSale[]>([])
   const [lines, setLines] = useState<CartLine[]>([])
   const [customerName, setCustomerName] = useState("نقد جمهوري")
+  const [customerId, setCustomerId] = useState<string | null>(null)
+  const [customerOptions, setCustomerOptions] = useState<CustomerOption[]>([])
   const [paymentMethod, setPaymentMethod] = useState("cash")
   const [priceList, setPriceList] = useState("default")
   const [priceGroups, setPriceGroups] = useState<PriceGroup[]>([])
@@ -301,6 +306,8 @@ export function CashierView() {
   const [couponValidating, setCouponValidating] = useState(false)
   const [couponApplied, setCouponApplied] = useState<{ code: string; discount: number; label: string } | null>(null)
   const [patientName, setPatientName] = useState("")
+  const [patientId, setPatientId] = useState<string | null>(null)
+  const [patientOptions, setPatientOptions] = useState<PatientOption[]>([])
   const [doctorName, setDoctorName] = useState("")
   const [prescriptionNumber, setPrescriptionNumber] = useState("")
   const [loading, setLoading] = useState(false)
@@ -334,6 +341,26 @@ export function CashierView() {
   const authUserId = auth.user?.id ?? null
   const branchId = cashierBranchId ?? auth.activeBranchId
   const activeCashierBranch = auth.branches.find((branch) => branch.id === branchId) ?? auth.activeBranch
+  useEffect(() => {
+    if (!pharmacyId) { setCustomerOptions([]); setPatientOptions([]); return }
+    let cancelled = false
+    void Promise.all([
+      fetch(`/api/partners?pharmacy_id=${encodeURIComponent(pharmacyId)}&type=customer&status=active&page_size=250`, { cache: "no-store" }).then((r) => r.ok ? r.json() : Promise.reject()),
+      fetch(`/api/patients?pharmacy_id=${encodeURIComponent(pharmacyId)}&status=active&page_size=100`, { cache: "no-store" }).then((r) => r.ok ? r.json() : Promise.reject()),
+    ]).then(([partnersData, patientsData]) => {
+      if (cancelled) return
+      setCustomerOptions((partnersData.partners ?? []) as CustomerOption[])
+      setPatientOptions((patientsData.patients ?? []) as PatientOption[])
+    }).catch(async () => {
+      if (cancelled) return
+      try {
+        const [partners, patients] = await Promise.all([localDB.getTableRows("pharmacy_partners"), localDB.getTableRows("pharmacy_patients")])
+        setCustomerOptions(partners.filter((row) => row.pharmacy_id === pharmacyId && row.status === "active" && ["customer","both"].includes(String(row.type))).map((row) => ({ id: String(row.id), name: String(row.name), phone: row.phone ? String(row.phone) : null })))
+        setPatientOptions(patients.filter((row) => row.pharmacy_id === pharmacyId && row.status === "active").map((row) => ({ id: String(row.id), partner_id: row.partner_id ? String(row.partner_id) : null, name: String(row.name), phone: row.phone ? String(row.phone) : null })))
+      } catch { setCustomerOptions([]); setPatientOptions([]) }
+    })
+    return () => { cancelled = true }
+  }, [pharmacyId])
   const selectableBranches = useMemo(() => {
     if (auth.isDeveloper || auth.isOwner || ["owner", "admin"].includes(auth.role)) return auth.branches
     const membership = auth.memberships.find((row) => row.pharmacy_id === pharmacyId)
@@ -862,7 +889,9 @@ export function CashierView() {
     setCouponApplied(null)
     setCouponCode("")
     setCustomerName("نقد جمهوري")
+    setCustomerId(null)
     setPatientName("")
+    setPatientId(null)
     setDoctorName("")
     setPrescriptionNumber("")
     const preferred = settings.get("payments", "defaultPaymentMethod", "cash")
@@ -918,6 +947,8 @@ export function CashierView() {
       branch_id: branchId,
       shift_id: shift.id,
       customer_name: customerName,
+      customer_id: customerId,
+      patient_id: patientId,
       payment_method: effectiveMethod,
       paid_amount: effectivePaid,
       discount_total: safeInvoiceDiscount,
@@ -1230,7 +1261,24 @@ export function CashierView() {
               <div className="grid min-w-0 gap-2 sm:grid-cols-2">
                 <div className="flex h-11 overflow-hidden rounded-xl border-2 border-slate-200 bg-white transition-all focus-within:border-brand/40">
                   <span className="flex w-11 items-center justify-center border-l-2 border-slate-200 text-slate-400"><UserPlus className="size-4" strokeWidth={2.2} /></span>
-                  <Input disabled={!customerSelectionEnabled} className="h-full flex-1 rounded-none border-0 bg-transparent px-3 text-right text-sm font-bold shadow-none placeholder:font-bold focus-visible:ring-0 disabled:bg-slate-50" value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="نقد جمهوري" />
+                  {customerSelectionEnabled && customerOptions.length > 0 ? (
+                    <Select value={customerId ?? "cash"} onValueChange={(value) => {
+                      if (!value || value === "cash") { setCustomerId(null); setCustomerName("نقد جمهوري"); return }
+                      const customer = customerOptions.find((item) => item.id === value)
+                      setCustomerId(value)
+                      setCustomerName(customer?.name ?? "عميل")
+                    }}>
+                      <SelectTrigger className="h-full w-full rounded-none border-0 bg-transparent py-0 text-sm font-bold shadow-none hover:bg-transparent focus-visible:ring-0">
+                        <SelectValue>{customerName}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent align="start" sideOffset={8}>
+                        <SelectItem value="cash">نقد جمهوري</SelectItem>
+                        {customerOptions.map((customer) => <SelectItem key={customer.id} value={customer.id}>{customer.name}{customer.phone ? ` — ${customer.phone}` : ""}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input disabled={!customerSelectionEnabled} className="h-full flex-1 rounded-none border-0 bg-transparent px-3 text-right text-sm font-bold shadow-none placeholder:font-bold focus-visible:ring-0 disabled:bg-slate-50" value={customerName} onChange={(e) => { setCustomerId(null); setCustomerName(e.target.value) }} placeholder="نقد جمهوري" />
+                  )}
                 </div>
                 <div className="flex h-11 overflow-hidden rounded-xl border-2 border-slate-200 bg-white transition-all focus-within:border-brand/40">
                   <span className="flex w-11 items-center justify-center border-l-2 border-slate-200 text-slate-400"><Wallet className="size-4" strokeWidth={2.2} /></span>
@@ -1545,12 +1593,27 @@ export function CashierView() {
                       دواء مراقب أو يصرف بروشتة — أدخل بيانات الروشتة
                     </div>
                     <div className="space-y-2">
-                      <Input
+                      {patientOptions.length > 0 ? (
+                        <Select value={patientId ?? "manual"} onValueChange={(value) => {
+                          if (!value || value === "manual") { setPatientId(null); setPatientName(""); return }
+                          const patient = patientOptions.find((item) => item.id === value)
+                          setPatientId(value)
+                          setPatientName(patient?.name ?? "")
+                          if (patient?.partner_id) {
+                            setCustomerId(patient.partner_id)
+                            setCustomerName(patient.name)
+                          }
+                        }}>
+                          <SelectTrigger className="h-9 rounded-xl border-amber-200 bg-white text-xs"><SelectValue>{patientName || "اختر المريض المسجل"}</SelectValue></SelectTrigger>
+                          <SelectContent align="start"><SelectItem value="manual">إدخال اسم يدوي</SelectItem>{patientOptions.map((patient) => <SelectItem key={patient.id} value={patient.id}>{patient.name}{patient.phone ? ` — ${patient.phone}` : ""}</SelectItem>)}</SelectContent>
+                        </Select>
+                      ) : null}
+                      {!patientId ? <Input
                         value={patientName}
-                        onChange={(e) => setPatientName(e.target.value)}
+                        onChange={(e) => { setPatientId(null); setPatientName(e.target.value) }}
                         placeholder="اسم المريض"
                         className="h-9 rounded-xl border-amber-200 text-xs"
-                      />
+                      /> : null}
                       <div className="flex gap-2">
                         <Input
                           value={doctorName}

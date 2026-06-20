@@ -1,9 +1,10 @@
-﻿import { NextResponse } from "next/server"
+import { NextResponse } from "next/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-permissions"
+import { writeAuditLog } from "@/lib/audit/audit-log"
 
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
@@ -115,42 +116,37 @@ export async function POST(request: Request) {
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
     if (!scopeCan(scope, "financials:write")) return NextResponse.json({ error: "ليست لديك صلاحية تسجيل مصروفات" }, { status: 403 })
-
     const branchId = clean(body.branch_id) || scope.activeBranchId
     if (!branchId) return NextResponse.json({ error: "اختر الفرع" }, { status: 400 })
     assertBranchScope(scope, branchId)
-    const title = clean(body.title)
-    if (!title) return NextResponse.json({ error: "أدخل اسم المصروف" }, { status: 400 })
+    if (!clean(body.title)) return NextResponse.json({ error: "أدخل اسم المصروف" }, { status: 400 })
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
-
-    const { data: category } = await db
-      .from("pharmacy_expense_categories")
-      .select("name")
-      .eq("id", clean(body.category_id))
-      .maybeSingle()
-
-    const { data, error } = await db
-      .from("pharmacy_expenses")
-      .insert({
-        pharmacy_id: scope.activePharmacyId,
-        branch_id: branchId,
-        category_id: clean(body.category_id) || null,
-        category_name: (category?.name ?? clean(body.category_name)) || null,
-        title,
-        amount: Math.max(0, Number(body.amount) || 0),
-        tax_amount: Math.max(0, Number(body.tax_amount) || 0),
-        total: Math.max(0, Number(body.amount) || 0) + Math.max(0, Number(body.tax_amount) || 0),
-        payment_method: clean(body.payment_method) || "cash",
-        paid_to: clean(body.paid_to) || null,
-        notes: clean(body.notes) || null,
-        expense_date: clean(body.expense_date) || new Date().toISOString(),
-      })
-      .select("id")
-      .single()
+    const { data, error } = await db.rpc("create_expense_v1", {
+      p_pharmacy_id: scope.activePharmacyId,
+      p_branch_id: branchId,
+      p_actor_id: scope.user.id,
+      p_category_id: clean(body.category_id) || null,
+      p_category_name: clean(body.category_name) || null,
+      p_title: clean(body.title),
+      p_amount: Math.max(0, Number(body.amount) || 0),
+      p_tax_amount: Math.max(0, Number(body.tax_amount) || 0),
+      p_payment_method: clean(body.payment_method) || "cash",
+      p_paid_to: clean(body.paid_to) || null,
+      p_notes: clean(body.notes) || null,
+      p_expense_date: clean(body.expense_date) || new Date().toISOString(),
+      p_client_request_id: clean(body.client_request_id) || crypto.randomUUID(),
+    })
     if (error) throw error
-    return NextResponse.json({ expense: data }, { status: 201 })
+    const result = (data ?? {}) as { expense?: Record<string, unknown>; shift?: Record<string, unknown>; journal_entry_id?: string; duplicate?: boolean }
+    await writeAuditLog(db, {
+      pharmacyId: scope.activePharmacyId, branchId, actorId: scope.user.id,
+      eventType: "expense.created", source: "expenses",
+      description: "تم تسجيل المصروف وربطه بالقيد المحاسبي والوردية النقدية",
+      metadata: { expense_id: result.expense?.id, journal_entry_id: result.journal_entry_id, shift_id: result.shift?.id, duplicate: result.duplicate },
+    })
+    return NextResponse.json(result, { status: result.duplicate ? 200 : 201 })
   } catch (error) {
     console.error("expenses POST failed", error)
     const message = error instanceof Error ? error.message : "فشل حفظ المصروف"

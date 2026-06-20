@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
+import { writeAuditLog } from "@/lib/audit/audit-log"
 
 type Context = { params: Promise<{ purchaseId: string }> }
 
@@ -68,14 +69,27 @@ export async function PATCH(request: Request, context: Context) {
     if (!purchase) return NextResponse.json({ error: "فاتورة الشراء غير موجودة" }, { status: 404 })
     assertBranchScope(scope, purchase.branch_id)
 
-    const { data, error } = await db.rpc("void_received_purchase", {
+    const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : "إلغاء فاتورة شراء"
+    const { data, error } = await db.rpc("void_purchase_complete_v1", {
       p_pharmacy_id: scope.activePharmacyId,
       p_purchase_id: purchaseId,
       p_actor_id: scope.user.id,
-      p_reason: typeof body.reason === "string" ? body.reason.trim() : null,
+      p_reason: reason,
     })
     if (error) throw error
-    return NextResponse.json(data ?? { ok: true })
+    const result = (data ?? {}) as { operation?: Record<string, unknown>; finalization?: Record<string, unknown> }
+
+    await writeAuditLog(db, {
+      pharmacyId: scope.activePharmacyId,
+      branchId: purchase.branch_id,
+      actorId: scope.user.id,
+      eventType: "purchase.voided",
+      source: "purchases",
+      description: "تم إلغاء فاتورة الشراء وعكس المخزون ومديونية المورد والقيد المحاسبي",
+      severity: "warning",
+      metadata: { purchase_id: purchaseId, reason, operation: result.operation ?? null, finalization: result.finalization ?? null },
+    })
+    return NextResponse.json({ operation: result.operation ?? { ok: true }, finalization: result.finalization ?? null })
   } catch (error) {
     console.error("purchase void PATCH failed", error)
     const message = error instanceof Error ? error.message : "فشل إلغاء فاتورة الشراء"

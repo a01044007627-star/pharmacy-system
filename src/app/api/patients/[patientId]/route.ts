@@ -16,73 +16,147 @@ function clean(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
 }
 
-async function readMaybe<T>(query: PromiseLike<{ data: T[] | null; error: { message: string } | null }>, label: string) {
+function stringArray(value: unknown) {
+  if (Array.isArray(value)) return value.map(clean).filter(Boolean)
+  return clean(value).split(/[,،\n]/).map((part) => part.trim()).filter(Boolean)
+}
+
+function ageFromBirth(value: unknown) {
+  const birth = clean(value)
+  if (!birth) return null
+  const date = new Date(`${birth}T00:00:00`)
+  if (Number.isNaN(date.getTime()) || date > new Date()) throw new Error("تاريخ الميلاد غير صالح")
+  const today = new Date()
+  let age = today.getFullYear() - date.getFullYear()
+  const month = today.getMonth() - date.getMonth()
+  if (month < 0 || (month === 0 && today.getDate() < date.getDate())) age -= 1
+  return Math.max(0, age)
+}
+
+async function readRows<T>(query: PromiseLike<{ data: T[] | null; error: { message: string } | null }>, label: string) {
   const { data, error } = await query
   if (error) {
-    console.warn(`[patient detail] ${label} skipped:`, error.message)
+    console.warn(`[patient detail] ${label}:`, error.message)
     return [] as T[]
   }
   return data ?? []
 }
 
-export async function GET(_request: Request, context: Context) {
+export async function GET(request: Request, context: Context) {
   try {
     const { patientId } = await context.params
-    const scope = await getServerAuthScope()
+    const url = new URL(request.url)
+    const scope = await getServerAuthScope({ requestedPharmacyId: url.searchParams.get("pharmacy_id"), requestedBranchId: null })
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
     if (!scopeCan(scope, "crm:read")) return NextResponse.json({ error: "ليست لديك صلاحية عرض المرضى" }, { status: 403 })
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
-
-    const { data: patient, error } = await db
+    const { data: row, error } = await db
       .from("pharmacy_patients")
-      .select("*, partner:pharmacy_partners(id,name,phone,email,type,status)")
+      .select("*,partner:pharmacy_partners(id,name,phone,email,address,type,status,balance,credit_limit)")
       .eq("id", patientId)
       .eq("pharmacy_id", scope.activePharmacyId)
       .maybeSingle()
     if (error) throw error
-    if (!patient) return NextResponse.json({ error: "المريض غير موجود" }, { status: 404 })
+    if (!row) return NextResponse.json({ error: "المريض غير موجود" }, { status: 404 })
 
-    const partnerId = patient.partner_id
-    const [prescriptions, sales] = await Promise.all([
-      readMaybe(
-        db
-          .from("pharmacy_prescriptions")
-          .select("id,doctor_name,diagnosis,status,notes,created_at,updated_at")
-          .eq(partnerId ? "patient_id" : "patient_name", partnerId || patient.name)
-          .eq("pharmacy_id", scope.activePharmacyId)
-          .order("created_at", { ascending: false })
-          .limit(20),
-        "prescriptions",
-      ),
-      readMaybe(
-        db
-          .from("pharmacy_sales")
-          .select("id,invoice_number,total,paid_amount,due_amount,payment_method,status,sale_date,created_at")
-          .eq(partnerId ? "customer_id" : "customer_name", partnerId || patient.name)
-          .eq("pharmacy_id", scope.activePharmacyId)
-          .is("voided_at", null)
-          .order("sale_date", { ascending: false })
-          .limit(20),
-        "sales",
-      ),
+    const [visits, prescriptions, sales] = await Promise.all([
+      readRows<any>(db.from("pharmacy_patient_visits")
+        .select("id,visit_type,reference_table,reference_id,visit_date,total_amount,notes")
+        .eq("pharmacy_id", scope.activePharmacyId)
+        .eq("patient_id", patientId)
+        .order("visit_date", { ascending: false }).limit(100), "visits"),
+      readRows<any>(db.from("pharmacy_prescriptions")
+        .select("id,patient_record_id,patient_id,patient_name,doctor_name,diagnosis,status,notes,created_at,updated_at,sale_id")
+        .eq("pharmacy_id", scope.activePharmacyId)
+        .or(`patient_record_id.eq.${patientId}${row.partner_id ? `,patient_id.eq.${row.partner_id}` : ""}`)
+        .order("created_at", { ascending: false }).limit(50), "prescriptions"),
+      readRows<any>(db.from("pharmacy_sales")
+        .select("id,invoice_number,total,paid_amount,due_amount,payment_method,status,sale_date,patient_id,customer_id")
+        .eq("pharmacy_id", scope.activePharmacyId)
+        .or(`patient_id.eq.${patientId}${row.partner_id ? `,customer_id.eq.${row.partner_id}` : ""}`)
+        .is("voided_at", null)
+        .order("sale_date", { ascending: false }).limit(50), "sales"),
     ])
 
-    return NextResponse.json({
-      patient,
+    const saleIds = sales.map((sale) => sale.id)
+    const lineCounts = new Map<string, number>()
+    if (saleIds.length) {
+      const lines = await readRows<any>(db.from("pharmacy_sale_lines").select("sale_id").eq("pharmacy_id", scope.activePharmacyId).in("sale_id", saleIds), "sale lines")
+      for (const line of lines) lineCounts.set(line.sale_id, (lineCounts.get(line.sale_id) ?? 0) + 1)
+    }
+
+    const visitMap = new Map<string, any>()
+    for (const visit of visits) {
+      visitMap.set(visit.id, {
+        id: visit.id,
+        type: visit.visit_type,
+        reference: visit.reference_id ?? (visit.visit_type === "medication_review" ? "مراجعة دوائية" : visit.visit_type === "consultation" ? "استشارة صيدلية" : visit.visit_type === "sale_return" ? "مرتجع بيع" : visit.reference_table ?? "زيارة"),
+        date: visit.visit_date,
+        total: Number(visit.total_amount ?? 0),
+        items_count: 0,
+        doctor: null,
+        diagnosis: null,
+        notes: visit.notes,
+      })
+    }
+    for (const sale of sales) {
+      const key = `sale-${sale.id}`
+      visitMap.set(key, {
+        id: key,
+        type: "sale",
+        reference: sale.invoice_number,
+        date: sale.sale_date,
+        total: Number(sale.total ?? 0),
+        items_count: lineCounts.get(sale.id) ?? 0,
+        doctor: null,
+        diagnosis: null,
+      })
+    }
+    for (const prescription of prescriptions) {
+      const key = `prescription-${prescription.id}`
+      visitMap.set(key, {
+        id: key,
+        type: "prescription",
+        reference: `RX-${String(prescription.id).slice(0, 8).toUpperCase()}`,
+        date: prescription.created_at,
+        total: 0,
+        items_count: 0,
+        doctor: prescription.doctor_name,
+        diagnosis: prescription.diagnosis,
+      })
+    }
+    const shapedVisits = Array.from(visitMap.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+
+    const patient = {
+      ...row,
+      birth_date: row.date_of_birth,
+      last_visit: row.last_visit_date,
+      medical: {
+        allergies: Array.isArray(row.allergies) ? row.allergies : [],
+        chronic_diseases: Array.isArray(row.chronic_diseases) ? row.chronic_diseases : [],
+        medications: Array.isArray(row.current_medications) ? row.current_medications : [],
+        blood_type: row.blood_type,
+        medical_history: row.medical_history,
+        surgical_history: row.surgical_history,
+        family_history: row.family_history,
+        notes: row.medical_history || row.notes,
+      },
+      insurance: {
+        provider: row.insurance_company,
+        policy_number: row.insurance_policy_number,
+        expiry_date: row.insurance_expiry_date,
+        coverage_percent: 0,
+      },
+      emergency: { name: row.emergency_contact_name, phone: row.emergency_contact_phone },
+      visits: shapedVisits,
       prescriptions,
       sales,
-      summary: {
-        visit_count: patient.visit_count,
-        last_visit_date: patient.last_visit_date,
-        total_purchases: patient.total_purchases,
-        prescription_count: prescriptions.length,
-        sales_count: sales.length,
-        sales_total: sales.reduce((acc: number, s: any) => acc + Number(s.total ?? 0), 0),
-      },
-    })
+    }
+
+    return NextResponse.json({ patient })
   } catch (error) {
     console.error("patient detail GET failed", error)
     const message = error instanceof Error ? error.message : "فشل تحميل بيانات المريض"
@@ -94,85 +168,66 @@ export async function PATCH(request: Request, context: Context) {
   try {
     const { patientId } = await context.params
     const body = await request.json().catch(() => ({})) as Record<string, unknown>
-
-    const scope = await getServerAuthScope({
-      requestedPharmacyId: clean(body.pharmacy_id) || null,
-      requestedBranchId: null,
-    })
+    const scope = await getServerAuthScope({ requestedPharmacyId: clean(body.pharmacy_id) || null, requestedBranchId: null })
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
     if (!scopeCan(scope, "crm:write")) return NextResponse.json({ error: "ليست لديك صلاحية تعديل المرضى" }, { status: 403 })
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
-
-    const { data: existing, error: existingError } = await db
-      .from("pharmacy_patients")
-      .select("id,partner_id,name,phone,email,date_of_birth,gender,status,blood_type")
-      .eq("id", patientId)
-      .eq("pharmacy_id", scope.activePharmacyId)
-      .maybeSingle()
+    const { data: existing, error: existingError } = await db.from("pharmacy_patients").select("*")
+      .eq("id", patientId).eq("pharmacy_id", scope.activePharmacyId).maybeSingle()
     if (existingError) throw existingError
     if (!existing) return NextResponse.json({ error: "المريض غير موجود" }, { status: 404 })
 
-    const allowedFields = [
-      "name", "phone", "email", "address", "gender", "date_of_birth",
-      "id_number", "blood_type", "allergies", "chronic_diseases",
-      "current_medications", "medical_history", "surgical_history",
-      "family_history", "emergency_contact_name", "emergency_contact_phone",
-      "insurance_company", "insurance_policy_number", "insurance_expiry_date",
-      "notes", "status",
-    ]
     const updates: Record<string, unknown> = {}
-    for (const field of allowedFields) {
-      if (body[field] !== undefined) {
-        if (["allergies", "chronic_diseases", "current_medications"].includes(field)) {
-          updates[field] = Array.isArray(body[field]) ? body[field] : []
-        } else if (field === "gender") {
-          const val = clean(body[field])
-          updates[field] = val && ["male", "female"].includes(val) ? val : existing.gender
-        } else if (field === "blood_type") {
-          const val = clean(body[field])
-          updates[field] = val && ["A+","A-","B+","B-","AB+","AB-","O+","O-"].includes(val) ? val : null
-        } else if (field === "status") {
-          const val = clean(body[field])
-          updates[field] = ["active", "inactive", "archived"].includes(val) ? val : existing.status
-        } else if (field === "date_of_birth") {
-          const val = clean(body[field])
-          updates[field] = val || null
-          updates.age = val ? Math.floor((Date.now() - new Date(val).getTime()) / (365.25 * 86400000)) : null
-        } else {
-          updates[field] = clean(body[field]) || null
-        }
-      }
+    const textFields = ["name","phone","email","address","id_number","medical_history","surgical_history","family_history","emergency_contact_name","emergency_contact_phone","insurance_company","insurance_policy_number","notes"]
+    for (const field of textFields) if (body[field] !== undefined) updates[field] = clean(body[field]) || null
+    const birthValue = body.date_of_birth !== undefined ? body.date_of_birth : body.birth_date
+    if (birthValue !== undefined) {
+      const birth = clean(birthValue)
+      updates.date_of_birth = birth || null
+      updates.age = birth ? ageFromBirth(birth) : null
+    }
+    if (body.insurance_expiry_date !== undefined) updates.insurance_expiry_date = clean(body.insurance_expiry_date) || null
+    if (body.gender !== undefined) {
+      const value = clean(body.gender)
+      updates.gender = ["male", "female"].includes(value) ? value : null
+    }
+    if (body.blood_type !== undefined) {
+      const value = clean(body.blood_type)
+      updates.blood_type = ["A+","A-","B+","B-","AB+","AB-","O+","O-"].includes(value) ? value : null
+    }
+    for (const field of ["allergies","chronic_diseases","current_medications"]) if (body[field] !== undefined) updates[field] = stringArray(body[field])
+    if (body.status !== undefined) {
+      const value = clean(body.status)
+      if (!["active", "inactive", "archived"].includes(value)) return NextResponse.json({ error: "حالة المريض غير صالحة" }, { status: 400 })
+      updates.status = value
+    }
+    if (updates.name !== undefined && !updates.name) return NextResponse.json({ error: "اسم المريض مطلوب" }, { status: 400 })
+    if (!Object.keys(updates).length) return NextResponse.json({ error: "لا توجد بيانات للتحديث" }, { status: 400 })
+
+    const idNumber = clean(updates.id_number ?? existing.id_number)
+    if (idNumber) {
+      const { data: duplicate } = await db.from("pharmacy_patients").select("id").eq("pharmacy_id", scope.activePharmacyId)
+        .eq("id_number", idNumber).neq("id", patientId).neq("status", "archived").limit(1).maybeSingle()
+      if (duplicate) return NextResponse.json({ error: "يوجد مريض آخر بنفس رقم الهوية" }, { status: 409 })
     }
 
-    if (Object.keys(updates).length === 0) {
-      return NextResponse.json({ error: "لا توجد بيانات للتحديث" }, { status: 400 })
-    }
-
-    const { data, error } = await db
-      .from("pharmacy_patients")
-      .update(updates)
-      .eq("id", patientId)
-      .eq("pharmacy_id", scope.activePharmacyId)
-      .select()
-      .maybeSingle()
+    const { data, error } = await db.from("pharmacy_patients").update({ ...updates, updated_at: new Date().toISOString() })
+      .eq("id", patientId).eq("pharmacy_id", scope.activePharmacyId).select().single()
     if (error) throw error
-    if (!data) return NextResponse.json({ error: "فشل تحديث بيانات المريض" }, { status: 500 })
 
     if (existing.partner_id) {
-      const partnerUpdates: Record<string, unknown> = {}
-      if (body.name !== undefined && clean(body.name) !== existing.name) partnerUpdates.name = clean(body.name)
-      if (body.phone !== undefined && clean(body.phone) !== existing.phone) partnerUpdates.phone = clean(body.phone) || null
-      if (body.email !== undefined && clean(body.email) !== existing.email) partnerUpdates.email = clean(body.email) || null
-      if (Object.keys(partnerUpdates).length > 0) {
-        const { error: partnerError } = await db
-          .from("pharmacy_partners")
-          .update({ ...partnerUpdates, updated_at: new Date().toISOString() })
-          .eq("id", existing.partner_id)
-          .eq("pharmacy_id", scope.activePharmacyId)
-        if (partnerError) console.warn("[patient PATCH] partner update failed:", partnerError.message)
+      const partnerUpdates: Record<string, unknown> = { updated_at: new Date().toISOString() }
+      for (const field of ["name", "phone", "email", "address"] as const) {
+        if (updates[field] !== undefined) partnerUpdates[field] = updates[field]
+      }
+      if (updates.status !== undefined) partnerUpdates.status = updates.status === "active" ? "active" : "inactive"
+      if (Object.keys(partnerUpdates).length > 1) {
+        const { error: partnerError } = await db.from("pharmacy_partners").update(partnerUpdates)
+          .eq("id", existing.partner_id).eq("pharmacy_id", scope.activePharmacyId)
+        if (partnerError) throw partnerError
       }
     }
 
@@ -181,10 +236,9 @@ export async function PATCH(request: Request, context: Context) {
       actorId: scope.user.id,
       eventType: "patient.updated",
       source: "patients",
-      description: "تم تعديل بيانات المريض",
-      metadata: { patient_id: data.id, fields: Object.keys(updates) },
+      description: "تم تعديل ملف المريض",
+      metadata: { patient_id: patientId, fields: Object.keys(updates) },
     })
-
     return NextResponse.json({ patient: data })
   } catch (error) {
     console.error("patient detail PATCH failed", error)
@@ -193,43 +247,24 @@ export async function PATCH(request: Request, context: Context) {
   }
 }
 
-export async function DELETE(_request: Request, context: Context) {
+export async function DELETE(request: Request, context: Context) {
   try {
     const { patientId } = await context.params
-    const scope = await getServerAuthScope()
+    const url = new URL(request.url)
+    const scope = await getServerAuthScope({ requestedPharmacyId: url.searchParams.get("pharmacy_id"), requestedBranchId: null })
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
     if (!scopeCan(scope, "crm:write")) return NextResponse.json({ error: "ليست لديك صلاحية أرشفة المرضى" }, { status: 403 })
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
-
-    const { data: existing, error: existingError } = await db
-      .from("pharmacy_patients")
-      .select("id,status,partner_id")
-      .eq("id", patientId)
-      .eq("pharmacy_id", scope.activePharmacyId)
-      .maybeSingle()
-    if (existingError) throw existingError
-    if (!existing) return NextResponse.json({ error: "المريض غير موجود" }, { status: 404 })
-    if (existing.status === "archived") return NextResponse.json({ error: "المريض مرفوع بالفعل" }, { status: 400 })
-
-    const { error } = await db
-      .from("pharmacy_patients")
-      .update({ status: "archived" })
-      .eq("id", patientId)
-      .eq("pharmacy_id", scope.activePharmacyId)
+    const { data, error } = await db.from("pharmacy_patients").update({ status: "archived", updated_at: new Date().toISOString() })
+      .eq("id", patientId).eq("pharmacy_id", scope.activePharmacyId).neq("status", "archived").select("id,partner_id").maybeSingle()
     if (error) throw error
+    if (!data) return NextResponse.json({ error: "المريض غير موجود أو مؤرشف بالفعل" }, { status: 404 })
+    if (data.partner_id) await db.from("pharmacy_partners").update({ status: "inactive", updated_at: new Date().toISOString() }).eq("id", data.partner_id).eq("pharmacy_id", scope.activePharmacyId)
 
-    await writeAuditLog(db, {
-      pharmacyId: scope.activePharmacyId,
-      actorId: scope.user.id,
-      eventType: "patient.archived",
-      source: "patients",
-      description: "تم أرشفة المريض",
-      metadata: { patient_id: patientId },
-    })
-
+    await writeAuditLog(db, { pharmacyId: scope.activePharmacyId, actorId: scope.user.id, eventType: "patient.archived", source: "patients", description: "تم أرشفة المريض", metadata: { patient_id: patientId } })
     return NextResponse.json({ ok: true })
   } catch (error) {
     console.error("patient DELETE failed", error)

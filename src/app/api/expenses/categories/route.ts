@@ -1,7 +1,8 @@
-﻿import { NextResponse } from "next/server"
+import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { scopeCan } from "@/lib/auth/server-permissions"
+import { writeAuditLog } from "@/lib/audit/audit-log"
 
 function clean(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
@@ -45,15 +46,20 @@ export async function POST(request: Request) {
     const supabase = await createClient()
     const { data, error } = await supabase
       .from("pharmacy_expense_categories")
-      .insert({
+      .upsert({
         pharmacy_id: scope.activePharmacyId,
         name,
         parent_id: clean(body.parent_id) || null,
         sort_order: Math.max(0, Number(body.sort_order) || 0),
-      })
+      }, { onConflict: "pharmacy_id,name" })
       .select("id,name,parent_id,sort_order")
       .single()
     if (error) throw error
+    await writeAuditLog(supabase, {
+      pharmacyId: scope.activePharmacyId, actorId: scope.user.id,
+      eventType: "expense.category_saved", source: "expenses",
+      description: "تم حفظ تصنيف مصروف", metadata: { category_id: data.id, name },
+    })
     return NextResponse.json({ category: data }, { status: 201 })
   } catch (error) {
     console.error("expense categories POST failed", error)

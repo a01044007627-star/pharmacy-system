@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
+import { writeAuditLog } from "@/lib/audit/audit-log"
 
 type Context = { params: Promise<{ returnId: string }> }
 
@@ -68,14 +69,27 @@ export async function PATCH(request: Request, context: Context) {
     if (!ret) return NextResponse.json({ error: "مرتجع الشراء غير موجود" }, { status: 404 })
     assertBranchScope(scope, ret.branch_id)
 
-    const { error } = await db.rpc("void_purchase_return", {
+    const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : "إلغاء مرتجع مشتريات"
+    const { data, error } = await db.rpc("void_purchase_return_complete_v1", {
       p_pharmacy_id: scope.activePharmacyId,
       p_return_id: returnId,
       p_actor_id: scope.user.id,
-      p_reason: typeof body.reason === "string" ? body.reason.trim() : null,
+      p_reason: reason,
     })
     if (error) throw error
-    return NextResponse.json({ ok: true })
+    const result = (data ?? {}) as { operation?: Record<string, unknown>; finalization?: Record<string, unknown> }
+
+    await writeAuditLog(db, {
+      pharmacyId: scope.activePharmacyId,
+      branchId: ret.branch_id,
+      actorId: scope.user.id,
+      eventType: "purchase_return.voided",
+      source: "purchases",
+      description: "تم إلغاء مرتجع المشتريات وعكس المخزون وحساب المورد والقيد المحاسبي",
+      severity: "warning",
+      metadata: { return_id: returnId, reason, operation: result.operation ?? null, finalization: result.finalization ?? null },
+    })
+    return NextResponse.json({ operation: result.operation ?? { ok: true }, finalization: result.finalization ?? null })
   } catch (error) {
     console.error("purchase return void PATCH failed", error)
     const message = error instanceof Error ? error.message : "فشل إلغاء مرتجع الشراء"

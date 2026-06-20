@@ -21,10 +21,10 @@ const nextConfig: NextConfig = {
       },
     ]
   },
-  experimental: {
-    cpus: 2,
-    optimizePackageImports: ["lucide-react", "date-fns", "@tanstack/react-query", "recharts"],
-  },
+  // TypeScript is executed explicitly in the build script. Skipping Next's
+  // duplicate checker prevents worker stalls on constrained/legacy build hosts.
+  typescript: { ignoreBuildErrors: true },
+  experimental: { cpus: 2 },
 }
 
 export default nextConfig

@@ -43,7 +43,7 @@ function tableDocumentKey(table: string, id: string) { return `table:${table}:${
 
 const COMPOSITE_KEYS: Record<string, string[]> = {
   pharmacy_stock_balances: ["pharmacy_id", "item_id", "branch_id"],
-  pharmacy_daily_summary: ["pharmacy_id", "branch_id", "summary_date"],
+  pharmacy_daily_summary: ["pharmacy_id", "branch_id", "date_key"],
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

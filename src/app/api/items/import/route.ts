@@ -3,7 +3,8 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { getServerAuthScope } from "@/lib/auth/session"
-import { scopeCan } from "@/lib/auth/server-permissions"
+import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
+import { writeAuditLog } from "@/lib/audit/audit-log"
 import * as XLSX from "xlsx"
 import { addOpeningStock } from "@/lib/inventory/opening-stock"
 import { normalizeBarcode, normalizeItemName } from "@/features/inventory/lib/item-input"
@@ -15,6 +16,8 @@ const IMPORT_BATCH_SIZE = 500
 const AUX_IMPORT_BATCH_SIZE = 1000
 const RESPONSE_SAMPLE_LIMIT = 100
 const RESPONSE_ERROR_LIMIT = 300
+const MAX_IMPORT_FILE_BYTES = 25 * 1024 * 1024
+const MAX_IMPORT_ROWS = 50_000
 
 const CLIENT_TEMPLATE_HEADERS = [
   "اسم الدواء / الصنف",
@@ -700,14 +703,18 @@ export async function POST(request: Request) {
     const formData = await request.formData()
     const file = formData.get("file")
     if (!file || !(file instanceof File)) return NextResponse.json({ error: "ارفع ملف Excel" }, { status: 400 })
+    if (file.size <= 0) return NextResponse.json({ error: "ملف Excel فارغ" }, { status: 400 })
+    if (file.size > MAX_IMPORT_FILE_BYTES) return NextResponse.json({ error: "حجم ملف الاستيراد أكبر من 25 ميجابايت؛ قسّمه إلى أكثر من ملف" }, { status: 413 })
+    if (!/\.(xlsx|xls|csv)$/i.test(file.name)) return NextResponse.json({ error: "صيغة الملف غير مدعومة؛ استخدم XLSX أو XLS أو CSV" }, { status: 400 })
 
     const buffer = Buffer.from(await file.arrayBuffer())
-    const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true, cellText: false, raw: true })
+    const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true, cellText: false, raw: true, cellFormula: false, bookVBA: false })
     const sheetName = workbook.SheetNames.find((name) => normalizeItemName(name) === normalizeItemName("Items_Ready")) ?? workbook.SheetNames[0]
     if (!sheetName) return NextResponse.json({ error: "ملف Excel فارغ" }, { status: 400 })
 
     const rows = XLSX.utils.sheet_to_json<ExcelRow>(workbook.Sheets[sheetName], { defval: "", raw: false })
     if (rows.length === 0) return NextResponse.json({ error: "لا توجد بيانات في الملف" }, { status: 400 })
+    if (rows.length > MAX_IMPORT_ROWS) return NextResponse.json({ error: `الملف يحتوي على ${rows.length.toLocaleString("ar-EG")} صف؛ الحد الآمن لكل عملية 50,000 صف` }, { status: 413 })
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
@@ -780,6 +787,7 @@ export async function POST(request: Request) {
 
         const branchId = findBranchId(branches, row.openingStockLocation, scope.activeBranchId)
         if (row.openingStock > 0 && !branchId) throw new Error("حدد الفرع النشط أو اكتب OPENING STOCK LOCATION صحيح قبل استيراد رصيد افتتاحي")
+        if (branchId) assertBranchScope(scope, branchId)
 
         normalizedRows.push({ rowNum, sourceRow, row, sku, branchId })
       } catch (error) {
@@ -987,6 +995,23 @@ export async function POST(request: Request) {
       completed_at: new Date().toISOString(),
     })
     if (logError) console.warn("items import log skipped:", logError.message)
+
+    await writeAuditLog(db, {
+      pharmacyId,
+      branchId: scope.activeBranchId,
+      actorId: scope.user.id,
+      eventType: "items.imported",
+      source: "inventory",
+      description: "تم استيراد ملف أصناف صيدلية مع فحص التكرار والأرصدة الافتتاحية",
+      metadata: {
+        file_name: file.name,
+        file_size: file.size,
+        total_rows: rows.length,
+        imported: imported.length,
+        skipped: skipped.length,
+        errors: errors.length,
+      },
+    })
 
     return NextResponse.json({
       total_rows: rows.length,

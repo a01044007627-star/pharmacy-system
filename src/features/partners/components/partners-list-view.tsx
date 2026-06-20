@@ -21,6 +21,7 @@ import { useAppSettings } from "@/contexts/settings-context"
 import { cn } from "@/lib/utils"
 import { downloadCsv as saveCsv } from "@/lib/csv-utils"
 import { PartnerFormDialog } from "./partner-form-dialog"
+import { partnersService } from "@/features/partners/services/partners-service"
 
 type PartnerRow = {
   id: string
@@ -103,18 +104,15 @@ export function PartnersListView({ partnerType }: PartnersListViewProps) {
     if (!auth.activePharmacyId) return
     setLoading(true)
     try {
-      const params = new URLSearchParams({
-        pharmacy_id: auth.activePharmacyId,
+      const data = await partnersService.list({
+        pharmacyId: auth.activePharmacyId,
         type: partnerType,
         query,
         status,
-        page: String(page),
-        page_size: "25",
+        page,
+        pageSize: 25,
       })
-      const response = await fetch(`/api/partners?${params.toString()}`, { cache: "no-store" })
-      const data = await response.json().catch(() => ({})) as PartnersResponse
-      if (!response.ok) throw new Error(data.error ?? `فشل تحميل ${label}`)
-      setRows(data.partners ?? [])
+      setRows(data.partners as PartnerRow[])
       setSelectedIds([])
       setSummary({ ...emptySummary, ...(data.summary ?? {}) })
       setTotalPages(data.pagination?.totalPages ?? 1)
@@ -146,14 +144,8 @@ export function PartnersListView({ partnerType }: PartnersListViewProps) {
     if (!selectedIds.length || !auth.activePharmacyId) return
     setBulkBusy(true)
     try {
-      const response = await fetch("/api/partners", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pharmacy_id: auth.activePharmacyId, ids: selectedIds, action }),
-      })
-      const data = await response.json().catch(() => ({})) as { error?: string }
-      if (!response.ok) throw new Error(data.error ?? "فشل تنفيذ الإجراء")
-      toast.success(action === "activate" ? "تم تفعيل المحدد" : "تم تعطيل المحدد")
+      const result = await partnersService.bulkStatus(auth.activePharmacyId, selectedIds, action)
+      toast.success(result.queued ? "تم حفظ الإجراء وسيتم مزامنته عند عودة الإنترنت" : action === "activate" ? "تم تفعيل المحدد" : "تم تعطيل المحدد")
       await load()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "فشل تنفيذ الإجراء")
@@ -167,26 +159,19 @@ export function PartnersListView({ partnerType }: PartnersListViewProps) {
     if (!quickForm.name.trim()) { toast.error("الاسم مطلوب"); return }
     setQuickSaving(true)
     try {
-      const response = await fetch("/api/partners", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pharmacy_id: auth.activePharmacyId,
-          type: partnerType,
-          name: quickForm.name.trim(),
-          phone: quickForm.phone.trim(),
-          email: quickForm.email.trim(),
-          address: quickForm.address.trim(),
-          tax_id: quickForm.tax_id.trim(),
-          opening_balance: Number(quickForm.opening_balance) || 0,
-          credit_limit: Number(quickForm.credit_limit) || 0,
-          notes: quickForm.notes.trim(),
-          status: "active",
-        }),
+      const result = await partnersService.create(auth.activePharmacyId, {
+        type: partnerType,
+        name: quickForm.name.trim(),
+        phone: quickForm.phone.trim(),
+        email: quickForm.email.trim(),
+        address: quickForm.address.trim(),
+        tax_id: quickForm.tax_id.trim(),
+        opening_balance: Number(quickForm.opening_balance) || 0,
+        credit_limit: Number(quickForm.credit_limit) || 0,
+        notes: quickForm.notes.trim(),
+        status: "active",
       })
-      const data = await response.json().catch(() => ({})) as { error?: string }
-      if (!response.ok) throw new Error(data.error ?? "فشل الحفظ")
-      toast.success(isCustomers ? "تم حفظ العميل" : "تم حفظ المورد")
+      toast.success(result.queued ? "تم الحفظ على الجهاز وسيتم الربط تلقائيًا" : isCustomers ? "تم حفظ العميل" : "تم حفظ المورد")
       setQuickForm({ name: "", phone: "", email: "", address: "", tax_id: "", opening_balance: "0", credit_limit: "0", notes: "" })
       setQuickOpen(false)
       await load()

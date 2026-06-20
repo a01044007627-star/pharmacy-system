@@ -81,13 +81,57 @@ export async function GET(_request: Request, context: Context) {
         db
           .from("pharmacy_purchase_returns")
           .select("id,return_number,purchase_id,supplier_name,total,refund_amount,stock_mode,reason,created_at")
-          .eq("supplier_name", partner.name)
+          .eq("supplier_id", partnerId)
           .eq("pharmacy_id", scope.activePharmacyId)
           .order("created_at", { ascending: false })
           .limit(50),
         "purchase_returns",
       ),
     ])
+
+    const [sales, salesReturns, balanceLedger] = await Promise.all([
+      readMaybe(
+        db.from("pharmacy_sales")
+          .select("id,invoice_number,branch_id,customer_id,patient_id,customer_name,status,payment_status,payment_method,total,paid_amount,due_amount,sale_date,created_at,branch:pharmacy_branches(id,name)")
+          .eq("customer_id", partnerId)
+          .eq("pharmacy_id", scope.activePharmacyId)
+          .is("voided_at", null)
+          .order("sale_date", { ascending: false })
+          .limit(50),
+        "sales",
+      ),
+      readMaybe(
+        db.from("pharmacy_sales_returns")
+          .select("id,return_number,sale_id,customer_id,patient_id,customer_name,total,refund_amount,stock_mode,reason,return_date,created_at")
+          .eq("customer_id", partnerId)
+          .eq("pharmacy_id", scope.activePharmacyId)
+          .is("voided_at", null)
+          .order("return_date", { ascending: false })
+          .limit(50),
+        "sales_returns",
+      ),
+      readMaybe(
+        db.from("pharmacy_partner_balance_ledger")
+          .select("id,branch_id,source_table,source_id,entry_type,amount,balance_before,balance_after,notes,created_at")
+          .eq("partner_id", partnerId)
+          .eq("pharmacy_id", scope.activePharmacyId)
+          .order("created_at", { ascending: false })
+          .limit(100),
+        "balance_ledger",
+      ),
+    ])
+
+    const salesSummary = sales.reduce((acc: { count: number; total: number; paid: number; due: number }, row: any) => ({
+      count: acc.count + 1,
+      total: acc.total + Number(row.total ?? 0),
+      paid: acc.paid + Number(row.paid_amount ?? 0),
+      due: acc.due + Number(row.due_amount ?? 0),
+    }), { count: 0, total: 0, paid: 0, due: 0 })
+    const salesReturnsSummary = salesReturns.reduce((acc: { count: number; total: number; refunded: number }, row: any) => ({
+      count: acc.count + 1,
+      total: acc.total + Number(row.total ?? 0),
+      refunded: acc.refunded + Number(row.refund_amount ?? 0),
+    }), { count: 0, total: 0, refunded: 0 })
 
     const purchaseSummary = purchases.reduce((acc: { count: number; total: number; paid: number; due: number }, row: any) => ({
       count: acc.count + 1,
@@ -107,7 +151,12 @@ export async function GET(_request: Request, context: Context) {
       payments,
       purchases,
       purchaseReturns: returns,
+      sales,
+      salesReturns,
+      balanceLedger,
       purchaseSummary,
+      salesSummary,
+      salesReturnsSummary,
       paymentsSummary,
     })
   } catch (error) {
@@ -134,48 +183,45 @@ export async function PATCH(request: Request, context: Context) {
     const db = getDbClient(supabase) as SupabaseClient
 
     const allowedFields = ["name", "type", "phone", "email", "address", "tax_id", "opening_balance", "credit_limit", "notes", "status"]
-    const updates: Record<string, unknown> = {}
+    const payload: Record<string, unknown> = {}
     for (const field of allowedFields) {
-      if (body[field] !== undefined) {
-        if (["opening_balance", "credit_limit"].includes(field)) {
-          updates[field] = Math.max(0, Number(body[field]) || 0)
-        } else if (field === "type") {
-          if (["customer", "supplier", "both"].includes(clean(body[field]))) updates[field] = clean(body[field])
-        } else if (field === "status") {
-          updates[field] = ["active", "inactive"].includes(clean(body[field])) ? clean(body[field]) : "active"
-        } else {
-          updates[field] = clean(body[field]) || null
-        }
-      }
+      if (body[field] !== undefined) payload[field] = body[field]
     }
-
-    if (Object.keys(updates).length === 0) {
+    if (Object.keys(payload).length === 0) {
       return NextResponse.json({ error: "لا توجد بيانات للتحديث" }, { status: 400 })
     }
+    if (payload.name !== undefined && !clean(payload.name)) return NextResponse.json({ error: "الاسم مطلوب" }, { status: 400 })
+    if (payload.type !== undefined && !["customer", "supplier", "both"].includes(clean(payload.type))) return NextResponse.json({ error: "نوع جهة الاتصال غير صالح" }, { status: 400 })
+    if (payload.status !== undefined && !["active", "inactive"].includes(clean(payload.status))) return NextResponse.json({ error: "حالة جهة الاتصال غير صالحة" }, { status: 400 })
 
-    updates.updated_at = new Date().toISOString()
-
-    const { data, error } = await db
-      .from("pharmacy_partners")
-      .update(updates)
-      .eq("id", partnerId)
-      .eq("pharmacy_id", scope.activePharmacyId)
-      .select()
-      .maybeSingle()
-
+    const requestId = clean(body.client_request_id) || crypto.randomUUID()
+    const { data: result, error } = await db.rpc("update_partner_v1", {
+      p_pharmacy_id: scope.activePharmacyId,
+      p_partner_id: partnerId,
+      p_actor_id: scope.user.id,
+      p_payload: payload,
+      p_client_request_id: requestId,
+    })
     if (error) throw error
-    if (!data) return NextResponse.json({ error: "جهة الاتصال غير موجودة" }, { status: 404 })
+    const rpcResult = (result ?? {}) as { partner?: Record<string, unknown>; opening_delta?: number; journal_entry_id?: string | null; duplicate?: boolean }
+    if (!rpcResult.partner) return NextResponse.json({ error: "جهة الاتصال غير موجودة" }, { status: 404 })
 
     await writeAuditLog(db, {
       pharmacyId: scope.activePharmacyId,
       actorId: scope.user.id,
-      eventType: "partner.updated",
+      eventType: rpcResult.duplicate ? "partner.update_duplicate_ignored" : "partner.updated",
       source: "partners",
-      description: "تم تعديل جهة اتصال",
-      metadata: { partner_id: data.id, fields: Object.keys(updates).filter((field) => field !== "updated_at") },
+      description: "تم تعديل جهة الاتصال وربط تعديل الرصيد الافتتاحي بالحسابات",
+      metadata: {
+        partner_id: partnerId,
+        fields: Object.keys(payload),
+        opening_delta: rpcResult.opening_delta ?? 0,
+        journal_entry_id: rpcResult.journal_entry_id ?? null,
+        client_request_id: requestId,
+      },
     })
 
-    return NextResponse.json(data)
+    return NextResponse.json(rpcResult.partner)
   } catch (error) {
     console.error("partner detail PATCH failed", error)
     const message = error instanceof Error ? error.message : "فشل تعديل جهة الاتصال"

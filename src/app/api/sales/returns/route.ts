@@ -156,7 +156,7 @@ export async function POST(request: Request) {
     if (!sale) return NextResponse.json({ error: "فاتورة البيع غير موجودة" }, { status: 404 })
     assertBranchScope(scope, sale.branch_id)
 
-    const { data, error } = await db.rpc("create_sales_return", {
+    const { data, error } = await db.rpc("create_sales_return_complete_v1", {
       p_pharmacy_id: scope.activePharmacyId,
       p_sale_id: saleId,
       p_actor_id: scope.user.id,
@@ -165,7 +165,10 @@ export async function POST(request: Request) {
       p_lines: lines,
     })
     if (error) throw error
-    const result = (data ?? {}) as { duplicate?: boolean; return?: Record<string, unknown> }
+    const result = (data ?? {}) as { duplicate?: boolean; return?: Record<string, unknown>; journal_entry_id?: string | null; operational_finalization?: Record<string, unknown> | null }
+    const journalEntryId = typeof result.journal_entry_id === "string" ? result.journal_entry_id : null
+    const operationalFinalization = result.operational_finalization ?? null
+
     await writeAuditLog(db, {
       pharmacyId: scope.activePharmacyId,
       branchId: String(sale.branch_id),
@@ -180,9 +183,11 @@ export async function POST(request: Request) {
         total: result.return?.total,
         refund_amount: result.return?.refund_amount,
         lines_count: lines.length,
+        journal_entry_id: journalEntryId,
+        operational_finalization: operationalFinalization,
       },
     })
-    return NextResponse.json(result, { status: result.duplicate ? 200 : 201 })
+    return NextResponse.json({ ...result, journal_entry_id: journalEntryId, operational_finalization: operationalFinalization }, { status: result.duplicate ? 200 : 201 })
   } catch (error) {
     console.error("sales returns POST failed", error)
     const message = error instanceof Error ? error.message : "فشل حفظ مرتجع المبيعات"

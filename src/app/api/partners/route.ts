@@ -124,39 +124,38 @@ export async function POST(request: Request) {
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
-    const openingBalance = Math.max(0, Number(body.opening_balance) || 0)
-
-    const { data, error } = await db
-      .from("pharmacy_partners")
-      .insert({
-        pharmacy_id: scope.activePharmacyId,
-        type,
+    const requestId = clean(body.client_request_id) || crypto.randomUUID()
+    const { data: rpcData, error } = await db.rpc("create_partner_v1", {
+      p_pharmacy_id: scope.activePharmacyId,
+      p_actor_id: scope.user.id,
+      p_payload: {
         name,
+        type,
         phone: clean(body.phone) || null,
         email: clean(body.email) || null,
         address: clean(body.address) || null,
         tax_id: clean(body.tax_id) || null,
-        opening_balance: openingBalance,
-        balance: openingBalance,
+        opening_balance: Math.max(0, Number(body.opening_balance) || 0),
         credit_limit: Math.max(0, Number(body.credit_limit) || 0),
         notes: clean(body.notes) || null,
         status: ["active", "inactive"].includes(clean(body.status)) ? clean(body.status) : "active",
-      })
-      .select()
-      .maybeSingle()
-
+      },
+      p_client_request_id: requestId,
+    })
     if (error) throw error
-    if (!data) return NextResponse.json({ error: "فشل إنشاء جهة الاتصال" }, { status: 500 })
+    const result = (rpcData ?? {}) as { partner?: Record<string, unknown>; accounting?: unknown; duplicate?: boolean }
+    const partner = result.partner
+    if (!partner) return NextResponse.json({ error: "فشل إنشاء جهة الاتصال" }, { status: 500 })
     await writeAuditLog(db, {
       pharmacyId: scope.activePharmacyId,
       actorId: scope.user.id,
-      eventType: "partner.created",
+      eventType: result.duplicate ? "partner.duplicate_ignored" : "partner.created",
       source: "partners",
-      description: "تم إنشاء جهة اتصال جديدة",
-      metadata: { partner_id: data.id, name: data.name, type: data.type, opening_balance: data.opening_balance },
+      description: "تم إنشاء جهة اتصال وربط الرصيد الافتتاحي محاسبيًا",
+      metadata: { partner_id: partner.id, name: partner.name, type: partner.type, opening_balance: partner.opening_balance, accounting: result.accounting },
     })
 
-    return NextResponse.json(data, { status: 201 })
+    return NextResponse.json(partner, { status: result.duplicate ? 200 : 201 })
   } catch (error) {
     console.error("partners POST failed", error)
     const message = error instanceof Error ? error.message : "فشل إنشاء جهة الاتصال"

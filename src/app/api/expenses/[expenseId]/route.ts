@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
+import { writeAuditLog } from "@/lib/audit/audit-log"
 
 type Context = { params: Promise<{ expenseId: string }> }
 
@@ -60,13 +61,25 @@ export async function PATCH(request: Request, context: Context) {
     if (!expense) return NextResponse.json({ error: "المصروف غير موجود" }, { status: 404 })
     assertBranchScope(scope, expense.branch_id)
 
-    const { error } = await db
-      .from("pharmacy_expenses")
-      .update({ voided_at: new Date().toISOString() })
-      .eq("id", expenseId)
-      .eq("pharmacy_id", scope.activePharmacyId)
+    const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : "إلغاء مصروف"
+    const { data, error } = await db.rpc("void_expense_v1", {
+      p_pharmacy_id: scope.activePharmacyId,
+      p_expense_id: expenseId,
+      p_actor_id: scope.user.id,
+      p_reason: reason,
+    })
     if (error) throw error
-    return NextResponse.json({ ok: true })
+    await writeAuditLog(db, {
+      pharmacyId: scope.activePharmacyId,
+      branchId: expense.branch_id,
+      actorId: scope.user.id,
+      eventType: "expense.voided",
+      source: "expenses",
+      description: "تم إلغاء المصروف وعكس الحركة المالية والقيد المحاسبي",
+      severity: "warning",
+      metadata: { expense_id: expenseId, reason, result: data ?? null },
+    })
+    return NextResponse.json(data ?? { ok: true })
   } catch (error) {
     console.error("expense void PATCH failed", error)
     const message = error instanceof Error ? error.message : "فشل إلغاء المصروف"

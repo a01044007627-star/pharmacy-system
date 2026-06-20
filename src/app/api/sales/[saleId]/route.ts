@@ -4,6 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
+import { writeAuditLog } from "@/lib/audit/audit-log"
 
 type SaleRouteContext = { params: Promise<{ saleId: string }> }
 
@@ -74,14 +75,27 @@ export async function PATCH(request: Request, context: SaleRouteContext) {
     if (!sale) return NextResponse.json({ error: "فاتورة البيع غير موجودة" }, { status: 404 })
     assertBranchScope(scope, sale.branch_id)
 
-    const { data, error } = await db.rpc("void_cashier_sale", {
+    const reason = clean(body.reason) || "إلغاء من سجل المبيعات"
+    const { data, error } = await db.rpc("void_sale_complete_v1", {
       p_pharmacy_id: scope.activePharmacyId,
       p_sale_id: saleId,
       p_actor_id: scope.user.id,
-      p_reason: clean(body.reason) || "إلغاء من سجل المبيعات",
+      p_reason: reason,
     })
     if (error) throw error
-    return NextResponse.json(data ?? { ok: true })
+    const result = (data ?? {}) as { operation?: Record<string, unknown>; finalization?: Record<string, unknown> }
+
+    await writeAuditLog(db, {
+      pharmacyId: scope.activePharmacyId,
+      branchId: sale.branch_id,
+      actorId: scope.user.id,
+      eventType: "sale.voided",
+      source: "sales",
+      description: "تم إلغاء فاتورة البيع وعكس المخزون والتحصيل والمديونية والنقاط والقيد المحاسبي",
+      severity: "warning",
+      metadata: { sale_id: saleId, reason, operation: result.operation ?? null, finalization: result.finalization ?? null },
+    })
+    return NextResponse.json({ operation: result.operation ?? { ok: true }, finalization: result.finalization ?? null })
   } catch (error) {
     console.error("sale void PATCH failed", error)
     const message = error instanceof Error ? error.message : "فشل إلغاء فاتورة البيع"

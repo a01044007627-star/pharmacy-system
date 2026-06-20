@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Download, Eye, Plus, RefreshCw, Search, Wallet, XCircle } from "lucide-react"
@@ -8,7 +8,7 @@ import { DashboardPageHeader } from "@/components/shared/page-ui"
 import { EmptyState, SkeletonRows } from "@/components/shared/empty-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -19,6 +19,10 @@ import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
 import { downloadCsv as saveCsv } from "@/lib/csv-utils"
 import { cn } from "@/lib/utils"
+import { localDB } from "@/lib/sync/local-db"
+import { queueApiRequest } from "@/lib/sync/api-mutations"
+import { syncManager } from "@/lib/sync/sync-manager"
+import { network } from "@/lib/network"
 
 type ExpenseRow = {
   id: string
@@ -110,11 +114,42 @@ export function ExpensesListView() {
       setSummary(data.summary ?? { count: 0, total: 0, tax: 0 })
       setTotalPages(data.pagination?.totalPages ?? 1)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل تحميل المصروفات")
+      const pharmacyId = auth.activePharmacyId
+      if (pharmacyId && (!network.isOnline || error instanceof TypeError)) {
+        const [cachedExpenses, cachedBranches] = await Promise.all([
+          localDB.getTableRows("pharmacy_expenses"),
+          localDB.getTableRows("pharmacy_branches"),
+        ])
+        const branchMap = new Map(cachedBranches.map((row) => [String(row.id ?? ""), { id: String(row.id ?? ""), name: String(row.name ?? "") }]))
+        const needle = query.trim().toLowerCase()
+        const filtered = cachedExpenses.filter((row) => {
+          if (String(row.pharmacy_id ?? "") !== pharmacyId || row.voided_at) return false
+          if (branchId !== "all" && String(row.branch_id ?? "") !== branchId) return false
+          if (categoryId !== "all" && String(row.category_id ?? "") !== categoryId) return false
+          const date = String(row.expense_date ?? "").slice(0, 10)
+          if (dateFrom && date < dateFrom) return false
+          if (dateTo && date > dateTo) return false
+          if (needle && ![row.title, row.paid_to, row.category_name].some((value) => String(value ?? "").toLowerCase().includes(needle))) return false
+          return true
+        }).sort((a, b) => String(b.expense_date ?? "").localeCompare(String(a.expense_date ?? "")))
+        const start = (page - 1) * 25
+        const offlineRows = filtered.slice(start, start + 25).map((row) => ({
+          ...row,
+          id: String(row.id), title: String(row.title ?? ""), amount: Number(row.amount ?? 0), tax_amount: Number(row.tax_amount ?? 0),
+          total: Number(row.total ?? 0), payment_method: String(row.payment_method ?? "cash"), expense_date: String(row.expense_date ?? ""),
+          branch: branchMap.get(String(row.branch_id ?? "")) ?? null,
+        })) as ExpenseRow[]
+        setRows(offlineRows)
+        setSummary({ count: filtered.length, total: filtered.reduce((sum, row) => sum + Number(row.total ?? 0), 0), tax: filtered.reduce((sum, row) => sum + Number(row.tax_amount ?? 0), 0) })
+        setTotalPages(Math.max(1, Math.ceil(filtered.length / 25)))
+        toast.warning("تم عرض المصروفات المحفوظة على الجهاز")
+      } else {
+        toast.error(error instanceof Error ? error.message : "فشل تحميل المصروفات")
+      }
     } finally {
       setLoading(false)
     }
-  }, [auth.activeBranchId, auth.activePharmacyId, branchId, categoryId, dateFrom, dateTo, page, query])
+  }, [auth.activePharmacyId, branchId, categoryId, dateFrom, dateTo, page, query])
 
   const loadBootstrap = useCallback(async () => {
     if (!auth.activePharmacyId) return
@@ -126,7 +161,13 @@ export function ExpensesListView() {
       setCategories(data.categories ?? [])
       setBranches(data.branches ?? [])
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل تحميل التصنيفات")
+      if (!network.isOnline || error instanceof TypeError) {
+        const [cachedCategories, cachedBranches] = await Promise.all([
+          localDB.getTableRows("pharmacy_expense_categories"), localDB.getTableRows("pharmacy_branches"),
+        ])
+        setCategories(cachedCategories.filter((row) => row.pharmacy_id === auth.activePharmacyId).map((row) => ({ id: String(row.id), name: String(row.name ?? ""), parent_id: row.parent_id ? String(row.parent_id) : null, sort_order: Number(row.sort_order ?? 0) })))
+        setBranches(cachedBranches.filter((row) => row.pharmacy_id === auth.activePharmacyId).map((row) => ({ id: String(row.id), name: String(row.name ?? ""), code: row.code ? String(row.code) : null })))
+      } else toast.error(error instanceof Error ? error.message : "فشل تحميل التصنيفات")
     }
   }, [auth.activeBranchId, auth.activePharmacyId])
 
@@ -153,31 +194,50 @@ export function ExpensesListView() {
   async function saveExpense() {
     if (!formTitle.trim()) { toast.error("أدخل اسم المصروف"); return }
     if (!formBranchId) { toast.error("اختر الفرع"); return }
+    const requestId = crypto.randomUUID()
+    const body = {
+      pharmacy_id: auth.activePharmacyId,
+      branch_id: formBranchId,
+      title: formTitle.trim(),
+      amount: Number(formAmount) || 0,
+      tax_amount: Number(formTax) || 0,
+      category_id: formCategoryId || null,
+      payment_method: formPaymentMethod,
+      paid_to: formPaidTo.trim() || null,
+      expense_date: new Date(formDate).toISOString(),
+      notes: formNotes.trim() || null,
+      client_request_id: requestId,
+    }
     setSaving(true)
     try {
-      const response = await fetch("/api/expenses", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pharmacy_id: auth.activePharmacyId,
-          branch_id: formBranchId,
-          title: formTitle.trim(),
-          amount: Number(formAmount) || 0,
-          tax_amount: Number(formTax) || 0,
-          category_id: formCategoryId || null,
-          payment_method: formPaymentMethod,
-          paid_to: formPaidTo.trim() || null,
-          expense_date: new Date(formDate).toISOString(),
-          notes: formNotes.trim() || null,
-        }),
-      })
-      const data = await response.json().catch(() => ({})) as { expense?: { id?: string }; error?: string }
+      const response = await fetch("/api/expenses", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      const data = await response.json().catch(() => ({})) as { expense?: Record<string, unknown>; error?: string }
       if (!response.ok) throw new Error(data.error ?? "فشل حفظ المصروف")
-      toast.success("تم تسجيل المصروف")
+      if (data.expense) await localDB.putTableRow("pharmacy_expenses", data.expense, true)
+      toast.success("تم تسجيل المصروف وربطه بالخزنة والقيد المحاسبي")
       setExpenseOpen(false)
       await load()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل حفظ المصروف")
+      if (auth.activePharmacyId && (!network.isOnline || error instanceof TypeError)) {
+        const category = categories.find((row) => row.id === formCategoryId)
+        const localId = `offline-expense-${requestId}`
+        const total = Math.max(0, Number(formAmount) || 0) + Math.max(0, Number(formTax) || 0)
+        const localExpense = { id: localId, ...body, category_name: category?.name ?? "مصروفات عامة", total, created_by: auth.user?.id ?? null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), offline_pending: true }
+        await localDB.putTableRow("pharmacy_expenses", localExpense, false)
+        await queueApiRequest({ path: "/api/expenses", method: "POST", body, label: `مصروف ${formTitle.trim()}` })
+        if (formPaymentMethod === "cash") {
+          const shifts = await localDB.getTableRows("pharmacy_shifts")
+          const open = shifts.find((row) => row.pharmacy_id === auth.activePharmacyId && row.branch_id === formBranchId && row.user_id === auth.user?.id && row.status === "open")
+          if (open) {
+            const expenses = Number(open.total_expenses ?? 0) + total
+            await localDB.putTableRow("pharmacy_shifts", { ...open, total_expenses: expenses, expected_balance: Number(open.opening_balance ?? 0) + Number(open.cash_sales ?? 0) - expenses, updated_at: new Date().toISOString() }, false)
+          }
+        }
+        await syncManager.refreshPending()
+        toast.warning("تم حفظ المصروف على الجهاز وسيُرسل تلقائيًا عند رجوع الإنترنت")
+        setExpenseOpen(false)
+        await load()
+      } else toast.error(error instanceof Error ? error.message : "فشل حفظ المصروف")
     } finally {
       setSaving(false)
     }
@@ -198,7 +258,17 @@ export function ExpensesListView() {
       setCatName("")
       setCategories((prev) => [...prev, data.category!])
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل إضافة التصنيف")
+      if (auth.activePharmacyId && (!network.isOnline || error instanceof TypeError)) {
+        const id = `offline-expense-category-${crypto.randomUUID()}`
+        const body = { pharmacy_id: auth.activePharmacyId, name: catName.trim(), client_request_id: id }
+        const localCategory: ExpenseCategory & { pharmacy_id: string; updated_at: string } = { id, pharmacy_id: auth.activePharmacyId, name: catName.trim(), parent_id: null, sort_order: 0, updated_at: new Date().toISOString() }
+        await localDB.putTableRow("pharmacy_expense_categories", localCategory, false)
+        await queueApiRequest({ path: "/api/expenses/categories", method: "POST", body, label: `تصنيف مصروف ${catName.trim()}` })
+        await syncManager.refreshPending()
+        setCategories((prev) => [...prev, localCategory])
+        setCatName("")
+        toast.warning("تم حفظ التصنيف على الجهاز وسيُزامن عند رجوع الإنترنت")
+      } else toast.error(error instanceof Error ? error.message : "فشل إضافة التصنيف")
     } finally {
       setCatSaving(false)
     }
@@ -214,7 +284,11 @@ export function ExpensesListView() {
       if (!response.ok) throw new Error(data.error ?? "فشل تحميل المصروف")
       setDetail(data.expense ?? null)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل تحميل المصروف")
+      if (!network.isOnline || error instanceof TypeError) {
+        const cached = await localDB.getTableRow("pharmacy_expenses", id)
+        if (cached) setDetail({ ...cached, id: String(cached.id), title: String(cached.title ?? ""), amount: Number(cached.amount ?? 0), tax_amount: Number(cached.tax_amount ?? 0), total: Number(cached.total ?? 0), payment_method: String(cached.payment_method ?? "cash"), expense_date: String(cached.expense_date ?? "") } as ExpenseRow)
+        else toast.error("المصروف غير محفوظ على الجهاز")
+      } else toast.error(error instanceof Error ? error.message : "فشل تحميل المصروف")
     } finally {
       setDetailLoading(false)
     }
@@ -238,7 +312,14 @@ export function ExpensesListView() {
       setDetail(null)
       await load()
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل إلغاء المصروف")
+      if (auth.activePharmacyId && (!network.isOnline || error instanceof TypeError)) {
+        await queueApiRequest({ path: `/api/expenses/${detail.id}`, method: "PATCH", body: { action: "void", reason }, label: `إلغاء مصروف ${detail.title}` })
+        const cached = await localDB.getTableRow("pharmacy_expenses", detail.id)
+        if (cached) await localDB.putTableRow("pharmacy_expenses", { ...cached, voided_at: new Date().toISOString(), void_reason: reason, updated_at: new Date().toISOString() }, false)
+        await syncManager.refreshPending()
+        toast.warning("تم إلغاء المصروف على الجهاز وسيُعكس محاسبيًا عند رجوع الإنترنت")
+        setDetailId(null); setDetail(null); await load()
+      } else toast.error(error instanceof Error ? error.message : "فشل إلغاء المصروف")
     } finally {
       setVoiding(false)
     }

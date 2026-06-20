@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { ArrowRight, Receipt, RefreshCw, RotateCcw, Search } from "lucide-react"
+import { ArrowRight, Receipt, RefreshCw, RotateCcw, Search, XCircle } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { DashboardPageHeader } from "@/components/shared/page-ui"
@@ -66,6 +66,7 @@ export function SalesReturnsView() {
   const [saving, setSaving] = useState(false)
   const [returns, setReturns] = useState<ReturnRow[]>([])
   const [loadingReturns, setLoadingReturns] = useState(true)
+  const [voidingId, setVoidingId] = useState<string | null>(null)
 
   const money = useCallback((value: number) => `${Number(value || 0).toLocaleString("ar-EG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`, [currency])
 
@@ -157,6 +158,27 @@ export function SalesReturnsView() {
     Number(selectedSale?.due_amount ?? 0),
     Number(selectedSale?.paid_amount ?? 0),
   )
+
+  async function voidReturn(row: ReturnRow) {
+    const reason = window.prompt(`سبب إلغاء المرتجع ${row.return_number}:`, "تم الإدخال بالخطأ")?.trim()
+    if (!reason) return
+    setVoidingId(row.id)
+    try {
+      const response = await fetch(`/api/sales/returns/${row.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "void", reason }),
+      })
+      const data = await response.json().catch(() => ({})) as { error?: string }
+      if (!response.ok) throw new Error(data.error ?? "فشل إلغاء المرتجع")
+      toast.success("تم إلغاء المرتجع وعكس المخزون والحسابات")
+      await loadReturns()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "فشل إلغاء المرتجع")
+    } finally {
+      setVoidingId(null)
+    }
+  }
 
   async function saveReturn() {
     if (!selectedSale || selectedLines.length === 0) {
@@ -330,6 +352,7 @@ export function SalesReturnsView() {
                   <TableHead className="text-center">القيمة</TableHead>
                   <TableHead className="text-center">المسترد</TableHead>
                   <TableHead className="text-center">التاريخ</TableHead>
+                  {(auth.isDeveloper || auth.can("sales:void")) ? <TableHead className="text-center">الإجراء</TableHead> : null}
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -342,6 +365,19 @@ export function SalesReturnsView() {
                     <TableCell className="text-center font-black">{money(row.total)}</TableCell>
                     <TableCell className="text-center font-black text-rose-600">{money(row.refund_amount)}</TableCell>
                     <TableCell className="text-center text-xs font-bold">{new Date(row.return_date).toLocaleString("ar-EG")}</TableCell>
+                    {(auth.isDeveloper || auth.can("sales:void")) ? (
+                      <TableCell className="text-center">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="rounded-xl text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                          disabled={voidingId === row.id}
+                          onClick={() => void voidReturn(row)}
+                        >
+                          <XCircle className="size-4" /> {voidingId === row.id ? "جاري الإلغاء" : "إلغاء المرتجع"}
+                        </Button>
+                      </TableCell>
+                    ) : null}
                   </TableRow>
                 ))}
               </TableBody>

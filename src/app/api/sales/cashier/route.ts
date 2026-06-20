@@ -227,10 +227,61 @@ export async function POST(request: Request) {
     const clientRequestId = clean(body.client_request_id) || crypto.randomUUID()
     const invoiceDiscount = scopeCan(scope, "sales:discount") ? Math.max(0, n(body.discount_total)) : 0
     const couponCode = clean(body.coupon_code) || null
-    const patientName = clean(body.patient_name) || null
+    const patientId = clean(body.patient_id) || null
+    let partnerId = clean(body.customer_id || body.partner_id) || null
+    let patientName = clean(body.patient_name) || null
+    if (patientId) {
+      const { data: patient, error: patientError } = await db
+        .from("pharmacy_patients")
+        .select("id,partner_id,name,status")
+        .eq("id", patientId)
+        .eq("pharmacy_id", pharmacyId)
+        .maybeSingle()
+      if (patientError) throw patientError
+      if (!patient || patient.status === "archived") throw new Error("ملف المريض غير موجود أو مؤرشف")
+      patientName = patient.name
+      partnerId = partnerId || patient.partner_id || null
+    }
+    if (partnerId) {
+      const { data: partner, error: partnerError } = await db
+        .from("pharmacy_partners")
+        .select("id,name,status,type")
+        .eq("id", partnerId)
+        .eq("pharmacy_id", pharmacyId)
+        .maybeSingle()
+      if (partnerError) throw partnerError
+      if (!partner || partner.status !== "active" || !["customer", "both"].includes(partner.type)) throw new Error("العميل غير موجود أو غير نشط")
+    }
     const doctorName = clean(body.doctor_name) || null
     const prescriptionNumber = clean(body.prescription_number) || null
-    const { data, error: rpcError } = await db.rpc("create_cashier_sale_v2", {
+
+    const itemIds = Array.from(new Set(lines.map((line: Record<string, unknown>) => clean(line.item_id)).filter(Boolean)))
+    if (itemIds.length !== lines.length && itemIds.length === 0) throw new Error("بيانات أصناف الفاتورة غير صالحة")
+    const { data: regulatedItems, error: regulatedError } = await db
+      .from("pharmacy_items")
+      .select("id,name_ar,is_controlled,requires_prescription")
+      .eq("pharmacy_id", pharmacyId)
+      .in("id", itemIds)
+      .or("is_controlled.eq.true,requires_prescription.eq.true")
+    if (regulatedError) throw regulatedError
+    if ((regulatedItems ?? []).length > 0) {
+      const names = (regulatedItems ?? []).map((item) => item.name_ar).filter(Boolean).join("، ")
+      if (!patientId) throw new Error(`يجب اختيار ملف مريض قبل صرف: ${names}`)
+      if (!doctorName) throw new Error(`اسم الطبيب مطلوب لصرف: ${names}`)
+      if (!prescriptionNumber) throw new Error(`رقم الوصفة مطلوب لصرف: ${names}`)
+      if ((regulatedItems ?? []).some((item) => item.is_controlled)) {
+        const { data: patientIdentity, error: identityError } = await db
+          .from("pharmacy_patients")
+          .select("id,id_number")
+          .eq("id", patientId)
+          .eq("pharmacy_id", pharmacyId)
+          .maybeSingle()
+        if (identityError) throw identityError
+        if (!patientIdentity?.id_number) throw new Error("رقم هوية المريض مطلوب لصرف دواء مراقب")
+      }
+    }
+
+    const { data, error: rpcError } = await db.rpc("create_cashier_sale_complete_v1", {
       p_pharmacy_id: pharmacyId,
       p_branch_id: branchId,
       p_shift_id: shiftId,
@@ -249,72 +300,13 @@ export async function POST(request: Request) {
       p_doctor_name: doctorName,
       p_prescription_number: prescriptionNumber,
       p_lines: lines,
+      p_patient_id: patientId,
+      p_partner_id: partnerId,
     })
     if (rpcError) throw rpcError
-    const result = (data ?? {}) as { sale?: Record<string, unknown>; lines?: unknown[]; duplicate?: boolean }
+    const result = (data ?? {}) as { sale?: Record<string, unknown>; lines?: unknown[]; duplicate?: boolean; finalization?: Record<string, unknown> }
 
-    if (!result.duplicate && result.sale?.id) {
-      const saleAmount = n(result.sale?.total)
-      const rawMethod = result.sale?.payment_method ?? clean(body.payment_method)
-      const paymentMethod = String(rawMethod || "cash")
-
-      try {
-        await db.from("pharmacy_financial_movements").insert({
-          pharmacy_id: pharmacyId,
-          branch_id: branchId,
-          type: "sale",
-          category: paymentMethod === "credit" ? "credit_sale" : "cash_sale",
-          amount: saleAmount,
-          direction: "in",
-          source_table: "pharmacy_sales",
-          source_id: result.sale.id,
-          description: `فاتورة ${result.sale?.invoice_number ?? ""}`,
-          movement_date: new Date().toISOString(),
-          created_by: scope.user.id,
-        })
-      } catch {} // financial movement is non-critical
-
-      try {
-        const { data: cashAccount } = await db.from("pharmacy_chart_of_accounts").select("id").eq("pharmacy_id", pharmacyId).eq("type", "asset").eq("is_active", true).limit(1).maybeSingle()
-        const { data: revenueAccount } = await db.from("pharmacy_chart_of_accounts").select("id").eq("pharmacy_id", pharmacyId).eq("type", "income").eq("is_active", true).limit(1).maybeSingle()
-
-        if (cashAccount?.id && revenueAccount?.id && saleAmount > 0) {
-          const entryNumber = `SL-${Date.now().toString(36).toUpperCase()}-${String(result.sale?.invoice_number ?? "").slice(-6)}`
-          const { data: journalEntry, error: jeError } = await db.from("pharmacy_journal_entries").insert({
-            pharmacy_id: pharmacyId,
-            branch_id: branchId,
-            entry_number: entryNumber,
-            entry_date: new Date().toISOString().slice(0, 10),
-            description: `تسجيل فاتورة بيع ${result.sale?.invoice_number ?? ""}`,
-            source_table: "pharmacy_sales",
-            source_id: result.sale.id,
-            total_debit: saleAmount,
-            total_credit: saleAmount,
-            created_by: scope.user.id,
-          }).select("*").maybeSingle()
-          if (!jeError && journalEntry) {
-            await db.from("pharmacy_journal_lines").insert([
-              {
-                pharmacy_id: pharmacyId,
-                entry_id: journalEntry.id,
-                account_id: cashAccount.id,
-                debit: saleAmount,
-                credit: 0,
-                description: `مدين: ثمن فاتورة ${result.sale?.invoice_number ?? ""}`,
-              },
-              {
-                pharmacy_id: pharmacyId,
-                entry_id: journalEntry.id,
-                account_id: revenueAccount.id,
-                debit: 0,
-                credit: saleAmount,
-                description: `دائن: إيراد فاتورة ${result.sale?.invoice_number ?? ""}`,
-              },
-            ])
-          }
-        }
-      } catch {} // journal entry is non-critical for the sale flow
-    }
+    const finalization = (result.finalization ?? null) as Record<string, unknown> | null
 
     await writeAuditLog(db, {
       pharmacyId,
@@ -331,9 +323,12 @@ export async function POST(request: Request) {
         payment_method: result.sale?.payment_method ?? clean(body.payment_method),
         lines_count: lines.length,
         client_request_id: clientRequestId,
+        patient_id: patientId,
+        customer_id: partnerId,
+        finalization,
       },
     })
-    return NextResponse.json(result, { status: result.duplicate ? 200 : 201 })
+    return NextResponse.json({ ...result, finalization }, { status: result.duplicate ? 200 : 201 })
   } catch (error) {
     console.error("cashier POST failed", error)
     const message = error instanceof Error ? error.message : "فشل حفظ فاتورة البيع"

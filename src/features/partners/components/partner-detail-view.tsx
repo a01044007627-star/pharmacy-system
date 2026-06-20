@@ -20,6 +20,9 @@ import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/contexts/auth-context"
 import { useAppSettings } from "@/contexts/settings-context"
 import { cn } from "@/lib/utils"
+import { network } from "@/lib/network"
+import { localDB } from "@/lib/sync/local-db"
+import { queueApiRequest } from "@/lib/sync/api-mutations"
 import { PartnerFormDialog } from "./partner-form-dialog"
 
 type PartnerData = {
@@ -89,13 +92,53 @@ type PurchaseReturnData = {
   created_at: string
 }
 
+type SaleData = {
+  id: string
+  invoice_number: string
+  customer_name: string
+  status: string
+  payment_status: string
+  payment_method: string
+  total: number
+  paid_amount: number
+  due_amount: number
+  sale_date: string
+  branch?: { id: string; name: string | null } | null
+}
+
+type SaleReturnData = {
+  id: string
+  return_number: string
+  total: number
+  refund_amount: number
+  reason: string | null
+  return_date: string
+}
+
+type BalanceLedgerData = {
+  id: string
+  source_table: string
+  source_id: string
+  entry_type: string
+  amount: number
+  balance_before: number
+  balance_after: number
+  notes: string | null
+  created_at: string
+}
+
 type PartnerDetailResponse = {
   partner?: PartnerData
   addresses?: AddressData[]
   payments?: PaymentData[]
   purchases?: PurchaseData[]
   purchaseReturns?: PurchaseReturnData[]
+  sales?: SaleData[]
+  salesReturns?: SaleReturnData[]
+  balanceLedger?: BalanceLedgerData[]
   purchaseSummary?: { count: number; total: number; paid: number; due: number }
+  salesSummary?: { count: number; total: number; paid: number; due: number }
+  salesReturnsSummary?: { count: number; total: number; refunded: number }
   paymentsSummary?: { count: number; in: number; out: number }
   error?: string
 }
@@ -132,7 +175,12 @@ export function PartnerDetailView({ partnerId }: { partnerId: string }) {
   const [payments, setPayments] = useState<PaymentData[]>([])
   const [purchases, setPurchases] = useState<PurchaseData[]>([])
   const [purchaseReturns, setPurchaseReturns] = useState<PurchaseReturnData[]>([])
+  const [sales, setSales] = useState<SaleData[]>([])
+  const [salesReturns, setSalesReturns] = useState<SaleReturnData[]>([])
+  const [balanceLedger, setBalanceLedger] = useState<BalanceLedgerData[]>([])
   const [purchaseSummary, setPurchaseSummary] = useState({ count: 0, total: 0, paid: 0, due: 0 })
+  const [salesSummary, setSalesSummary] = useState({ count: 0, total: 0, paid: 0, due: 0 })
+  const [salesReturnsSummary, setSalesReturnsSummary] = useState({ count: 0, total: 0, refunded: 0 })
   const [paymentsSummary, setPaymentsSummary] = useState({ count: 0, in: 0, out: 0 })
   const [loading, setLoading] = useState(true)
   const [showEditDialog, setShowEditDialog] = useState(false)
@@ -142,7 +190,8 @@ export function PartnerDetailView({ partnerId }: { partnerId: string }) {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const response = await fetch(`/api/partners/${partnerId}`, { cache: "no-store" })
+      if (!(await network.check())) throw new TypeError("offline")
+      const response = await fetch(`/api/partners/${partnerId}`, { cache: "no-store", credentials: "same-origin" })
       const data = await response.json().catch(() => ({})) as PartnerDetailResponse
       if (!response.ok) throw new Error(data.error ?? "فشل تحميل بيانات جهة الاتصال")
       setPartner(data.partner ?? null)
@@ -150,10 +199,40 @@ export function PartnerDetailView({ partnerId }: { partnerId: string }) {
       setPayments(data.payments ?? [])
       setPurchases(data.purchases ?? [])
       setPurchaseReturns(data.purchaseReturns ?? [])
+      setSales(data.sales ?? [])
+      setSalesReturns(data.salesReturns ?? [])
+      setBalanceLedger(data.balanceLedger ?? [])
       setPurchaseSummary(data.purchaseSummary ?? { count: 0, total: 0, paid: 0, due: 0 })
+      setSalesSummary(data.salesSummary ?? { count: 0, total: 0, paid: 0, due: 0 })
+      setSalesReturnsSummary(data.salesReturnsSummary ?? { count: 0, total: 0, refunded: 0 })
       setPaymentsSummary(data.paymentsSummary ?? { count: 0, in: 0, out: 0 })
+      if (data.partner) await localDB.putTableRow("pharmacy_partners", data.partner as unknown as Record<string, unknown>, true)
+      await Promise.all([
+        localDB.putTableRows("pharmacy_payments", (data.payments ?? []) as unknown as Record<string, unknown>[], true),
+        localDB.putTableRows("pharmacy_purchases", (data.purchases ?? []) as unknown as Record<string, unknown>[], true),
+        localDB.putTableRows("pharmacy_purchase_returns", (data.purchaseReturns ?? []) as unknown as Record<string, unknown>[], true),
+        localDB.putTableRows("pharmacy_sales", (data.sales ?? []) as unknown as Record<string, unknown>[], true),
+        localDB.putTableRows("pharmacy_sales_returns", (data.salesReturns ?? []) as unknown as Record<string, unknown>[], true),
+        localDB.putTableRows("pharmacy_partner_balance_ledger", (data.balanceLedger ?? []) as unknown as Record<string, unknown>[], true),
+      ])
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "فشل تحميل بيانات جهة الاتصال")
+      const localPartner = await localDB.getTableRow("pharmacy_partners", partnerId) as PartnerData | null
+      if (!localPartner) { toast.error(error instanceof Error && !(error instanceof TypeError) ? error.message : "بيانات جهة الاتصال غير مجهزة على هذا الجهاز"); return }
+      setPartner(localPartner)
+      const [localPayments, localPurchases, localPurchaseReturns, localSales, localSalesReturns, localLedger] = await Promise.all([
+        localDB.getTableRows("pharmacy_payments"), localDB.getTableRows("pharmacy_purchases"), localDB.getTableRows("pharmacy_purchase_returns"),
+        localDB.getTableRows("pharmacy_sales"), localDB.getTableRows("pharmacy_sales_returns"), localDB.getTableRows("pharmacy_partner_balance_ledger"),
+      ])
+      const paymentRows = localPayments.filter((row) => row.partner_id === partnerId) as unknown as PaymentData[]
+      const purchaseRows = localPurchases.filter((row) => row.supplier_id === partnerId) as unknown as PurchaseData[]
+      const purchaseReturnRows = localPurchaseReturns.filter((row) => row.supplier_id === partnerId) as unknown as PurchaseReturnData[]
+      const saleRows = localSales.filter((row) => row.customer_id === partnerId) as unknown as SaleData[]
+      const saleReturnRows = localSalesReturns.filter((row) => row.customer_id === partnerId) as unknown as SaleReturnData[]
+      setPayments(paymentRows); setPurchases(purchaseRows); setPurchaseReturns(purchaseReturnRows); setSales(saleRows); setSalesReturns(saleReturnRows)
+      setBalanceLedger(localLedger.filter((row) => row.partner_id === partnerId) as unknown as BalanceLedgerData[])
+      setPurchaseSummary(purchaseRows.reduce((a, r) => ({ count: a.count + 1, total: a.total + Number(r.total ?? 0), paid: a.paid + Number(r.paid_amount ?? 0), due: a.due + Number(r.due_amount ?? 0) }), { count: 0, total: 0, paid: 0, due: 0 }))
+      setSalesSummary(saleRows.reduce((a, r) => ({ count: a.count + 1, total: a.total + Number(r.total ?? 0), paid: a.paid + Number(r.paid_amount ?? 0), due: a.due + Number(r.due_amount ?? 0) }), { count: 0, total: 0, paid: 0, due: 0 }))
+      toast.info("تم عرض البيانات المحفوظة على الجهاز")
     } finally {
       setLoading(false)
     }
@@ -177,9 +256,15 @@ export function PartnerDetailView({ partnerId }: { partnerId: string }) {
         { label: "مدفوع للمورد", value: money(purchaseSummary.paid), tone: "text-blue-700" },
         { label: "المتبقي بالفواتير", value: money(purchaseSummary.due), tone: "text-rose-700" },
       )
+    } else {
+      cards.push(
+        { label: "إجمالي المبيعات", value: money(salesSummary.total), tone: "text-emerald-700" },
+        { label: "المحصل", value: money(salesSummary.paid), tone: "text-blue-700" },
+        { label: "الآجل بالفواتير", value: money(salesSummary.due), tone: "text-rose-700" },
+      )
     }
     return cards
-  }, [isSupplier, money, partner, purchaseSummary])
+  }, [isSupplier, money, partner, purchaseSummary, salesSummary])
 
   if (loading) return <LoadingState text="جاري تحميل بيانات جهة الاتصال..." />
   if (!partner) return <div dir="rtl" className="page-container py-8 text-center font-black text-slate-500">جهة الاتصال غير موجودة.</div>
@@ -250,6 +335,15 @@ export function PartnerDetailView({ partnerId }: { partnerId: string }) {
               </Card>
             ) : null}
 
+            {!isSupplier ? (
+              <Card className="rounded-3xl border-slate-200 shadow-sm">
+                <CardHeader className="border-b border-slate-100"><CardTitle className="flex items-center gap-2 text-lg font-black"><Receipt className="size-5 text-brand" /> فواتير العميل</CardTitle></CardHeader>
+                {sales.length === 0 ? <CardContent className="p-5 text-center text-sm font-bold text-slate-400">لا توجد فواتير بيع لهذا العميل</CardContent> : (
+                  <Table className="min-w-[760px]"><TableHeader><TableRow><TableHead className="text-right">الفاتورة</TableHead><TableHead className="text-center">الفرع</TableHead><TableHead className="text-center">الحالة</TableHead><TableHead className="text-center">الإجمالي</TableHead><TableHead className="text-center">المحصل</TableHead><TableHead className="text-center">الآجل</TableHead><TableHead className="text-center">التاريخ</TableHead></TableRow></TableHeader><TableBody>{sales.map((sale) => <TableRow key={sale.id}><TableCell className="font-black"><Link href={`/dashboard/sales/${sale.id}`} className="text-brand hover:underline">{sale.invoice_number}</Link></TableCell><TableCell className="text-center font-bold">{sale.branch?.name ?? "—"}</TableCell><TableCell className="text-center"><Badge variant="outline" className="bg-slate-50 font-black">{paymentStatusLabel(sale.payment_status)}</Badge></TableCell><TableCell className="text-center font-black">{money(sale.total)}</TableCell><TableCell className="text-center font-bold text-emerald-700">{money(sale.paid_amount)}</TableCell><TableCell className="text-center font-bold text-rose-700">{money(sale.due_amount)}</TableCell><TableCell className="text-center text-xs font-bold">{new Date(sale.sale_date).toLocaleDateString("ar-EG")}</TableCell></TableRow>)}</TableBody></Table>
+                )}
+              </Card>
+            ) : null}
+
             <Card className="rounded-3xl border-slate-200 shadow-sm">
               <CardHeader className="border-b border-slate-100"><CardTitle className="flex items-center gap-2 text-lg font-black"><CreditCard className="size-5 text-brand" /> آخر المعاملات المالية</CardTitle></CardHeader>
               {payments.length === 0 ? <CardContent className="p-5 text-center text-sm font-bold text-slate-400">لا توجد معاملات مالية بعد</CardContent> : (
@@ -274,6 +368,9 @@ export function PartnerDetailView({ partnerId }: { partnerId: string }) {
                 <Table className="min-w-[620px]"><TableHeader><TableRow><TableHead className="text-right">رقم المرتجع</TableHead><TableHead className="text-center">الإجمالي</TableHead><TableHead className="text-center">المسترد</TableHead><TableHead className="text-center">السبب</TableHead><TableHead className="text-center">التاريخ</TableHead></TableRow></TableHeader><TableBody>{purchaseReturns.map((row) => <TableRow key={row.id}><TableCell className="font-black">{row.return_number}</TableCell><TableCell className="text-center font-bold">{money(row.total)}</TableCell><TableCell className="text-center font-bold text-emerald-700">{money(row.refund_amount)}</TableCell><TableCell className="text-center text-xs font-bold">{row.reason ?? "—"}</TableCell><TableCell className="text-center text-xs font-bold">{new Date(row.created_at).toLocaleDateString("ar-EG")}</TableCell></TableRow>)}</TableBody></Table>
               </Card>
             ) : null}
+            {salesReturns.length > 0 ? (
+              <Card className="rounded-3xl border-slate-200 shadow-sm"><CardHeader className="border-b border-slate-100"><CardTitle className="text-lg font-black">مرتجعات العميل</CardTitle></CardHeader><Table className="min-w-[620px]"><TableHeader><TableRow><TableHead className="text-right">رقم المرتجع</TableHead><TableHead className="text-center">الإجمالي</TableHead><TableHead className="text-center">المسترد</TableHead><TableHead className="text-center">السبب</TableHead><TableHead className="text-center">التاريخ</TableHead></TableRow></TableHeader><TableBody>{salesReturns.map((row) => <TableRow key={row.id}><TableCell className="font-black">{row.return_number}</TableCell><TableCell className="text-center font-bold">{money(row.total)}</TableCell><TableCell className="text-center font-bold text-rose-700">{money(row.refund_amount)}</TableCell><TableCell className="text-center text-xs font-bold">{row.reason ?? "—"}</TableCell><TableCell className="text-center text-xs font-bold">{new Date(row.return_date).toLocaleDateString("ar-EG")}</TableCell></TableRow>)}</TableBody></Table></Card>
+            ) : null}
           </div>
 
           <div className="space-y-4">
@@ -286,6 +383,7 @@ export function PartnerDetailView({ partnerId }: { partnerId: string }) {
             {addresses.length > 0 ? (
               <Card className="rounded-2xl border-slate-200 shadow-sm"><CardHeader className="border-b border-slate-100"><CardTitle className="text-base font-black">العناوين</CardTitle></CardHeader><CardContent className="grid gap-3 p-4">{addresses.map((addr) => <div key={addr.id} className="rounded-2xl border border-slate-100 bg-slate-50 p-3"><div className="flex items-center gap-2"><span className="font-black text-slate-950">{addr.label}</span>{addr.is_default ? <Badge className="text-[10px] font-black">افتراضي</Badge> : null}</div><p className="mt-2 text-sm font-bold text-slate-600">{addr.address}</p>{addr.phone ? <p className="mt-1 text-xs font-bold text-slate-400" dir="ltr">{addr.phone}</p> : null}</div>)}</CardContent></Card>
             ) : null}
+            {balanceLedger.length > 0 ? <Card className="rounded-2xl border-slate-200 shadow-sm"><CardHeader className="border-b border-slate-100"><CardTitle className="text-base font-black">سجل الرصيد</CardTitle></CardHeader><CardContent className="max-h-80 space-y-2 overflow-y-auto p-3">{balanceLedger.map((entry) => <div key={entry.id} className="rounded-xl border border-slate-100 p-3"><div className="flex items-center justify-between"><span className="text-xs font-black text-slate-600">{entry.entry_type === "opening" ? "رصيد افتتاحي" : entry.entry_type === "charge" ? "استحقاق" : entry.entry_type === "settlement" ? "سداد" : entry.entry_type === "return" ? "مرتجع" : "تسوية"}</span><span className={cn("font-black", entry.amount >= 0 ? "text-rose-700" : "text-emerald-700")}>{money(Math.abs(entry.amount))}</span></div><p className="mt-1 text-[11px] font-bold text-slate-400">الرصيد: {money(entry.balance_before)} ← {money(entry.balance_after)}</p>{entry.notes ? <p className="mt-1 text-xs text-slate-500">{entry.notes}</p> : null}</div>)}</CardContent></Card> : null}
             <Card className="rounded-2xl border-slate-200 shadow-sm"><CardContent className="p-4"><p className="text-xs font-black text-slate-400">تاريخ الإنشاء</p><p className="mt-1 text-sm font-bold text-slate-600">{new Date(partner.created_at).toLocaleString("ar-EG")}</p><Separator className="my-3" /><p className="text-xs font-black text-slate-400">آخر تحديث</p><p className="mt-1 text-sm font-bold text-slate-600">{new Date(partner.updated_at).toLocaleString("ar-EG")}</p></CardContent></Card>
           </div>
         </div>
@@ -314,24 +412,44 @@ function PartnerPaymentDialog({ partner, isSupplier, onSaved }: { partner: Partn
   async function submit() {
     const amount = Number(form.amount)
     if (!Number.isFinite(amount) || amount <= 0) { toast.error("اكتب مبلغ صحيح"); return }
+    if (amount > Number(partner.balance ?? 0) + 0.001) { toast.error("المبلغ أكبر من الرصيد المستحق"); return }
     setSaving(true)
+    const requestId = crypto.randomUUID()
+    const body = {
+      pharmacy_id: auth.activePharmacyId,
+      branch_id: auth.activeBranchId,
+      amount,
+      payment_method: form.payment_method,
+      reference: form.reference,
+      notes: form.notes,
+      payment_date: form.payment_date,
+      client_request_id: requestId,
+      kind: isSupplier ? "supplier_payment" : "customer_collection",
+    }
     try {
-      const response = await fetch(`/api/partners/${partner.id}/payments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pharmacy_id: auth.activePharmacyId,
-          branch_id: auth.activeBranchId,
-          amount,
-          payment_method: form.payment_method,
-          reference: form.reference,
-          notes: form.notes,
-          payment_date: form.payment_date,
-        }),
-      })
-      const data = await response.json().catch(() => ({})) as { error?: string }
-      if (!response.ok) throw new Error(data.error ?? "فشل تسجيل الدفعة")
-      toast.success(isSupplier ? "تم تسجيل دفعة المورد" : "تم تسجيل تحصيل العميل")
+      if (await network.check()) {
+        const response = await fetch(`/api/partners/${partner.id}/payments`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify(body),
+        })
+        const data = await response.json().catch(() => ({})) as { error?: string }
+        if (!response.ok) throw new Error(data.error ?? "فشل تسجيل الدفعة")
+        toast.success(isSupplier ? "تم تسجيل دفعة المورد وربطها بالحسابات" : "تم تسجيل تحصيل العميل وربطه بالحسابات")
+      } else {
+        const now = new Date().toISOString()
+        const localPayment = {
+          id: requestId, client_request_id: requestId, pharmacy_id: auth.activePharmacyId, branch_id: auth.activeBranchId, partner_id: partner.id,
+          source_table: "pharmacy_partners", source_id: partner.id, type: isSupplier ? "supplier_payment" : "customer_collection",
+          direction: isSupplier ? "out" : "in", payment_method: form.payment_method, amount, reference: form.reference || null, notes: form.notes || null,
+          payment_date: form.payment_date, created_at: now, _offline_pending: true,
+        }
+        await localDB.putTableRow("pharmacy_payments", localPayment, false)
+        await localDB.putTableRow("pharmacy_partners", { ...partner, balance: Math.max(0, Number(partner.balance ?? 0) - amount), updated_at: now, _offline_pending: true }, false)
+        await queueApiRequest({ path: `/api/partners/${partner.id}/payments`, method: "POST", body, label: isSupplier ? `سداد المورد ${partner.name}` : `تحصيل العميل ${partner.name}` })
+        toast.success("تم حفظ الحركة على الجهاز وستتم مزامنتها تلقائيًا")
+      }
       setOpen(false)
       setForm({ amount: "", payment_method: "cash", reference: "", notes: "", payment_date: new Date().toISOString().slice(0, 10) })
       onSaved()

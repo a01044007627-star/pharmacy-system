@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/contexts/auth-context"
+import { partnersService } from "@/features/partners/services/partners-service"
 
 type PartnerFormData = {
   id?: string
@@ -104,8 +105,7 @@ export function PartnerFormDialog({ partner, partnerType, onSaved, children, ope
     setSaving(true)
     try {
       const isEdit = Boolean(partner?.id)
-      const url = isEdit ? `/api/partners/${partner!.id}` : "/api/partners"
-      const method = isEdit ? "PATCH" : "POST"
+      if (!auth.activePharmacyId) throw new Error("اختر صيدلية أولاً")
 
       const body: Record<string, unknown> = {
         pharmacy_id: auth.activePharmacyId,
@@ -124,16 +124,11 @@ export function PartnerFormDialog({ partner, partnerType, onSaved, children, ope
         body.opening_balance = Number(form.opening_balance) || 0
       }
 
-      const response = await fetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      })
+      const result = isEdit
+        ? await partnersService.update(auth.activePharmacyId, partner!.id, body)
+        : await partnersService.create(auth.activePharmacyId, body)
 
-      const data = await response.json().catch(() => ({})) as { error?: string }
-      if (!response.ok) throw new Error(data.error ?? "فشل حفظ جهة الاتصال")
-
-      toast.success(isEdit ? "تم تحديث جهة الاتصال" : "تم إنشاء جهة الاتصال")
+      toast.success(result.queued ? "تم حفظ التغيير على الجهاز وسيتم مزامنته تلقائيًا" : isEdit ? "تم تحديث جهة الاتصال" : "تم إنشاء جهة الاتصال وربط رصيدها")
       setIsOpen(false)
       onSaved()
     } catch (error) {

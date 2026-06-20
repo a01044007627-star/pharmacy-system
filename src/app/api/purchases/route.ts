@@ -128,7 +128,7 @@ export async function POST(request: Request) {
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
-    const { data, error } = await db.rpc("create_received_purchase", {
+    const { data, error } = await db.rpc("create_received_purchase_complete_v1", {
       p_pharmacy_id: scope.activePharmacyId,
       p_branch_id: branchId,
       p_actor_id: scope.user.id,
@@ -145,7 +145,9 @@ export async function POST(request: Request) {
       p_lines: lines,
     })
     if (error) throw error
-    const result = (data ?? {}) as { duplicate?: boolean; purchase?: Record<string, unknown> }
+    const result = (data ?? {}) as { duplicate?: boolean; purchase?: Record<string, unknown>; journal_entry_id?: string | null; partner_ledger?: Record<string, unknown> | null }
+    const journalEntryId = typeof result.journal_entry_id === "string" ? result.journal_entry_id : null
+
     await writeAuditLog(db, {
       pharmacyId: scope.activePharmacyId,
       branchId,
@@ -161,9 +163,10 @@ export async function POST(request: Request) {
         total: result.purchase?.total,
         paid_amount: result.purchase?.paid_amount,
         lines_count: lines.length,
+        journal_entry_id: journalEntryId,
       },
     })
-    return NextResponse.json(result, { status: result.duplicate ? 200 : 201 })
+    return NextResponse.json({ ...result, journal_entry_id: journalEntryId }, { status: result.duplicate ? 200 : 201 })
   } catch (error) {
     console.error("purchases POST failed", error)
     const message = error instanceof Error ? error.message : "فشل حفظ فاتورة الشراء"
