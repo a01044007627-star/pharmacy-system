@@ -594,6 +594,7 @@ export async function POST(request: Request) {
       product_locations: Array.isArray(body.product_locations) ? body.product_locations.map(clean).filter(Boolean) : [],
       branch_id: clean(body.branch_id) || null,
       status: "active",
+      created_by: scope.user?.id ?? null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }

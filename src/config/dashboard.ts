@@ -100,6 +100,7 @@ export const sidebarItems = [
       { title: "التواصل", href: "/dashboard/crm/communication" },
     ],
   },
+  { title: "المرضى", icon: "heart-pulse", href: "/dashboard/patients" },
   { title: "المهام", icon: "check-square", href: "/dashboard/tasks" },
   { title: "الوصفات الطبية", icon: "file-text", href: "/dashboard/prescriptions" },
   { title: "التوصيل", icon: "box", href: "/dashboard/delivery" },

@@ -8,7 +8,7 @@ import {
   Home, ShoppingCart, Truck, Package, ClipboardList, Users, Wallet,
   BarChart3, UserCheck, Settings, ContactRound, CheckSquare,
   ChevronDown, Store, X,
-  LayoutDashboard, FileText, Gift, Bell, Database, Archive, Wrench, Box, ShieldCheck,
+  LayoutDashboard, FileText, Gift, Bell, Database, Archive, Wrench, Box, ShieldCheck, Heart,
 } from "lucide-react"
 import { sidebarItems } from "@/config/dashboard"
 import { cn } from "@/lib/utils"
@@ -26,6 +26,7 @@ const iconMap: Record<string, LucideIcon> = {
   "layout-dashboard": LayoutDashboard, "file-text": FileText,
   box: Box, gift: Gift, bell: Bell, database: Database,
   archive: Archive, wrench: Wrench, "shield-check": ShieldCheck,
+  "heart-pulse": Heart,
 }
 
 interface SidebarProps {

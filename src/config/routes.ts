@@ -8,6 +8,7 @@ export const ROUTES = {
   // Dashboard
   dashboard: "/dashboard",
   dashboardHome: "/dashboard",
+  dashboardPatients: "/dashboard/patients",
   dashboardCashier: "/dashboard/sales/cashier",
   dashboardProfile: "/dashboard/profile",
   dashboardSettings: "/dashboard/settings",

@@ -56,6 +56,7 @@ export const CORE_OFFLINE_ROUTES = [
   "/dashboard/crm/activities",
   "/dashboard/crm/communication",
   "/dashboard/tasks",
+  "/dashboard/patients",
   "/dashboard/prescriptions",
   "/dashboard/delivery",
   "/dashboard/loyalty",
