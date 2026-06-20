@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "preinstall": "node scripts/ensure-package-manager.mjs",
     "dev": "next dev",
     "build": "tsc --noEmit && next build --turbopack",
     "start": "next start",
@@ -12,7 +13,9 @@
     "test:watch": "jest --config jest.config.cjs --watch --passWithNoTests",
     "db:build": "node scripts/build-supabase-deploy.mjs",
     "audit:project": "node scripts/audit-project.mjs",
-    "verify": "npm run typecheck && npm test -- --runInBand && npm run lint -- --quiet && npm run audit:project"
+    "verify": "npm run typecheck && npm test -- --runInBand && npm run lint -- --quiet && npm run audit:project",
+    "clean": "node -e \"const fs=require('fs'); for (const p of ['.next','coverage']) fs.rmSync(p,{recursive:true,force:true})\"",
+    "ci:verify": "npm ci && npm run verify && npm run build"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

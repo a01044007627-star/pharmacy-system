@@ -1,7 +1,7 @@
 {
   "date": "2026-06-20",
   "status": "code-verified",
-  "sourceFiles": 482,
+  "sourceFiles": 487,
   "sqlFiles": 60,
   "apiRoutes": 91,
   "apiReferences": 97,
@@ -12,12 +12,47 @@
   "missingTables": [],
   "missingFunctions": [],
   "missingApiRoutes": [],
-  "tests": { "passed": 35, "total": 35, "suites": 8 },
+  "tests": {
+    "passed": 39,
+    "total": 39,
+    "suites": 10
+  },
   "typescript": "passed",
   "eslint": "passed",
   "productionBuild": "passed",
-  "npmProductionAudit": { "critical": 0, "high": 1, "moderate": 0, "low": 0, "remaining": "xlsx@0.18.5" },
+  "npmProductionAudit": {
+    "critical": 0,
+    "high": 1,
+    "moderate": 0,
+    "low": 0,
+    "remaining": "xlsx@0.18.5"
+  },
   "liveDatabaseExecuted": false,
   "existingDatabaseRepairFile": "supabase/final-repair.sql",
-  "freshDatabaseBundle": "supabase/deploy.sql"
+  "freshDatabaseBundle": "supabase/deploy.sql",
+  "packageManager": {
+    "name": "npm",
+    "version": "10.9.2",
+    "lockfile": "package-lock.json",
+    "vercelInstallCommand": "npm ci",
+    "vercelBuildCommand": "npm run build",
+    "node": "20.x"
+  },
+  "cleanCodeRefactor": {
+    "httpClient": "src/lib/http/api-client.ts",
+    "typedApiError": "src/lib/http/api-error.ts",
+    "settingsRepository": "src/features/settings/services/settings-entity-service.ts",
+    "genericCrudService": "src/features/settings/services/settings-crud-service.ts",
+    "typedSettingsServices": true,
+    "offlinePermissionErrorsQueued": false
+  },
+  "npmCi": {
+    "status": "passed",
+    "installedPackages": 811
+  },
+  "apiAudit": {
+    "missingTables": 0,
+    "missingFunctions": 0,
+    "missingApiRoutes": 0
+  }
 }

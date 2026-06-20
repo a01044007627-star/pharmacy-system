@@ -16,51 +16,7 @@ import { SettingsLayout } from "@/features/settings/components/settings-layout"
 import { LoadingState } from "@/components/shared/loading-state"
 import { EmptyState } from "@/components/shared/empty-state"
 import { DashboardPageHeader } from "@/components/shared/page-ui"
-
-interface InvoiceDesign {
-  id: string
-  pharmacy_id: string
-  name: string
-  template: string
-  is_default: boolean
-  show_logo: boolean
-  show_header: boolean
-  header_text: string
-  header_subtitle_1: string
-  header_subtitle_2: string
-  header_subtitle_3: string
-  show_footer: boolean
-  footer_text: string
-  show_barcode: boolean
-  show_qr: boolean
-  qr_enabled: boolean
-  qr_show_business_name: boolean
-  qr_show_invoice_no: boolean
-  qr_show_date: boolean
-  qr_show_total: boolean
-  qr_show_tax: boolean
-  show_tax: boolean
-  show_discount: boolean
-  show_customer_info: boolean
-  show_customer_id: boolean
-  show_customer_tax: boolean
-  show_phone: boolean
-  show_address: boolean
-  show_shipping: boolean
-  show_item_image: boolean
-  show_item_code: boolean
-  show_item_brand: boolean
-  show_item_unit: boolean
-  show_total_qty: boolean
-  show_payment_info: boolean
-  show_total_in_words: boolean
-  show_signature: boolean
-  show_currency: boolean
-  paper_size: string
-  font_family: string
-  font_size: number
-  note: string
-}
+import type { InvoiceDesign } from "@/features/settings/types"
 
 const templateOptions = [
   { value: "standard", label: "قياسي" },
@@ -277,14 +233,14 @@ function InvoiceContent() {
               <InputField label="اسم التصميم *" value={formName} onChange={setFormName} placeholder="التصميم الأساسي" />
               <div className="grid gap-1.5 text-right">
                 <span className="text-xs font-black text-slate-700">القالب</span>
-                <Select value={form.template ?? "standard"} onValueChange={(v: string | null) => v && setF("template", v)}>
+                <Select value={form.template ?? "standard"} onValueChange={(v: string | null) => v && setF("template", v as InvoiceDesign["template"])}>
                   <SelectTrigger className="h-9 rounded-lg"><SelectValue>{templateOptions.find((o) => o.value === (form.template ?? "standard"))?.label ?? "قياسي"}</SelectValue></SelectTrigger>
                   <SelectContent>{templateOptions.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
               <div className="grid gap-1.5 text-right">
                 <span className="text-xs font-black text-slate-700">حجم الورق</span>
-                <Select value={form.paper_size ?? "A4"} onValueChange={(v: string | null) => v && setF("paper_size", v)}>
+                <Select value={form.paper_size ?? "A4"} onValueChange={(v: string | null) => v && setF("paper_size", v as InvoiceDesign["paper_size"])}>
                   <SelectTrigger className="h-9 rounded-lg"><SelectValue>{paperOptions.find((o) => o.value === (form.paper_size ?? "A4"))?.label ?? "A4"}</SelectValue></SelectTrigger>
                   <SelectContent>{paperOptions.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
                 </Select>

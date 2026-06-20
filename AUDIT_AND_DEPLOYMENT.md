@@ -10,10 +10,10 @@
 
 - TypeScript: ناجح بدون أخطاء.
 - ESLint: ناجح بدون أخطاء.
-- Jest: عدد 35 اختبارًا ناجحًا من 35، ضمن 8 مجموعات اختبار.
+- Jest: عدد 39 اختبارًا ناجحًا من 39، ضمن 10 مجموعات اختبار.
 - Production Build: ناجح باستخدام Next.js.
 - فحص ربط الواجهة بالـAPI والـDB:
-  - 482 ملف TypeScript/TSX تمت مراجعته آليًا.
+  - 487 ملف TypeScript/TSX تمت مراجعته آليًا.
   - 91 API Route موجودة.
   - 97 استدعاء API تم التحقق من وجود مساراتها.
   - 69 جدولًا مستخدمًا من الواجهة والخدمات، وجميعها موجودة في SQL.
@@ -21,6 +21,19 @@
   - لا توجد مسارات API مفقودة أو جداول/RPC مفقودة وفق الفحص الساكن.
 
 > الفحص تم على الكود والـSQL محليًا. لم يتم الاتصال بقاعدة Supabase الحية للعميل، لذلك يجب أخذ نسخة احتياطية وتشغيل ملف الإصلاح على قاعدة العميل ثم اختبار البيانات الفعلية قبل التسليم التشغيلي النهائي.
+
+
+## 1.1 إصلاح Vercel وPackage Manager
+
+تم توحيد مدير الحزم على **npm فقط** لمنع تعارض lockfiles وأوامر النشر:
+
+- `package-lock.json` هو ملف القفل الوحيد.
+- `packageManager` مضبوط على `npm@10.9.2`.
+- `vercel.json` يفرض `npm ci` بدل أي إعداد قديم يشغّل `pnpm install`.
+- `vercel.json` يفرض `npm run build`.
+- تمت إضافة `.nvmrc` على Node.js 20.19.5.
+- تمت إضافة فحص `preinstall` يمنع تشغيل المشروع بمدير حزم مختلف ويعرض رسالة واضحة.
+- تم تثبيت `engines.node` على `20.x` و`engines.npm` على npm 10 لتطابق بيئة Vercel والحزم الحالية.
 
 ## 2. فصل الـDeveloper عن أصحاب الصيدليات
 
@@ -66,6 +79,28 @@
 - `src/lib/sync/sync-manager.ts`
 - `src/lib/db/local-db.ts`
 - `public/sw.js`
+
+
+## 3.1 تحسين Clean Code وOOP
+
+تم تنفيذ Refactor فعلي في طبقات الاتصال والإعدادات:
+
+- إضافة `HttpClient` موحّد لكل طلبات JSON.
+- إضافة `ApiError` typed يحتوي على status وcode وخصائص retry/authorization.
+- إضافة `SettingsEntityRepository` كطبقة Repository.
+- إضافة `SettingsCrudService<T>` كـGeneric OOP service قابلة لإعادة الاستخدام.
+- تحويل خدمات الطابعات والباركود والفواتير والضرائب إلى خدمات typed بدون `any`.
+- تحويل `AppSettingsService` إلى class مع فصل واضح بين Remote API وLocal Cache وOffline Queue.
+- منع أخطاء 401/403 وقيود البيانات من الدخول إلى Offline queue.
+- إضافة اختبارات مستقلة لـHTTP client وGeneric CRUD service.
+
+الملفات الأساسية:
+
+- `src/lib/http/api-client.ts`
+- `src/lib/http/api-error.ts`
+- `src/features/settings/services/settings-entity-service.ts`
+- `src/features/settings/services/settings-crud-service.ts`
+- `src/features/settings/services/app-settings-service.ts`
 
 ## 4. قاعدة البيانات
 
@@ -127,7 +162,7 @@ UPLOADTHING_TOKEN=
 
 ## 6. خطوات النشر الموصى بها
 
-1. تثبيت Node.js 20 وnpm 10.
+1. تثبيت Node.js 20.x وnpm 10.x.
 2. فك المشروع وتشغيل:
 
 ```bash

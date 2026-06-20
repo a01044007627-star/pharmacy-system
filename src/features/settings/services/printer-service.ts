@@ -1,25 +1,14 @@
 "use client"
 
-import { SettingsEntityService } from "./settings-entity-service"
+import type { ReceiptPrinter } from "@/features/settings/types"
+import { SettingsCrudService, type SettingsRecordInput } from "./settings-crud-service"
 
-type LooseRow = any
+const service = new SettingsCrudService<ReceiptPrinter>("receipt-printers")
 
 export const PrinterService = {
-  async getPrinters(): Promise<any[]> {
-    return SettingsEntityService.list<any>("receipt-printers")
-  },
-  async getPrinterById(id: string): Promise<any | null> {
-    return SettingsEntityService.get<any>("receipt-printers", id)
-  },
-  async savePrinter(printer: LooseRow): Promise<any | null> {
-    return printer.id
-      ? SettingsEntityService.update<any>("receipt-printers", String(printer.id), printer)
-      : SettingsEntityService.create<any>("receipt-printers", printer)
-  },
-  async deletePrinter(id: string): Promise<void> {
-    await SettingsEntityService.remove("receipt-printers", id)
-  },
-  async setDefault(id: string): Promise<void> {
-    await SettingsEntityService.setDefault("receipt-printers", id)
-  },
+  getPrinters: () => service.list(),
+  getPrinterById: (id: string) => service.get(id),
+  savePrinter: (printer: SettingsRecordInput<ReceiptPrinter>) => service.save(printer),
+  deletePrinter: (id: string) => service.remove(id),
+  setDefault: (id: string) => service.setDefault(id),
 }

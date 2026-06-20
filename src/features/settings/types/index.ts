@@ -47,7 +47,7 @@ export type TemplateStatus = "active" | "inactive"
 export type BarcodeSymbology = "EAN-13" | "EAN-8" | "Code-128" | "Code-39" | "UPC-A" | "QR Code"
 
 export type InvoiceDesignStatus = "active" | "inactive"
-export type InvoiceTemplate = "standard" | "modern" | "compact" | "minimal"
+export type InvoiceTemplate = "standard" | "modern" | "compact" | "minimal" | "thermal"
 
 export type StockAlertCondition = "below_min" | "below_reorder" | "expiring_soon" | "expired"
 export type StockAlertSeverity = "low" | "medium" | "high"
@@ -422,17 +422,40 @@ export interface InvoiceDesign {
   logo_url: string | null
   show_header: boolean
   header_text: string
+  header_subtitle_1: string
+  header_subtitle_2: string
+  header_subtitle_3: string
   show_footer: boolean
   footer_text: string
   show_tax: boolean
   show_discount: boolean
   show_barcode: boolean
   show_qr: boolean
+  qr_enabled: boolean
+  qr_show_business_name: boolean
+  qr_show_invoice_no: boolean
+  qr_show_date: boolean
+  qr_show_total: boolean
+  qr_show_tax: boolean
+  show_customer_info: boolean
+  show_customer_id: boolean
+  show_customer_tax: boolean
+  show_phone: boolean
+  show_address: boolean
+  show_shipping: boolean
+  show_item_image: boolean
+  show_item_code: boolean
+  show_item_brand: boolean
+  show_item_unit: boolean
+  show_total_qty: boolean
+  show_payment_info: boolean
+  show_total_in_words: boolean
   show_currency: boolean
   show_signature: boolean
   paper_size: PaperSize
   font_family: string
   font_size: number
+  note: string
   is_default: boolean
   status: InvoiceDesignStatus
   created_at: string

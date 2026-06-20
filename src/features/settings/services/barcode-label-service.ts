@@ -1,25 +1,14 @@
 "use client"
 
-import { SettingsEntityService } from "./settings-entity-service"
+import type { BarcodePaperSetting } from "@/features/settings/types"
+import { SettingsCrudService, type SettingsRecordInput } from "./settings-crud-service"
 
-type LooseRow = any
+const service = new SettingsCrudService<BarcodePaperSetting>("barcode-papers")
 
 export const BarcodeLabelService = {
-  async getBarcodePapers(): Promise<any[]> {
-    return SettingsEntityService.list<any>("barcode-papers")
-  },
-  async getBarcodePaperById(id: string): Promise<any | null> {
-    return SettingsEntityService.get<any>("barcode-papers", id)
-  },
-  async saveBarcodePaper(paper: LooseRow): Promise<any | null> {
-    return paper.id
-      ? SettingsEntityService.update<any>("barcode-papers", String(paper.id), paper)
-      : SettingsEntityService.create<any>("barcode-papers", paper)
-  },
-  async deleteBarcodePaper(id: string): Promise<void> {
-    await SettingsEntityService.remove("barcode-papers", id)
-  },
-  async setDefault(id: string): Promise<void> {
-    await SettingsEntityService.setDefault("barcode-papers", id)
-  },
+  getBarcodePapers: () => service.list(),
+  getBarcodePaperById: (id: string) => service.get(id),
+  saveBarcodePaper: (paper: SettingsRecordInput<BarcodePaperSetting>) => service.save(paper),
+  deleteBarcodePaper: (id: string) => service.remove(id),
+  setDefault: (id: string) => service.setDefault(id),
 }
