@@ -75,7 +75,11 @@ export function PurchaseReturnsView() {
   const money = useCallback((value: number) => `${Number(value || 0).toLocaleString("ar-EG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`, [currency])
 
   const loadReturns = useCallback(async () => {
-    if (!auth.activePharmacyId) return
+    if (!auth.activePharmacyId) {
+      setReturns([])
+      setLoadingReturns(auth.loading)
+      return
+    }
     setLoadingReturns(true)
     try {
       const params = new URLSearchParams({ pharmacy_id: auth.activePharmacyId, branch_id: auth.activeBranchId ?? "all", page: String(page), page_size: "25" })
@@ -89,7 +93,7 @@ export function PurchaseReturnsView() {
     } finally {
       setLoadingReturns(false)
     }
-  }, [auth.activeBranchId, auth.activePharmacyId, page])
+  }, [auth.activeBranchId, auth.activePharmacyId, auth.loading, page])
 
   useEffect(() => { void loadReturns() }, [loadReturns])
 
@@ -125,7 +129,7 @@ export function PurchaseReturnsView() {
     setSearch(`${purchase.purchase_number} — ${purchase.supplier_name}`)
     setPurchases([])
     try {
-      const params = new URLSearchParams({ purchase_id: purchase.id })
+      const params = new URLSearchParams({ purchase_id: purchase.id, pharmacy_id: auth.activePharmacyId!, branch_id: auth.activeBranchId ?? "all" })
       const response = await fetch(`/api/purchases/returns?${params.toString()}`, { cache: "no-store" })
       const data = await response.json().catch(() => ({})) as { lines?: ReturnableLine[]; error?: string }
       if (!response.ok) throw new Error(data.error ?? "فشل تحميل بنود الفاتورة")

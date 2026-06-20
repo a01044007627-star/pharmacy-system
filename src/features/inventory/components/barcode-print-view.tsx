@@ -16,7 +16,7 @@ import { useAuth } from "@/contexts/auth-context"
 import type { PharmacyItemListRow } from "@/features/inventory/lib/items-types"
 import { money, primaryBarcode } from "@/features/inventory/lib/items-helpers"
 import { encodeCode128 } from "@/features/inventory/lib/barcode-encoder"
-import { apiRequest } from "@/lib/http/api-client"
+import { inventoryItemService } from "@/features/inventory/services/inventory-item-service"
 
 /** Renders a Code-128B barcode as a pure SVG — no external deps */
 function BarcodeSVG({ value }: { value: string; format?: string }) {
@@ -78,7 +78,23 @@ type Paper = {
   is_default: boolean
 }
 
-
+const DEFAULT_BARCODE_PAPER: Paper = {
+  id: "default-a4",
+  name: "A4 افتراضي",
+  page_width: 210,
+  page_height: 297,
+  left_margin: 10,
+  right_margin: 10,
+  top_margin: 10,
+  bottom_margin: 10,
+  label_width: 50,
+  label_height: 30,
+  columns: 3,
+  rows: 8,
+  gap_horizontal: 2,
+  gap_vertical: 2,
+  is_default: true,
+}
 
 export function BarcodePrintView() {
   const auth = useAuth()
@@ -92,6 +108,7 @@ export function BarcodePrintView() {
   const [selectedPaperId, setSelectedPaperId] = useState<string>("")
   const [quantity, setQuantity] = useState<number>(30)
   const [loading, setLoading] = useState(true)
+  const [errorMessage, setErrorMessage] = useState("")
   const [showName, setShowName] = useState(true)
   const [showPrice, setShowPrice] = useState(true)
   const [showSku, setShowSku] = useState(true)
@@ -103,29 +120,55 @@ export function BarcodePrintView() {
     documentTitle: `ملصقات باركود - ${item?.name_ar ?? ""}`,
   })
 
-  const loadData = useCallback(async () => {
-    if (!itemId || !pharmacyId) return
-    setLoading(true)
-    try {
-      const [itemData, paperData] = await Promise.all([
-        apiRequest<{ item?: PharmacyItemListRow }>(`/api/items/${itemId}${scopeQuery}`, { cache: "no-store", timeoutMs: 18000, retries: 1 }),
-        apiRequest<{ rows?: Paper[] }>(`/api/settings/entities?entity=barcode-papers&pharmacy_id=${encodeURIComponent(pharmacyId)}`, { cache: "no-store", timeoutMs: 18000, retries: 1 }),
-      ])
-      setItem(itemData.item ?? null)
-      const list = paperData.rows ?? []
-      setPapers(list)
-
-      const def = list.find((p) => p.is_default) ?? list[0]
-      if (def) setSelectedPaperId(def.id)
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "فشل تحميل البيانات")
-    } finally {
+  const loadData = useCallback(async (signal?: AbortSignal) => {
+    if (!itemId) {
+      setItem(null)
       setLoading(false)
+      setErrorMessage("لم يتم تحديد الصنف المطلوب طباعته")
+      return
     }
-  }, [itemId, pharmacyId, scopeQuery])
+    if (!pharmacyId) {
+      setItem(null)
+      setLoading(auth.loading)
+      if (!auth.loading) setErrorMessage("اختر الصيدلية النشطة أولًا")
+      return
+    }
+
+    setLoading(true)
+    setErrorMessage("")
+    try {
+      const itemData = await inventoryItemService.getDetail<{ item?: PharmacyItemListRow }>(itemId, pharmacyId, signal)
+      if (!itemData.item) throw new Error("الصنف غير موجود أو لا يتبع الصيدلية المختارة")
+      setItem(itemData.item)
+
+      try {
+        const paperData = await inventoryItemService.listBarcodePapers<Paper>(pharmacyId, signal)
+        const list = paperData.rows?.length ? paperData.rows : [DEFAULT_BARCODE_PAPER]
+        setPapers(list)
+        const selected = list.find((paper) => paper.is_default) ?? list[0]
+        setSelectedPaperId(selected.id)
+      } catch (paperError) {
+        setPapers([DEFAULT_BARCODE_PAPER])
+        setSelectedPaperId(DEFAULT_BARCODE_PAPER.id)
+        if (!(paperError instanceof Error && paperError.name === "AbortError")) {
+          toast.warning("تم تحميل الصنف باستخدام مقاس ورق افتراضي لتعذر تحميل إعدادات الباركود")
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") return
+      const message = error instanceof Error ? error.message : "فشل تحميل بيانات الصنف"
+      setItem(null)
+      setErrorMessage(message)
+      toast.error(message)
+    } finally {
+      if (!signal?.aborted) setLoading(false)
+    }
+  }, [auth.loading, itemId, pharmacyId])
 
   useEffect(() => {
-    void loadData()
+    const controller = new AbortController()
+    void loadData(controller.signal)
+    return () => controller.abort()
   }, [loadData])
 
   const paper = papers.find((p) => p.id === selectedPaperId)
@@ -167,7 +210,7 @@ export function BarcodePrintView() {
   if (!item) {
     return (
       <div className="page-container py-10 text-center font-black text-rose-700">
-        الصنف غير موجود أو لم يتم تحديده بشكل صحيح.
+        {errorMessage || "الصنف غير موجود أو لم يتم تحديده بشكل صحيح."}
       </div>
     )
   }

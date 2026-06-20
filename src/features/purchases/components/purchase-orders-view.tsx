@@ -40,9 +40,9 @@ type ResponseData = {
 
 function statusBadgeColor(value: string) {
   const colors: Record<string, string> = {
-    pending: "border-amber-200 bg-amber-50 text-amber-700",
-    approved: "border-blue-200 bg-blue-50 text-blue-700",
-    ordered: "border-purple-200 bg-purple-50 text-purple-700",
+    draft: "border-slate-200 bg-slate-50 text-slate-700",
+    sent: "border-blue-200 bg-blue-50 text-blue-700",
+    partial: "border-amber-200 bg-amber-50 text-amber-700",
     received: "border-emerald-200 bg-emerald-50 text-emerald-700",
     cancelled: "border-rose-200 bg-rose-50 text-rose-700",
   }
@@ -64,7 +64,11 @@ export function PurchaseOrdersView() {
   const money = useCallback((value: number) => `${Number(value || 0).toLocaleString("ar-EG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`, [currency])
 
   const load = useCallback(async () => {
-    if (!auth.activePharmacyId) return
+    if (!auth.activePharmacyId) {
+      setRows([])
+      setLoading(auth.loading)
+      return
+    }
     setLoading(true)
     try {
       const params = new URLSearchParams({
@@ -86,7 +90,7 @@ export function PurchaseOrdersView() {
     } finally {
       setLoading(false)
     }
-  }, [auth.activeBranchId, auth.activePharmacyId, page, query, statusFilter])
+  }, [auth.activeBranchId, auth.activePharmacyId, auth.loading, page, query, statusFilter])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => void load(), 250)

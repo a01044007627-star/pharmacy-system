@@ -3,7 +3,9 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
-import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-permissions"
+import { OperationalRelationsRepository } from "@/lib/server/operational-relations-repository"
+import { operationalErrorResponse, TenantRequestContext } from "@/lib/server/tenant-request-context"
+import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
 
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
@@ -13,67 +15,41 @@ function clean(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
 }
 
-function safeNumber(value: unknown, fallback: number, min: number, max: number) {
-  const parsed = Math.trunc(Number(value))
-  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback
-}
-
-function safeSearch(value: string) {
-  return value.replace(/[,%().]/g, " ").replace(/\s+/g, " ").trim()
-}
-
-function resolveBranchId(scope: Awaited<ReturnType<typeof getServerAuthScope>>, requested: string | null) {
-  let branchId = requested && requested !== "all" ? requested : null
-  if (branchId) assertBranchScope(scope, branchId)
-  if (!branchId && isBranchScoped(scope)) {
-    branchId = scope.memberships.find((row) => row.pharmacy_id === scope.activePharmacyId)?.branch_id ?? scope.activeBranchId
-  }
-  return branchId
-}
 
 export async function GET(request: Request) {
   try {
-    const url = new URL(request.url)
-    const scope = await getServerAuthScope({
-      requestedPharmacyId: url.searchParams.get("pharmacy_id"),
-      requestedBranchId: url.searchParams.get("branch_id") === "all" ? null : url.searchParams.get("branch_id"),
+    const context = await TenantRequestContext.from(request, {
+      permission: "sales:read",
+      forbiddenMessage: "ليست لديك صلاحية عرض المسودات",
     })
-    if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
-    if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولًا" }, { status: 400 })
-    if (!scopeCan(scope, "sales:read")) return NextResponse.json({ error: "ليست لديك صلاحية عرض المسودات" }, { status: 403 })
+    const { page, pageSize, offset } = context.pagination()
+    const query = context.search()
+    const status = context.text("status")
 
-    const supabase = await createClient()
-    const db = getDbClient(supabase) as SupabaseClient
-    const branchId = resolveBranchId(scope, url.searchParams.get("branch_id"))
-    const page = safeNumber(url.searchParams.get("page"), 1, 1, 100000)
-    const pageSize = safeNumber(url.searchParams.get("page_size"), 25, 10, 100)
-    const offset = (page - 1) * pageSize
-    const query = safeSearch(clean(url.searchParams.get("query")))
-    const status = clean(url.searchParams.get("status"))
-
-    let draftsQuery = db
+    let draftsQuery = context.db
       .from("pharmacy_invoice_drafts")
-      .select("id,pharmacy_id,branch_id,draft_type,title,payload,status,created_by,created_at,updated_at,branch:pharmacy_branches(id,name)", { count: "exact" })
-      .eq("pharmacy_id", scope.activePharmacyId)
+      .select("id,pharmacy_id,branch_id,draft_type,title,payload,status,created_by,created_at,updated_at", { count: "exact" })
+      .eq("pharmacy_id", context.pharmacyId)
       .eq("draft_type", "sale")
       .order("updated_at", { ascending: false })
       .range(offset, offset + pageSize - 1)
 
-    if (branchId) draftsQuery = draftsQuery.eq("branch_id", branchId)
+    if (context.branchId) draftsQuery = draftsQuery.eq("branch_id", context.branchId)
     if (query) draftsQuery = draftsQuery.ilike("title", `%${query}%`)
     if (status && status !== "all") draftsQuery = draftsQuery.eq("status", status)
 
     const { data, error, count } = await draftsQuery
     if (error) throw error
 
+    const relations = new OperationalRelationsRepository(context.db, context.pharmacyId)
+    const drafts = await relations.attachBranches(data ?? [])
+
     return NextResponse.json({
-      drafts: data ?? [],
+      drafts,
       pagination: { page, pageSize, total: count ?? 0, totalPages: Math.max(1, Math.ceil((count ?? 0) / pageSize)) },
     })
   } catch (error) {
-    console.error("sales drafts GET failed", error)
-    const message = error instanceof Error ? error.message : "فشل تحميل مسودات المبيعات"
-    return NextResponse.json({ error: message }, { status: 500 })
+    return operationalErrorResponse(error, "sales drafts GET failed", "فشل تحميل مسودات المبيعات")
   }
 }
 

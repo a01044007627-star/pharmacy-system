@@ -5,15 +5,13 @@ import { getServerAuthScope } from "@/lib/auth/session"
 import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
 import { adjustOpeningStock } from "@/lib/inventory/opening-stock"
 import { cleanItemText, finiteNonNegative, normalizeBarcodeInputs, normalizeItemName, postgresErrorMessage } from "@/features/inventory/lib/item-input"
+import { ItemDetailRepository } from "@/features/inventory/server/item-detail-repository"
+import { operationalErrorResponse, TenantRequestContext } from "@/lib/server/tenant-request-context"
 
 type Context = { params: Promise<{ itemId: string }> }
 
 function getDbClient() {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : null
-}
-
-function clean(value: unknown) {
-  return typeof value === "string" ? value.trim() : ""
 }
 
 function num(value: unknown) {
@@ -24,30 +22,19 @@ function num(value: unknown) {
 export async function GET(request: Request, context: Context) {
   try {
     const { itemId } = await context.params
-    const requestedPharmacyId = clean(new URL(request.url).searchParams.get("pharmacy_id")) || null
-    const scope = await getServerAuthScope({ requestedPharmacyId })
-    if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
-    if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
-    if (!scopeCan(scope, "inventory:read")) return NextResponse.json({ error: "ليست لديك صلاحية عرض الأصناف" }, { status: 403 })
+    const requestContext = await TenantRequestContext.from(request, {
+      permission: "inventory:read",
+      forbiddenMessage: "ليست لديك صلاحية عرض الأصناف",
+      missingPharmacyMessage: "اختر صيدلية أولاً",
+    })
+    const repository = new ItemDetailRepository(requestContext.db, requestContext.pharmacyId)
+    const result = await repository.find(itemId)
 
-    const supabase = await createClient()
-    const db = getDbClient() ?? supabase
-
-    const { data: item, error } = await db.from("pharmacy_items").select("*,group:pharmacy_item_groups(id,name),brand:pharmacy_item_brands(id,name)").eq("id", itemId).eq("pharmacy_id", scope.activePharmacyId).maybeSingle()
-    if (error) throw error
-    if (!item) return NextResponse.json({ error: "الصنف غير موجود" }, { status: 404 })
-    if (item.branch_id) assertBranchScope(scope, item.branch_id as string)
-
-    const [barcodes, units, variants] = await Promise.all([
-      db.from("pharmacy_item_barcodes").select("id,barcode,is_primary").eq("item_id", itemId).eq("pharmacy_id", scope.activePharmacyId),
-      db.from("pharmacy_item_units").select("id,unit_name,factor,barcode,sell_price,is_base,main_unit,sub_unit,qty_per_main_unit,unit_raw").eq("item_id", itemId).eq("pharmacy_id", scope.activePharmacyId),
-      db.from("pharmacy_item_variants").select("id,name,value,sku,sell_price,purchase_price").eq("item_id", itemId).eq("pharmacy_id", scope.activePharmacyId).order("created_at"),
-    ])
-
-    return NextResponse.json({ item, barcodes: barcodes.data ?? [], units: units.data ?? [], variants: variants.data ?? [] })
+    if (!result) return NextResponse.json({ error: "الصنف غير موجود أو لا يتبع الصيدلية المختارة" }, { status: 404 })
+    if (result.item.branch_id) assertBranchScope(requestContext.scope, result.item.branch_id as string)
+    return NextResponse.json(result)
   } catch (error) {
-    console.error("item detail GET failed", error)
-    return NextResponse.json({ error: error instanceof Error ? error.message : "فشل تحميل الصنف" }, { status: 500 })
+    return operationalErrorResponse(error, "item detail GET failed", "فشل تحميل الصنف")
   }
 }
 

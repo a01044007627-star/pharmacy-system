@@ -71,7 +71,11 @@ export function SalesReturnsView() {
   const money = useCallback((value: number) => `${Number(value || 0).toLocaleString("ar-EG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`, [currency])
 
   const loadReturns = useCallback(async () => {
-    if (!auth.activePharmacyId) return
+    if (!auth.activePharmacyId) {
+      setReturns([])
+      setLoadingReturns(auth.loading)
+      return
+    }
     setLoadingReturns(true)
     try {
       const params = new URLSearchParams({ pharmacy_id: auth.activePharmacyId, branch_id: auth.activeBranchId ?? "all" })
@@ -84,7 +88,7 @@ export function SalesReturnsView() {
     } finally {
       setLoadingReturns(false)
     }
-  }, [auth.activeBranchId, auth.activePharmacyId])
+  }, [auth.activeBranchId, auth.activePharmacyId, auth.loading])
 
   useEffect(() => { void loadReturns() }, [loadReturns])
 
@@ -120,7 +124,7 @@ export function SalesReturnsView() {
     setSearch(`${sale.invoice_number} — ${sale.customer_name}`)
     setSales([])
     try {
-      const params = new URLSearchParams({ sale_id: sale.id })
+      const params = new URLSearchParams({ sale_id: sale.id, pharmacy_id: auth.activePharmacyId!, branch_id: auth.activeBranchId ?? "all" })
       const response = await fetch(`/api/sales/returns?${params.toString()}`, { cache: "no-store" })
       const data = await response.json().catch(() => ({})) as { lines?: ReturnableLine[]; error?: string }
       if (!response.ok) throw new Error(data.error ?? "فشل تحميل بنود الفاتورة")

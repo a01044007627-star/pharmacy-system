@@ -64,7 +64,11 @@ export function ShippingView() {
   const money = useCallback((value: number) => `${Number(value || 0).toLocaleString("ar-EG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`, [currency])
 
   const load = useCallback(async () => {
-    if (!auth.activePharmacyId) return
+    if (!auth.activePharmacyId) {
+      setRows([])
+      setLoading(auth.loading)
+      return
+    }
     setLoading(true)
     try {
       const params = new URLSearchParams({
@@ -86,7 +90,7 @@ export function ShippingView() {
     } finally {
       setLoading(false)
     }
-  }, [auth.activeBranchId, auth.activePharmacyId, page, query, statusFilter])
+  }, [auth.activeBranchId, auth.activePharmacyId, auth.loading, page, query, statusFilter])
 
   useEffect(() => {
     const timeout = window.setTimeout(() => void load(), 250)

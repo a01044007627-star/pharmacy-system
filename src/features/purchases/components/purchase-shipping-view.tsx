@@ -41,7 +41,11 @@ export function PurchaseShippingView() {
   const money = useCallback((value: number) => `${Number(value || 0).toLocaleString("ar-EG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`, [currency])
 
   const load = useCallback(async () => {
-    if (!auth.activePharmacyId) return
+    if (!auth.activePharmacyId) {
+      setRows([])
+      setLoading(auth.loading)
+      return
+    }
     setLoading(true)
     try {
       const params = new URLSearchParams({
@@ -61,7 +65,7 @@ export function PurchaseShippingView() {
     } finally {
       setLoading(false)
     }
-  }, [auth.activePharmacyId, branchId, page])
+  }, [auth.activePharmacyId, auth.loading, branchId, page])
 
   useEffect(() => { void load() }, [load])
 

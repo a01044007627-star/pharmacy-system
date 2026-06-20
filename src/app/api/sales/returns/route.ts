@@ -3,8 +3,10 @@ import type { SupabaseClient } from "@supabase/supabase-js"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
-import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-permissions"
+import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
 import { writeAuditLog } from "@/lib/audit/audit-log"
+import { OperationalRelationsRepository } from "@/lib/server/operational-relations-repository"
+import { operationalErrorResponse, TenantRequestContext } from "@/lib/server/tenant-request-context"
 
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
@@ -14,81 +16,45 @@ function clean(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
 }
 
-function safeNumber(value: unknown, fallback: number, min: number, max: number) {
-  const parsed = Math.trunc(Number(value))
-  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback
-}
-
-async function resolveBranchId(scope: Awaited<ReturnType<typeof getServerAuthScope>>, requestedBranchId: string | null) {
-  let branchId = requestedBranchId && requestedBranchId !== "all" ? requestedBranchId : null
-  if (branchId) assertBranchScope(scope, branchId)
-  if (!branchId && isBranchScoped(scope)) {
-    branchId = scope.memberships.find((row) => row.pharmacy_id === scope.activePharmacyId)?.branch_id ?? scope.activeBranchId
-  }
-  return branchId
-}
 
 export async function GET(request: Request) {
   try {
-    const url = new URL(request.url)
-    const scope = await getServerAuthScope({
-      requestedPharmacyId: url.searchParams.get("pharmacy_id"),
-      requestedBranchId: url.searchParams.get("branch_id") === "all" ? null : url.searchParams.get("branch_id"),
+    const context = await TenantRequestContext.from(request, {
+      permission: "sales:read",
+      forbiddenMessage: "ليست لديك صلاحية عرض مرتجعات المبيعات",
     })
-    if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
-    if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
-    if (!scopeCan(scope, "sales:read")) return NextResponse.json({ error: "ليست لديك صلاحية عرض مرتجعات المبيعات" }, { status: 403 })
-
-    const supabase = await createClient()
-    const db = getDbClient(supabase) as SupabaseClient
-    const branchId = await resolveBranchId(scope, url.searchParams.get("branch_id"))
-    const saleId = clean(url.searchParams.get("sale_id"))
+    const saleId = context.text("sale_id")
+    const relations = new OperationalRelationsRepository(context.db, context.pharmacyId)
 
     if (saleId) {
-      const { data: sale, error: saleError } = await db
+      const { data: sale, error: saleError } = await context.db
         .from("pharmacy_sales")
         .select("id,branch_id,invoice_number,customer_name,total,paid_amount,due_amount,payment_method,sale_date,voided_at,status")
         .eq("id", saleId)
-        .eq("pharmacy_id", scope.activePharmacyId)
+        .eq("pharmacy_id", context.pharmacyId)
         .maybeSingle()
       if (saleError) throw saleError
       if (!sale) return NextResponse.json({ error: "فاتورة البيع غير موجودة" }, { status: 404 })
-      assertBranchScope(scope, sale.branch_id)
+      assertBranchScope(context.scope, sale.branch_id)
       if (sale.voided_at || ["void", "cancelled"].includes(sale.status)) {
         return NextResponse.json({ error: "لا يمكن إنشاء مرتجع لفاتورة ملغاة" }, { status: 400 })
       }
 
-      const { data: lines, error: linesError } = await db
+      const { data: rawLines, error: linesError } = await context.db
         .from("pharmacy_sale_lines")
-        .select("id,item_id,batch_id,item_name,barcode,unit,quantity,unit_price,discount,net_total,batch:pharmacy_item_batches(id,batch_number,expiry_date)")
-        .eq("pharmacy_id", scope.activePharmacyId)
+        .select("id,item_id,batch_id,item_name,barcode,unit,quantity,unit_price,discount,net_total")
+        .eq("pharmacy_id", context.pharmacyId)
         .eq("sale_id", saleId)
         .order("created_at", { ascending: true })
       if (linesError) throw linesError
 
-      const lineIds = (lines ?? []).map((line) => line.id)
-      let returnedRows: Array<{ sale_line_id: string | null; quantity: number }> = []
-      if (lineIds.length > 0) {
-        const { data, error } = await db
-          .from("pharmacy_sales_return_lines")
-          .select("sale_line_id,quantity,return:pharmacy_sales_returns!inner(voided_at)")
-          .eq("pharmacy_id", scope.activePharmacyId)
-          .in("sale_line_id", lineIds)
-          .is("return.voided_at", null)
-        if (error) throw error
-        returnedRows = (data ?? []) as unknown as Array<{ sale_line_id: string | null; quantity: number }>
-      }
-
-      const returnedByLine = new Map<string, number>()
-      for (const row of returnedRows) {
-        if (!row.sale_line_id) continue
-        returnedByLine.set(row.sale_line_id, (returnedByLine.get(row.sale_line_id) ?? 0) + Number(row.quantity ?? 0))
-      }
+      const lines = await relations.attachBatches(rawLines ?? [])
+      const returnedByLine = await relations.activeSalesReturnQuantities(lines.map((line) => line.id as string))
 
       return NextResponse.json({
         sale,
-        lines: (lines ?? []).map((line) => {
-          const returnedQuantity = returnedByLine.get(line.id) ?? 0
+        lines: lines.map((line) => {
+          const returnedQuantity = returnedByLine.get(line.id as string) ?? 0
           return {
             ...line,
             returned_quantity: returnedQuantity,
@@ -98,33 +64,27 @@ export async function GET(request: Request) {
       })
     }
 
-    const page = safeNumber(url.searchParams.get("page"), 1, 1, 100000)
-    const pageSize = safeNumber(url.searchParams.get("page_size"), 25, 10, 100)
-    const offset = (page - 1) * pageSize
-    let query = db
+    const { page, pageSize, offset } = context.pagination()
+    let query = context.db
       .from("pharmacy_sales_returns")
-      .select("id,branch_id,sale_id,return_number,customer_name,total,refund_amount,reason,return_date,created_at,sale:pharmacy_sales(invoice_number),branch:pharmacy_branches(name)", { count: "exact" })
-      .eq("pharmacy_id", scope.activePharmacyId)
+      .select("id,branch_id,sale_id,return_number,customer_name,total,refund_amount,reason,return_date,created_at", { count: "exact" })
+      .eq("pharmacy_id", context.pharmacyId)
       .is("voided_at", null)
       .order("return_date", { ascending: false })
       .range(offset, offset + pageSize - 1)
-    if (branchId) query = query.eq("branch_id", branchId)
+    if (context.branchId) query = query.eq("branch_id", context.branchId)
 
     const { data, error, count } = await query
     if (error) throw error
+    const withSales = await relations.attachSales(data ?? [])
+    const returns = await relations.attachBranches(withSales)
+
     return NextResponse.json({
-      returns: data ?? [],
-      pagination: {
-        page,
-        pageSize,
-        total: count ?? 0,
-        totalPages: Math.max(1, Math.ceil((count ?? 0) / pageSize)),
-      },
+      returns,
+      pagination: { page, pageSize, total: count ?? 0, totalPages: Math.max(1, Math.ceil((count ?? 0) / pageSize)) },
     })
   } catch (error) {
-    console.error("sales returns GET failed", error)
-    const message = error instanceof Error ? error.message : "فشل تحميل مرتجعات المبيعات"
-    return NextResponse.json({ error: message }, { status: 500 })
+    return operationalErrorResponse(error, "sales returns GET failed", "فشل تحميل مرتجعات المبيعات")
   }
 }
 

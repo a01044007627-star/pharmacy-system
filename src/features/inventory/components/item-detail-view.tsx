@@ -14,6 +14,7 @@ import type { PharmacyItemListRow } from "@/features/inventory/lib/items-types"
 import { money, numberValue, statusLabel, unitCountLabel, unitEquationLabel } from "@/features/inventory/lib/items-helpers"
 import { cacheItemDetail, readCachedItemDetail } from "@/features/inventory/lib/items-offline"
 import { apiRequest, isRequestAbort } from "@/lib/http/api-client"
+import { inventoryItemService } from "@/features/inventory/services/inventory-item-service"
 
 type DetailResponse = {
   item?: PharmacyItemListRow
@@ -61,12 +62,7 @@ export function ItemDetailView({ itemId, pharmacyId }: { itemId: string; pharmac
     setLoading(true)
     setErrorMessage("")
     try {
-      const payload = await apiRequest<DetailResponse>(`/api/items/${itemId}${scopeQuery}`, {
-        cache: "no-store",
-        signal,
-        timeoutMs: 18000,
-        retries: 1,
-      })
+      const payload = await inventoryItemService.getDetail<DetailResponse>(itemId, pharmacyId, signal)
       await cacheItemDetail(`${pharmacyId ?? "active"}:${itemId}`, payload)
       setData(payload)
     } catch (error) {
@@ -84,7 +80,7 @@ export function ItemDetailView({ itemId, pharmacyId }: { itemId: string; pharmac
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [itemId, pharmacyId, scopeQuery])
+  }, [itemId, pharmacyId])
 
   useEffect(() => {
     const controller = new AbortController()
