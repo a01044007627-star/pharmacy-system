@@ -25,6 +25,7 @@ CREATE OR REPLACE FUNCTION public.pharmacy_items_catalog(
   p_price TEXT DEFAULT 'all',
   p_stock TEXT DEFAULT 'all',
   p_not_for_sale BOOLEAN DEFAULT false,
+  p_is_controlled BOOLEAN DEFAULT NULL,
   p_sort_key TEXT DEFAULT 'name',
   p_sort_dir TEXT DEFAULT 'asc',
   p_page INTEGER DEFAULT 1,
@@ -83,6 +84,7 @@ WITH stock_summary AS (
     AND (p_unit = 'all' OR COALESCE(b.unit, '') = p_unit)
     AND (p_sub_unit = 'all' OR p_sub_unit = ANY(b.unit_names))
     AND (NOT p_not_for_sale OR b.not_for_sale)
+    AND (p_is_controlled IS NULL OR b.is_controlled = p_is_controlled)
     AND (
       p_expiry = 'all'
       OR (p_expiry = 'none' AND b.effective_expiry IS NULL)
@@ -193,7 +195,7 @@ SELECT jsonb_build_object(
 )
 $$;
 
-GRANT EXECUTE ON FUNCTION public.pharmacy_items_catalog(UUID, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BOOLEAN, TEXT, TEXT, INTEGER, INTEGER)
+GRANT EXECUTE ON FUNCTION public.pharmacy_items_catalog(UUID, UUID, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BOOLEAN, BOOLEAN, TEXT, TEXT, INTEGER, INTEGER)
   TO authenticated, service_role;
 
 COMMIT;

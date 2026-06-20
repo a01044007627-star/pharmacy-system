@@ -314,12 +314,12 @@ export async function GET(request: Request) {
     }
 
     const [{ data: catalogData, error: catalogError }, { data: optionData, error: optionError }] = await Promise.all([
-      db.rpc("pharmacy_items_catalog_v2", {
+      db.rpc("pharmacy_items_catalog", {
         p_pharmacy_id: pharmacyId,
         p_branch_id: branchId,
         p_mode: mode,
         p_search: search,
-        p_pharmacy_type: filters.pharmacyType,
+        p_item_type: filters.pharmacyType,
         p_group_id: filters.groupId,
         p_brand_id: filters.brandId,
         p_manufacturer: filters.manufacturer,

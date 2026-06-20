@@ -1,7 +1,7 @@
 "use client"
 
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from "react"
-import { NotificationService } from "@/features/notifications/services/notification-service"
+import { NotificationService, getUserId } from "@/features/notifications/services/notification-service"
 import { useAppSettings } from "@/contexts/settings-context"
 import { useSound, type SoundName } from "@/hooks/use-sound"
 import { notificationScenarioMap, renderNotificationTemplate, type NotificationScenarioId, type NotificationScenarioVars } from "@/config/notification-scenarios"
@@ -70,7 +70,6 @@ function relativeTime(date: Date): string {
 }
 
 function getSoundForType(type: NotifType): SoundName {
-  if (type === "success") return "success"
   if (type === "warning") return "warning"
   if (type === "error") return "error"
   return "notification"
@@ -176,7 +175,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     refresh()
-    const id = setInterval(refresh, 60000)
+    const id = setInterval(refresh, 15000)
     return () => clearInterval(id)
   }, [refresh])
 
@@ -210,7 +209,11 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       return
     }
 
+    const user_id = await getUserId()
+    if (!user_id) return
+
     const row = await NotificationService.insert({
+      user_id,
       title: normalized.title,
       description: normalized.desc,
       notif_type: normalized.type,

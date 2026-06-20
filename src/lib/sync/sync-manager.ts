@@ -28,8 +28,14 @@ const CORE_OFFLINE_TABLES = [
   "pharmacy_settings",
   "pharmacy_tax_rates",
   "pharmacy_shifts",
+  "pharmacy_chart_of_accounts",
+  "pharmacy_journal_entries",
+  "pharmacy_journal_lines",
+  "pharmacy_financial_movements",
+  "pharmacy_cash_registers",
 ] as const
 
+const MAX_RETRIES = 5
 const CORE_SYNC_INTERVAL = 6 * 60 * 60 * 1000
 const CORE_SYNC_KEY = "pharmacy-core-offline-sync"
 
@@ -104,6 +110,24 @@ export class SyncManager {
           operation: "create" | "update" | "delete"
           data: Record<string, unknown>
         }
+        const retryCount = (mutation as unknown as { retry_count?: number }).retry_count ?? 0
+
+        if (retryCount >= MAX_RETRIES) {
+          await localDB.addDeadLetter({
+            id: mutation.id,
+            table,
+            operation,
+            data,
+            created_at: mutation.created_at,
+            last_error: `تجاوز الحد الأقصى للمحاولات (${MAX_RETRIES})`,
+            failed_at: new Date().toISOString(),
+          })
+          await localDB.deleteMutation(mutation.id)
+          failedCount += 1
+          await localDB.addSyncLog({ id: `deadletter_${mutation.id}_${Date.now()}`, table, action: operation, status: "failed", timestamp: new Date().toISOString(), details: `تم نقل التغيير إلى القائمة المهملة بعد ${MAX_RETRIES} محاولات فاشلة` })
+          continue
+        }
+
         try {
           if (table === API_MUTATION_TABLE || table === LEGACY_ITEM_API_MUTATION_TABLE) {
             const apiRequest = data as unknown as QueuedApiRequest
@@ -144,6 +168,23 @@ export class SyncManager {
           await localDB.addSyncLog({ id: `sync_${mutation.id}_${Date.now()}`, table, action: operation, status: "success", timestamp: new Date().toISOString(), details: "تمت مزامنة التغيير المحلي مع الخادم" })
         } catch (error) {
           failedCount += 1
+          const newRetryCount = retryCount + 1
+
+          if (newRetryCount >= MAX_RETRIES) {
+            await localDB.addDeadLetter({
+              id: mutation.id,
+              table,
+              operation,
+              data,
+              created_at: mutation.created_at,
+              last_error: error instanceof Error ? error.message : "فشل المزامنة",
+              failed_at: new Date().toISOString(),
+            })
+            await localDB.deleteMutation(mutation.id)
+          } else {
+            await localDB.updateMutationRetry(mutation.id, newRetryCount)
+          }
+
           await localDB.addSyncLog({ id: `sync_failed_${mutation.id}_${Date.now()}`, table, action: operation, status: "failed", timestamp: new Date().toISOString(), details: error instanceof Error ? error.message : "فشل مزامنة تغيير محلي وسيعاد المحاولة لاحقًا" })
           if (!(await network.check())) break
         }
@@ -158,6 +199,31 @@ export class SyncManager {
         timestamp: this._lastSync,
         details: syncedCount || failedCount ? `تمت مزامنة ${syncedCount} تغيير، وفشل ${failedCount} تغيير` : "لا توجد تغييرات معلقة للمزامنة",
       })
+
+      const userResponse = await supabase.auth.getUser()
+      const userId = userResponse.data.user?.id
+      if (userId && failedCount > 0) {
+        try {
+          await supabase.from("pharmacy_inapp_notifications").insert({
+            user_id: userId,
+            title: "فشلت المزامنة",
+            description: `فشلت مزامنة ${failedCount} تغيير. تم نقلها إلى قائمة الانتظار للمحاولة لاحقًا.`,
+            notif_type: "error",
+            href: "/dashboard/sync",
+          })
+        } catch { /* non-critical */ }
+      }
+      if (userId && failedCount === 0 && syncedCount > 0) {
+        try {
+          await supabase.from("pharmacy_inapp_notifications").insert({
+            user_id: userId,
+            title: "تمت المزامنة بنجاح",
+            description: `تمت مزامنة ${syncedCount} تغيير بنجاح.`,
+            notif_type: "success",
+            href: "/dashboard/sync",
+          })
+        } catch { /* non-critical */ }
+      }
     } finally {
       this.isSyncing = false
       await this.refreshPending()

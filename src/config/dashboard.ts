@@ -41,6 +41,7 @@ export const sidebarItems = [
       { title: "مجموعات الأسعار", href: "/dashboard/items/price-groups" },
       { title: "محذوفات الأدوية والأصناف", href: "/dashboard/items/deleted" },
       { title: "الهالك والتالف", href: "/dashboard/items/damaged" },
+      { title: "سجل الأدوية المراقبة", href: "/dashboard/controlled-drugs" },
     ],
   },
   {

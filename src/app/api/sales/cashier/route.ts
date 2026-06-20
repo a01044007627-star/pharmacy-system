@@ -48,7 +48,7 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
   const rowOffset = needle ? 0 : safeOffset(offset)
   let itemsQuery = db
     .from("pharmacy_items")
-    .select("id, pharmacy_id, branch_id, group_id, brand_id, name_ar, name_en, sku, category, unit, manufacturer_name, item_type, sell_price, old_sell_price, buy_price, manage_inventory, not_for_sale, min_stock, opening_stock, has_expiry, track_batch, expiry_date, image_url, status, updated_at")
+    .select("id, pharmacy_id, branch_id, group_id, brand_id, name_ar, name_en, sku, category, unit, manufacturer_name, item_type, sell_price, old_sell_price, buy_price, manage_inventory, not_for_sale, min_stock, opening_stock, has_expiry, track_batch, expiry_date, image_url, is_controlled, requires_prescription, status, updated_at")
     .eq("pharmacy_id", pharmacyId)
     .eq("status", "active")
     .or("not_for_sale.is.null,not_for_sale.eq.false")
@@ -79,7 +79,7 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
     if (ids.length > 0) {
       let barcodeItemsQuery = db
         .from("pharmacy_items")
-        .select("id, pharmacy_id, branch_id, group_id, brand_id, name_ar, name_en, sku, category, unit, manufacturer_name, item_type, sell_price, old_sell_price, buy_price, manage_inventory, not_for_sale, min_stock, opening_stock, has_expiry, track_batch, expiry_date, image_url, status, updated_at")
+        .select("id, pharmacy_id, branch_id, group_id, brand_id, name_ar, name_en, sku, category, unit, manufacturer_name, item_type, sell_price, old_sell_price, buy_price, manage_inventory, not_for_sale, min_stock, opening_stock, has_expiry, track_batch, expiry_date, image_url, is_controlled, requires_prescription, status, updated_at")
         .eq("pharmacy_id", pharmacyId)
         .eq("status", "active")
         .or("not_for_sale.is.null,not_for_sale.eq.false")
@@ -226,6 +226,10 @@ export async function POST(request: Request) {
     if (!shiftId) throw new Error("لازم تفتح جلسة الكاشير وتكتب نقدية الدرج قبل البيع")
     const clientRequestId = clean(body.client_request_id) || crypto.randomUUID()
     const invoiceDiscount = scopeCan(scope, "sales:discount") ? Math.max(0, n(body.discount_total)) : 0
+    const couponCode = clean(body.coupon_code) || null
+    const patientName = clean(body.patient_name) || null
+    const doctorName = clean(body.doctor_name) || null
+    const prescriptionNumber = clean(body.prescription_number) || null
     const { data, error: rpcError } = await db.rpc("create_cashier_sale_v2", {
       p_pharmacy_id: pharmacyId,
       p_branch_id: branchId,
@@ -240,6 +244,10 @@ export async function POST(request: Request) {
       p_shipping_fee: Math.max(0, n(body.shipping_fee)),
       p_rounding_adj: n(body.rounding_adj),
       p_notes: clean(body.notes) || null,
+      p_coupon_code: couponCode,
+      p_patient_name: patientName,
+      p_doctor_name: doctorName,
+      p_prescription_number: prescriptionNumber,
       p_lines: lines,
     })
     if (rpcError) throw rpcError

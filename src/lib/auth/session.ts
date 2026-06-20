@@ -276,7 +276,8 @@ export async function getServerAuthScope(params?: {
     ?? branches[0]
     ?? null
 
-  const role = resolveActiveRole(isDeveloper, activePharmacy?.id ?? null, memberships, ownedPharmacies)
+  const resolvedRole = resolveActiveRole(isDeveloper, activePharmacy?.id ?? null, memberships, ownedPharmacies)
+  const role = !isDeveloper && activePharmacy && activePharmacy.status !== "active" ? "no-access" : resolvedRole
   const scope: AuthScope = {
     user,
     profile,
@@ -293,4 +294,3 @@ export async function getServerAuthScope(params?: {
   writeScopeCache(cacheKey, scope)
   return scope
 }
-

@@ -479,11 +479,6 @@ ALTER TABLE public.pharmacy_partners
   ADD CONSTRAINT pharmacy_partners_credit_check
     CHECK (credit_limit >= 0) NOT VALID;
 
-ALTER TABLE public.pharmacy_stock_transfers
-  DROP CONSTRAINT IF EXISTS pharmacy_stock_transfers_status_check,
-  ADD CONSTRAINT pharmacy_stock_transfers_status_check
-    CHECK (status IN ('draft','pending','completed','cancelled','void','posted'));
-
 -- ===================================================================
 -- 5. COMPOSITE FK CONSTRAINTS (_tenant suffix, final version)
 -- ===================================================================
@@ -686,6 +681,7 @@ CREATE INDEX IF NOT EXISTS idx_pharmacy_settings_lookup
 CREATE INDEX IF NOT EXISTS idx_pharmacy_settings_updated
   ON public.pharmacy_settings(pharmacy_id, updated_at DESC);
 
+DROP INDEX IF EXISTS idx_pharmacy_settings_global_key;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pharmacy_settings_global_key
   ON public.pharmacy_settings(key)
   WHERE pharmacy_id IS NULL;
@@ -734,8 +730,6 @@ CREATE INDEX IF NOT EXISTS idx_item_variants_sku
 CREATE INDEX IF NOT EXISTS idx_item_units_item_equation
   ON public.pharmacy_item_units(pharmacy_id, item_id, is_base, factor);
 
-CREATE INDEX IF NOT EXISTS idx_partners_supplier_lookup
-  ON public.pharmacy_partners(pharmacy_id, type, status, name);
 
 CREATE INDEX IF NOT EXISTS idx_purchases_supplier_lookup
   ON public.pharmacy_purchases(pharmacy_id, supplier_id, purchase_date DESC);

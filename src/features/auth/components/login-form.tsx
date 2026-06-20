@@ -18,7 +18,7 @@ import { Form, FormField, FormItem, FormLabel, FormControl, FormMessage } from "
 
 export function LoginForm({ className, ...props }: React.ComponentProps<"div">) {
   const router = useRouter()
-  const { user: authUser, loading: authLoading, refreshAuth } = useAuth()
+  const { user: authUser, loading: authLoading, refreshAuth, isDeveloper } = useAuth()
   const [isPending, startTransition] = useTransition()
   const [switchingAccount, setSwitchingAccount] = useState(false)
 
@@ -29,11 +29,11 @@ export function LoginForm({ className, ...props }: React.ComponentProps<"div">) 
 
   async function onSubmit(data: LoginInput) {
     try {
-      await loginUser(data.email, data.password)
+      const result = await loginUser(data.email, data.password)
       await refreshAuth()
       toast.success("تم تسجيل الدخول بنجاح")
       startTransition(() => {
-        router.replace(ROUTES.dashboard)
+        router.replace(result.user?.role === "developer" ? ROUTES.developer : ROUTES.dashboard)
         router.refresh()
       })
     } catch (err) {
@@ -62,7 +62,7 @@ export function LoginForm({ className, ...props }: React.ComponentProps<"div">) 
             </p>
           </div>
           <Button type="button" className="w-full" onClick={() => startTransition(() => {
-            router.replace(ROUTES.dashboard)
+            router.replace(isDeveloper ? ROUTES.developer : ROUTES.dashboard)
             router.refresh()
           })}>
             الدخول إلى لوحة التحكم

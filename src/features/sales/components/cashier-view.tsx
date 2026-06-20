@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition, type CSSProperties, type KeyboardEvent, type PointerEvent as ReactPointerEvent } from "react"
 import { toast } from "sonner"
 import {
+  AlertCircle,
   Info,
   DollarSign,
   Barcode,
@@ -79,6 +80,8 @@ type CashierProduct = {
   category?: string | null
   manufacturer_name?: string | null
   item_type?: string | null
+  is_controlled?: boolean
+  requires_prescription?: boolean
   has_expiry?: boolean
   track_batch?: boolean
   nearest_batch_id?: string | null
@@ -293,6 +296,13 @@ export function CashierView() {
   const [priceGroups, setPriceGroups] = useState<PriceGroup[]>([])
   const [paidAmount, setPaidAmount] = useState(0)
   const [invoiceDiscount, setInvoiceDiscount] = useState(0)
+  const [couponCode, setCouponCode] = useState("")
+  const [couponDiscount, setCouponDiscount] = useState(0)
+  const [couponValidating, setCouponValidating] = useState(false)
+  const [couponApplied, setCouponApplied] = useState<{ code: string; discount: number; label: string } | null>(null)
+  const [patientName, setPatientName] = useState("")
+  const [doctorName, setDoctorName] = useState("")
+  const [prescriptionNumber, setPrescriptionNumber] = useState("")
   const [loading, setLoading] = useState(false)
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -371,8 +381,9 @@ export function CashierView() {
 
   const subtotal = useMemo(() => lines.reduce((total, line) => total + line.quantity * line.unit_price, 0), [lines])
   const linesDiscount = useMemo(() => lines.reduce((total, line) => total + line.discount, 0), [lines])
-  const total = useMemo(() => Math.max(0, subtotal - linesDiscount - invoiceDiscount), [invoiceDiscount, linesDiscount, subtotal])
+  const total = useMemo(() => Math.max(0, subtotal - linesDiscount - invoiceDiscount - couponDiscount), [couponDiscount, invoiceDiscount, linesDiscount, subtotal])
   const due = Math.max(0, total - paidAmount)
+  const hasControlledItems = useMemo(() => lines.some((line) => (line as any).is_controlled || (line as any).requires_prescription), [lines])
   const expectedDrawer = numberValue(shift?.expected_balance, numberValue(shift?.opening_balance))
   const cashierGridStyle = useMemo(() => ({
     "--cashier-catalog-width": `${catalogPanelWidth}px`,
@@ -815,10 +826,45 @@ export function CashierView() {
     setLines((current) => current.filter((line) => line.id !== id))
   }
 
+  async function validateCoupon() {
+    if (!couponCode.trim() || !pharmacyId) return
+    setCouponValidating(true)
+    try {
+      const params = new URLSearchParams({ pharmacy_id: pharmacyId, code: couponCode.trim().toUpperCase(), subtotal: String(subtotal - linesDiscount) })
+      const response = await fetch(`/api/sales/coupons/validate?${params.toString()}`)
+      const data = await response.json().catch(() => ({})) as { valid?: boolean; discount?: number; discount_type?: string; discount_value?: number; error?: string }
+      if (data.valid && data.discount != null) {
+        setCouponDiscount(data.discount)
+        setCouponApplied({ code: couponCode.trim().toUpperCase(), discount: data.discount, label: `كوبون ${couponCode.trim().toUpperCase()}` })
+        toast.success(`تم تطبيق الكوبون: خصم ${money(data.discount, currency)}`)
+      } else {
+        setCouponDiscount(0)
+        setCouponApplied(null)
+        toast.error(data.error || "الكوبون غير صالح")
+      }
+    } catch {
+      toast.error("فشل التحقق من الكوبون")
+    } finally {
+      setCouponValidating(false)
+    }
+  }
+
+  function removeCoupon() {
+    setCouponCode("")
+    setCouponDiscount(0)
+    setCouponApplied(null)
+  }
+
   function clearInvoice() {
     setLines([])
     setInvoiceDiscount(0)
+    setCouponDiscount(0)
+    setCouponApplied(null)
+    setCouponCode("")
     setCustomerName("نقد جمهوري")
+    setPatientName("")
+    setDoctorName("")
+    setPrescriptionNumber("")
     const preferred = settings.get("payments", "defaultPaymentMethod", "cash")
     const normalized = preferred === "bank" ? "bank-transfer" : preferred
     setPaymentMethod(acceptedPaymentMethods.includes(normalized) ? normalized : acceptedPaymentMethods[0] ?? "cash")
@@ -861,6 +907,10 @@ export function CashierView() {
     }
     const effectivePaid = effectiveMethod === "credit" ? 0 : (effectiveMethod === "mixed" ? paidAmount : total)
     const invoiceDiscountLimit = subtotal * (maxDiscountPercent / 100)
+    if (hasControlledItems && !patientName.trim()) {
+      toast.error("يرجى إدخال اسم المريض للأدوية التي تصرف بروشتة")
+      return
+    }
     const safeInvoiceDiscount = canDiscount ? Math.min(invoiceDiscountLimit, Math.max(0, invoiceDiscount)) : 0
     const payload = {
       client_request_id: crypto.randomUUID(),
@@ -871,6 +921,7 @@ export function CashierView() {
       payment_method: effectiveMethod,
       paid_amount: effectivePaid,
       discount_total: safeInvoiceDiscount,
+      coupon_code: couponApplied ? couponApplied.code : null,
       lines: lines.map((line) => ({
         item_id: line.id,
         barcode: primaryProductBarcode(line),
@@ -879,6 +930,9 @@ export function CashierView() {
         unit_price: line.unit_price,
         discount: line.discount,
       })),
+      patient_name: patientName || null,
+      doctor_name: doctorName || null,
+      prescription_number: prescriptionNumber || null,
     }
     setSaving(true)
     try {
@@ -1482,6 +1536,60 @@ export function CashierView() {
                   <div className="rounded-2xl bg-slate-50 p-3"><div className="text-xs font-black text-slate-400">المجموع</div><div className="mt-1 text-lg font-black text-slate-950">{money(subtotal, currency)}</div></div>
                   <div className="rounded-2xl bg-slate-50 p-3"><Label className="text-xs font-black text-slate-400">خصم الفاتورة (-)</Label><Input disabled={!canDiscount} dir="ltr" className="mt-1 h-9 rounded-xl text-center font-black" value={invoiceDiscount} onChange={(e) => setInvoiceDiscount(Math.min(subtotal * (maxDiscountPercent / 100), Math.max(0, numberValue(e.target.value))))} /></div>
                   <div className="rounded-2xl bg-slate-50 p-3"><Label className="text-xs font-black text-slate-400">المدفوع</Label><Input dir="ltr" className="mt-1 h-9 rounded-xl text-center font-black" value={paidAmount} onChange={(e) => setPaidAmount(numberValue(e.target.value))} /></div>
+                </div>
+
+                {hasControlledItems && (
+                  <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-3">
+                    <div className="flex items-center gap-2 text-xs font-black text-amber-700">
+                      <AlertCircle className="size-4" />
+                      دواء مراقب أو يصرف بروشتة — أدخل بيانات الروشتة
+                    </div>
+                    <div className="space-y-2">
+                      <Input
+                        value={patientName}
+                        onChange={(e) => setPatientName(e.target.value)}
+                        placeholder="اسم المريض"
+                        className="h-9 rounded-xl border-amber-200 text-xs"
+                      />
+                      <div className="flex gap-2">
+                        <Input
+                          value={doctorName}
+                          onChange={(e) => setDoctorName(e.target.value)}
+                          placeholder="اسم الدكتور"
+                          className="h-9 flex-1 rounded-xl border-amber-200 text-xs"
+                        />
+                        <Input
+                          value={prescriptionNumber}
+                          onChange={(e) => setPrescriptionNumber(e.target.value)}
+                          placeholder="رقم الروشتة"
+                          className="h-9 w-28 rounded-xl border-amber-200 text-xs"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <label className="text-xs font-black text-slate-500">كوبون خصم</label>
+                  {couponApplied ? (
+                    <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2">
+                      <span className="flex-1 text-sm font-bold text-emerald-700">{couponApplied.label}</span>
+                      <span className="text-sm font-black text-emerald-600">-{money(couponDiscount, currency)}</span>
+                      <button onClick={removeCoupon} className="text-xs font-black text-red-500 hover:text-red-700">إلغاء</button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2">
+                      <Input
+                        value={couponCode}
+                        onChange={(e) => setCouponCode(e.target.value)}
+                        placeholder="أدخل كود الكوبون"
+                        className="flex-1"
+                        onKeyDown={(e) => { if (e.key === "Enter") validateCoupon() }}
+                      />
+                      <Button size="sm" onClick={validateCoupon} disabled={couponValidating || !couponCode.trim()} className="shrink-0">
+                        {couponValidating ? "..." : "تطبيق"}
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

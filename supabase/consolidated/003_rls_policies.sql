@@ -623,16 +623,27 @@ FOR DELETE USING (public.user_has_permission(pharmacy_id, 'financials:write'));
 ALTER TABLE public.pharmacy_prescriptions ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS pharmacy_prescriptions_read ON public.pharmacy_prescriptions;
-DROP POLICY IF EXISTS pharmacy_prescriptions_write ON public.pharmacy_prescriptions;
-
 CREATE POLICY pharmacy_prescriptions_read ON public.pharmacy_prescriptions
   FOR SELECT TO authenticated
-  USING (public.user_has_permission(pharmacy_id, 'prescriptions:read', auth.uid()));
+  USING (
+    public.is_developer(auth.uid())
+    OR public.user_pharmacy_role(pharmacy_id, auth.uid()) IN ('owner','admin','pharmacist')
+    OR public.user_has_permission(pharmacy_id, 'prescriptions:read', auth.uid())
+  );
 
+DROP POLICY IF EXISTS pharmacy_prescriptions_write ON public.pharmacy_prescriptions;
 CREATE POLICY pharmacy_prescriptions_write ON public.pharmacy_prescriptions
   FOR ALL TO authenticated
-  USING (public.user_has_permission(pharmacy_id, 'prescriptions:read', auth.uid()))
-  WITH CHECK (public.user_has_permission(pharmacy_id, 'prescriptions:read', auth.uid()));
+  USING (
+    public.is_developer(auth.uid())
+    OR public.user_pharmacy_role(pharmacy_id, auth.uid()) IN ('owner','admin','pharmacist')
+    OR public.permission_in_profile(pharmacy_id, 'prescriptions:write', auth.uid())
+  )
+  WITH CHECK (
+    public.is_developer(auth.uid())
+    OR public.user_pharmacy_role(pharmacy_id, auth.uid()) IN ('owner','admin','pharmacist')
+    OR public.permission_in_profile(pharmacy_id, 'prescriptions:write', auth.uid())
+  );
 
 
 -- ===================================================================

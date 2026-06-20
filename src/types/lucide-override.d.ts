@@ -12,4 +12,9 @@ declare module "lucide-react" {
   export const Folder: LucideIcon
   export const HardDrive: LucideIcon
   export const Scale: LucideIcon
+  export const Clock3: LucideIcon
+  export const Code2: LucideIcon
+  export const Flag: LucideIcon
+  export const Rocket: LucideIcon
+  export const Server: LucideIcon
 }

@@ -1,14 +1,7 @@
 import { createClient } from "@/lib/supabase/client"
 import type { NotificationRow, DeletedNotificationRow, NotifType } from "@/types/notifications"
 
-export interface NewNotifInput {
-  title: string
-  description?: string
-  notif_type: NotifType
-  href?: string
-}
-
-async function getUserId(): Promise<string | null> {
+export async function getUserId(): Promise<string | null> {
   const { data: { session } } = await createClient().auth.getSession()
   return session?.user?.id ?? null
 }
@@ -27,12 +20,10 @@ export const NotificationService = {
     return data ?? []
   },
 
-  async insert(input: NewNotifInput): Promise<NotificationRow | null> {
-    const userId = await getUserId()
-    if (!userId) return null
+  async insert(input: { user_id: string; title: string; description?: string; notif_type?: NotifType; href?: string | null }): Promise<NotificationRow | null> {
     const { data } = await createClient()
       .from("pharmacy_inapp_notifications")
-      .insert({ user_id: userId, title: input.title, description: input.description ?? "", notif_type: input.notif_type, href: input.href ?? null })
+      .insert({ user_id: input.user_id, title: input.title, description: input.description ?? "", notif_type: input.notif_type ?? "info", href: input.href ?? null })
       .select()
       .single()
     return data

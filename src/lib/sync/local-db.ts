@@ -17,7 +17,11 @@ interface PharmacyDB extends DBSchema {
   }
   mutations: {
     key: string
-    value: { id: string; table: string; operation: "create" | "update" | "delete"; data: unknown; created_at: string }
+    value: { id: string; table: string; operation: "create" | "update" | "delete"; data: unknown; created_at: string; retry_count?: number }
+  }
+  deadLetters: {
+    key: string
+    value: { id: string; table: string; operation: string; data: unknown; created_at: string; last_error: string; failed_at: string }
   }
   cache: {
     key: string
@@ -32,7 +36,7 @@ interface PharmacyDB extends DBSchema {
 }
 
 const DB_NAME = "pharmacy-offline"
-const DB_VERSION = 3
+const DB_VERSION = 4
 let dbPromise: Promise<IDBPDatabase<PharmacyDB>> | null = null
 
 function tableDocumentKey(table: string, id: string) { return `table:${table}:${id}` }
@@ -74,6 +78,9 @@ function getDB() {
           const logs = db.createObjectStore("syncLogs", { keyPath: "id" })
           logs.createIndex("timestamp", "timestamp")
           logs.createIndex("status", "status")
+        }
+        if (!db.objectStoreNames.contains("deadLetters")) {
+          db.createObjectStore("deadLetters", { keyPath: "id" })
         }
       },
     })
@@ -172,4 +179,17 @@ export const localDB = {
     return entry.data
   },
   async getStaleCache(key: string) { return this.getCache(key, true) },
+  async addDeadLetter(entry: PharmacyDB["deadLetters"]["value"]) {
+    return (await getDB()).put("deadLetters", entry)
+  },
+  async getDeadLetters() { return (await getDB()).getAll("deadLetters") },
+  async clearDeadLetters() { return (await getDB()).clear("deadLetters") },
+  async updateMutationRetry(id: string, retryCount: number) {
+    const db = await getDB()
+    const mutation = await db.get("mutations", id)
+    if (mutation) {
+      mutation.retry_count = retryCount
+      await db.put("mutations", mutation)
+    }
+  },
 }

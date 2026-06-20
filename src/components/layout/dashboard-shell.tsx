@@ -21,7 +21,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(getInitialCollapsed)
-  const { loading, user, role, error, signOut, isDeveloper } = useAuth()
+  const { loading, user, role, error, signOut, isDeveloper, activePharmacy } = useAuth()
   const appSettings = useAppSettings()
   const maintenanceMode = appSettings.bool("system", "maintenanceMode", false)
   const appName = appSettings.get("system", "appName", "Logixa Pharmacy")
@@ -53,6 +53,23 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <p className="text-xl font-black text-slate-950" translate="no">{appName}</p>
           <p className="mt-3 text-base font-black text-amber-700">النظام في وضع الصيانة حالياً</p>
           <p className="mt-2 text-sm font-semibold leading-7 text-slate-500">تم تفعيل وضع الصيانة من إعدادات النظام. المطور فقط يقدر يدخل ويلغي وضع الصيانة.</p>
+          <Button className="mt-5 w-full" variant="outline" onClick={signOut}>تسجيل الخروج</Button>
+        </div>
+      </div>
+    )
+  }
+
+  if (!isDeveloper && activePharmacy && activePharmacy.status !== "active") {
+    return (
+      <div dir="rtl" className="flex min-h-dvh items-center justify-center bg-dashboard-bg px-4 text-center">
+        <div className="max-w-md rounded-3xl border border-amber-200 bg-white p-7 shadow-sm">
+          <p className="text-xl font-black text-slate-950">{activePharmacy.name}</p>
+          <p className="mt-3 text-base font-black text-amber-700">
+            {activePharmacy.status === "suspended" ? "تم إيقاف حساب الصيدلية مؤقتًا" : "تم إغلاق حساب الصيدلية"}
+          </p>
+          <p className="mt-2 text-sm font-semibold leading-7 text-slate-500">
+            تواصل مع إدارة المنصة لمراجعة الاشتراك أو سبب الإيقاف. لا يمكن تنفيذ عمليات تشغيلية حتى إعادة التفعيل.
+          </p>
           <Button className="mt-5 w-full" variant="outline" onClick={signOut}>تسجيل الخروج</Button>
         </div>
       </div>

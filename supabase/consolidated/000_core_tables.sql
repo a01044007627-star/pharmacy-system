@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS pharmacies (
   phone TEXT,
   email TEXT,
   address TEXT,
+  trial_ends_at TIMESTAMPTZ DEFAULT (now() + interval '14 days'),
+  subscription_ends_at TIMESTAMPTZ,
+  max_branches INTEGER NOT NULL DEFAULT 3,
+  max_users INTEGER NOT NULL DEFAULT 10,
+  developer_notes TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(owner_id)
@@ -36,6 +41,10 @@ CREATE TABLE IF NOT EXISTS pharmacies (
 
 ALTER TABLE pharmacies DROP CONSTRAINT IF EXISTS pharmacies_status_check;
 ALTER TABLE pharmacies ADD CONSTRAINT pharmacies_status_check CHECK(status IN ('active','suspended','closed'));
+ALTER TABLE pharmacies DROP CONSTRAINT IF EXISTS pharmacies_plan_check;
+ALTER TABLE pharmacies ADD CONSTRAINT pharmacies_plan_check CHECK(plan IN ('trial','starter','professional','enterprise'));
+ALTER TABLE pharmacies DROP CONSTRAINT IF EXISTS pharmacies_limits_check;
+ALTER TABLE pharmacies ADD CONSTRAINT pharmacies_limits_check CHECK(max_branches > 0 AND max_users > 0);
 
 CREATE TABLE IF NOT EXISTS pharmacy_branches (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -747,7 +756,7 @@ ALTER TABLE pharmacy_purchase_orders
   ADD COLUMN IF NOT EXISTS order_date TIMESTAMPTZ NOT NULL DEFAULT now();
 
 ALTER TABLE pharmacy_purchase_orders DROP CONSTRAINT IF EXISTS pharmacy_purchase_orders_status_check;
-ALTER TABLE pharmacy_purchase_orders ADD CONSTRAINT pharmacy_purchase_orders_status_check CHECK(status IN ('pending','approved','ordered','received','cancelled'));
+ALTER TABLE pharmacy_purchase_orders ADD CONSTRAINT pharmacy_purchase_orders_status_check CHECK(status IN ('draft','sent','partial','received','cancelled'));
 
 -- ========================
 -- 7. EXPENSES
@@ -1783,7 +1792,8 @@ CREATE TABLE IF NOT EXISTS pharmacy_units (
   description TEXT,
   is_active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(pharmacy_id, unit_name)
 );
 
 -- ========================

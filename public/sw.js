@@ -15,7 +15,7 @@ const INSTALL_ASSETS = [
   "/icon-512.png"
 ]
 const AUTH_PATHS = ["/auth/login", "/auth/signup", "/auth/forgot-password", "/auth/reset-password", "/api/auth"]
-const API_EXCLUDES = ["/api/auth", "/api/health", "/api/settings/backup-export", "/api/upload", "/api/download"]
+const API_EXCLUDES = ["/api/auth", "/api/health", "/api/developer", "/api/platform", "/api/settings/backup-export", "/api/upload", "/api/download"]
 
 function cacheKeyWithoutSearch(request) {
   const url = new URL(request.url)

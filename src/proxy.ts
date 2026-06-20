@@ -57,7 +57,7 @@ export async function proxy(request: NextRequest): Promise<Response> {
 
     if (isAuthRoute) {
       const url = request.nextUrl.clone()
-      url.pathname = ROUTES.dashboard
+      url.pathname = isSuperAdmin(email) || role === SUPER_ADMIN_ROLE ? ROUTES.developer : ROUTES.dashboard
       return NextResponse.redirect(url)
     }
 

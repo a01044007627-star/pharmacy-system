@@ -12,6 +12,7 @@ export const ROUTES = {
   dashboardProfile: "/dashboard/profile",
   dashboardSettings: "/dashboard/settings",
   dashboardNotifications: "/dashboard/notifications",
+  developer: "/developer",
 
   // Settings sub-routes
   settings: {

@@ -89,26 +89,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_purchase_orders_number
 CREATE INDEX IF NOT EXISTS idx_purchase_orders_branch_date
   ON public.pharmacy_purchase_orders(pharmacy_id, branch_id, order_date DESC);
 
-ALTER TABLE public.pharmacy_item_units
-  ADD COLUMN IF NOT EXISTS main_unit TEXT,
-  ADD COLUMN IF NOT EXISTS sub_unit TEXT,
-  ADD COLUMN IF NOT EXISTS qty_per_main_unit NUMERIC(14,3),
-  ADD COLUMN IF NOT EXISTS unit_raw TEXT,
-  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
-
-UPDATE public.pharmacy_item_units
-SET
-  main_unit = COALESCE(NULLIF(main_unit, ''), CASE WHEN is_base THEN unit_name ELSE unit_name END),
-  sub_unit = COALESCE(NULLIF(sub_unit, ''), unit_name),
-  qty_per_main_unit = COALESCE(NULLIF(qty_per_main_unit, 0), factor, 1),
-  unit_raw = COALESCE(NULLIF(unit_raw, ''), unit_name),
-  updated_at = COALESCE(updated_at, now())
-WHERE main_unit IS NULL OR main_unit = ''
-   OR sub_unit IS NULL OR sub_unit = ''
-   OR qty_per_main_unit IS NULL OR qty_per_main_unit <= 0
-   OR unit_raw IS NULL OR unit_raw = ''
-   OR updated_at IS NULL;
-
 -- 2) Normalize duplicated boolean flags before adding partial unique indexes.
 WITH ranked_defaults AS (
   SELECT id,

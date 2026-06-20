@@ -329,6 +329,10 @@ CREATE OR REPLACE FUNCTION public.create_cashier_sale_v2(
   p_shipping_fee NUMERIC,
   p_rounding_adj NUMERIC,
   p_notes TEXT,
+  p_coupon_code TEXT DEFAULT NULL,
+  p_patient_name TEXT DEFAULT NULL,
+  p_doctor_name TEXT DEFAULT NULL,
+  p_prescription_number TEXT DEFAULT NULL,
   p_lines JSONB
 )
 RETURNS JSONB
@@ -342,6 +346,7 @@ DECLARE
   v_shift public.pharmacy_shifts%ROWTYPE;
   v_item public.pharmacy_items%ROWTYPE;
   v_batch public.pharmacy_item_batches%ROWTYPE;
+  v_coupon public.pharmacy_coupons%ROWTYPE;
   v_line JSONB;
   v_quantity NUMERIC;
   v_remaining_quantity NUMERIC;
@@ -354,6 +359,7 @@ DECLARE
   v_subtotal NUMERIC := 0;
   v_line_discounts NUMERIC := 0;
   v_invoice_discount NUMERIC := 0;
+  v_coupon_discount NUMERIC := 0;
   v_tax_total NUMERIC := GREATEST(COALESCE(p_tax_total, 0), 0);
   v_shipping_fee NUMERIC := GREATEST(COALESCE(p_shipping_fee, 0), 0);
   v_rounding_adj NUMERIC := COALESCE(p_rounding_adj, 0);
@@ -464,7 +470,35 @@ BEGIN
     v_invoice_discount := GREATEST(COALESCE(p_invoice_discount, 0), 0);
   END IF;
   v_invoice_discount := LEAST(v_invoice_discount, GREATEST(v_subtotal - v_line_discounts, 0));
-  v_total := GREATEST(v_subtotal - v_line_discounts - v_invoice_discount + v_tax_total + v_shipping_fee + v_rounding_adj, 0);
+
+  -- Coupon validation
+  IF p_coupon_code IS NOT NULL AND length(BTRIM(p_coupon_code)) > 0 THEN
+    SELECT * INTO v_coupon
+    FROM public.pharmacy_coupons
+    WHERE pharmacy_id = p_pharmacy_id
+      AND code = UPPER(BTRIM(p_coupon_code))
+      AND is_active = true
+      AND (max_uses = 0 OR used_count < max_uses)
+      AND (valid_from IS NULL OR valid_from <= now())
+      AND (valid_until IS NULL OR valid_until >= now());
+
+    IF FOUND THEN
+      IF v_subtotal - v_line_discounts < v_coupon.min_purchase THEN
+        RAISE EXCEPTION 'الطلب لا يستوفي الحد الأدنى للشراء للكوبون (%)', v_coupon.code;
+      END IF;
+
+      v_coupon_discount := CASE
+        WHEN v_coupon.discount_type = 'percentage'
+          THEN round((v_subtotal - v_line_discounts) * v_coupon.discount_value / 100, 2)
+        ELSE v_coupon.discount_value
+      END;
+      v_coupon_discount := LEAST(v_coupon_discount, GREATEST(v_subtotal - v_line_discounts - v_invoice_discount, 0));
+    ELSE
+      RAISE EXCEPTION 'الكوبون غير صالح أو منتهي الصلاحية';
+    END IF;
+  END IF;
+
+  v_total := GREATEST(v_subtotal - v_line_discounts - v_invoice_discount - v_coupon_discount + v_tax_total + v_shipping_fee + v_rounding_adj, 0);
   v_paid := LEAST(v_total, GREATEST(COALESCE(p_paid_amount, v_total), 0));
   v_due := GREATEST(v_total - v_paid, 0);
   v_invoice_number := 'S-' || to_char(clock_timestamp(), 'YYYYMMDD-HH24MISS-MS')
@@ -472,18 +506,20 @@ BEGIN
 
   INSERT INTO public.pharmacy_sales (
     pharmacy_id, branch_id, shift_id, invoice_number, client_request_id,
-    customer_name, status, payment_status, payment_method,
+    customer_name, patient_name, doctor_name, prescription_number,
+    status, payment_status, payment_method,
     subtotal, discount_total, tax_total, total, paid_amount, due_amount,
-    shipping_fee, rounding_adj, notes, created_by
+    shipping_fee, rounding_adj, notes, coupon_id, coupon_discount, coupon_code, created_by
   )
   VALUES (
     p_pharmacy_id, p_branch_id, p_shift_id, v_invoice_number, p_client_request_id,
     COALESCE(NULLIF(BTRIM(p_customer_name), ''), 'زبون نقدي'),
+    NULLIF(BTRIM(p_patient_name), ''), NULLIF(BTRIM(p_doctor_name), ''), NULLIF(BTRIM(p_prescription_number), ''),
     'invoice',
     CASE WHEN v_paid >= v_total THEN 'paid' WHEN v_paid > 0 THEN 'partial' ELSE 'unpaid' END,
     v_method,
     round(v_subtotal, 2),
-    round(v_line_discounts + v_invoice_discount, 2),
+    round(v_line_discounts + v_invoice_discount + v_coupon_discount, 2),
     round(v_tax_total, 2),
     round(v_total, 2),
     round(v_paid, 2),
@@ -491,6 +527,9 @@ BEGIN
     round(v_shipping_fee, 2),
     round(v_rounding_adj, 2),
     NULLIF(BTRIM(p_notes), ''),
+    CASE WHEN v_coupon.id IS NOT NULL THEN v_coupon.id ELSE NULL END,
+    round(v_coupon_discount, 2),
+    CASE WHEN v_coupon.id IS NOT NULL THEN UPPER(BTRIM(p_coupon_code)) ELSE NULL END,
     v_actor_id
   )
   RETURNING * INTO v_sale;
@@ -616,7 +655,63 @@ BEGIN
         v_unit_price, round(v_line_total, 2), 'sale', 'pharmacy_sales', v_sale.id, v_actor_id
       );
     END IF;
+
+    -- Auto-log controlled drug dispense
+    IF v_item.is_controlled THEN
+      INSERT INTO public.pharmacy_controlled_drugs_log (
+        pharmacy_id, item_id, branch_id, action, quantity,
+        patient_name, doctor_name, prescription_number, notes,
+        created_by, created_at
+      ) VALUES (
+        p_pharmacy_id, v_item.id, p_branch_id, 'dispensed',
+        (v_line->>'quantity')::NUMERIC,
+        NULLIF(BTRIM(p_patient_name), ''), NULLIF(BTRIM(p_doctor_name), ''),
+        NULLIF(BTRIM(p_prescription_number), ''),
+        'صرف: ' || v_sale.invoice_number,
+        v_actor_id, now()
+      );
+    END IF;
   END LOOP;
+
+  -- Auto-create/link prescription
+  IF NULLIF(BTRIM(p_prescription_number), '') IS NOT NULL OR NULLIF(BTRIM(p_patient_name), '') IS NOT NULL THEN
+    DECLARE
+      v_prescription_id UUID;
+    BEGIN
+      SELECT id INTO v_prescription_id
+      FROM public.pharmacy_prescriptions
+      WHERE pharmacy_id = p_pharmacy_id
+        AND patient_name = COALESCE(NULLIF(BTRIM(p_patient_name), ''), COALESCE(NULLIF(BTRIM(p_customer_name), ''), 'زبون نقدي'))
+        AND status = 'open'
+        AND sale_id IS NULL
+      LIMIT 1;
+
+      IF NOT FOUND THEN
+        INSERT INTO public.pharmacy_prescriptions (
+          pharmacy_id, branch_id, sale_id,
+          patient_name, doctor_name, diagnosis,
+          status, notes, created_by,
+          dispensed_by, dispensed_at
+        ) VALUES (
+          p_pharmacy_id, p_branch_id, v_sale.id,
+          COALESCE(NULLIF(BTRIM(p_patient_name), ''), COALESCE(NULLIF(BTRIM(p_customer_name), ''), 'زبون نقدي')),
+          NULLIF(BTRIM(p_doctor_name), ''),
+          NULLIF(BTRIM(p_prescription_number), ''),
+          'dispensed', v_sale.invoice_number,
+          v_actor_id, v_actor_id, now()
+        );
+      ELSE
+        UPDATE public.pharmacy_prescriptions
+        SET status = 'dispensed',
+            sale_id = v_sale.id,
+            doctor_name = COALESCE(NULLIF(BTRIM(p_doctor_name), ''), doctor_name),
+            dispensed_by = v_actor_id,
+            dispensed_at = now(),
+            updated_at = now()
+        WHERE id = v_prescription_id;
+      END IF;
+    END;
+  END IF;
 
   v_cash_paid := CASE WHEN v_method = 'cash' THEN v_paid ELSE 0 END;
   v_card_paid := CASE WHEN v_method IN ('card', 'wallet', 'mixed') THEN v_paid ELSE 0 END;
@@ -629,6 +724,13 @@ BEGIN
       expected_balance = COALESCE(opening_balance, 0) + COALESCE(cash_sales, 0) + v_cash_paid - COALESCE(total_expenses, 0),
       updated_at = now()
   WHERE id = p_shift_id;
+
+  IF v_coupon.id IS NOT NULL THEN
+    UPDATE public.pharmacy_coupons
+    SET used_count = used_count + 1,
+        updated_at = now()
+    WHERE id = v_coupon.id;
+  END IF;
 
   RETURN jsonb_build_object(
     'sale', to_jsonb(v_sale),
@@ -643,11 +745,11 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.create_cashier_sale_v2(
-  UUID, UUID, UUID, UUID, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, JSONB
+  UUID, UUID, UUID, UUID, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB
 ) FROM PUBLIC;
 
 GRANT EXECUTE ON FUNCTION public.create_cashier_sale_v2(
-  UUID, UUID, UUID, UUID, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, JSONB
+  UUID, UUID, UUID, UUID, TEXT, TEXT, TEXT, NUMERIC, NUMERIC, NUMERIC, NUMERIC, NUMERIC, TEXT, TEXT, TEXT, TEXT, TEXT, JSONB
 ) TO authenticated, service_role;
 
 

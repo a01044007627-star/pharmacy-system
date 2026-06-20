@@ -290,41 +290,6 @@ CREATE TRIGGER trg_audit_item_hard_delete
 BEFORE DELETE ON public.pharmacy_items
 FOR EACH ROW EXECUTE FUNCTION public.audit_item_hard_delete();
 
--- Search text contains all item and relation identifiers.
-CREATE OR REPLACE FUNCTION public.rebuild_item_search_text(p_item_id UUID)
-RETURNS VOID
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-BEGIN
-  UPDATE public.pharmacy_items i
-  SET search_text = lower(concat_ws(' ',
-        i.name_ar, i.name_en, i.sku, i.manufacturer_name, i.category, i.sub_category,
-        (SELECT string_agg(b.barcode, ' ') FROM public.pharmacy_item_barcodes b WHERE b.item_id = i.id),
-        (SELECT string_agg(concat_ws(' ', u.unit_name, u.barcode), ' ') FROM public.pharmacy_item_units u WHERE u.item_id = i.id)
-      )),
-      updated_at = CASE WHEN i.updated_at IS NULL THEN now() ELSE i.updated_at END
-  WHERE i.id = p_item_id;
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION public.sync_item_search_from_item()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SET search_path = public
-AS $$
-BEGIN
-  NEW.search_text := lower(concat_ws(' ', NEW.name_ar, NEW.name_en, NEW.sku, NEW.manufacturer_name, NEW.category, NEW.sub_category));
-  RETURN NEW;
-END;
-$$;
-
-DROP TRIGGER IF EXISTS trg_sync_item_search_from_item ON public.pharmacy_items;
-CREATE TRIGGER trg_sync_item_search_from_item
-BEFORE INSERT OR UPDATE OF name_ar, name_en, sku, manufacturer_name, category, sub_category
-ON public.pharmacy_items
-FOR EACH ROW EXECUTE FUNCTION public.sync_item_search_from_item();
 
 CREATE OR REPLACE FUNCTION public.sync_item_search_from_relation()
 RETURNS TRIGGER

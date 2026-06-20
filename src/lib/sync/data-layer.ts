@@ -116,8 +116,9 @@ async function onlineUpdate<T>(table: TableName, id: string, updates: Partial<T>
 }
 
 async function onlineDelete(table: TableName, id: string) {
+  const supabase = createClient()
   const pharmacyId = getPharmacyId()
-  let query = createClient().from(table).delete().eq("id", id)
+  let query = supabase.from(table).delete().eq("id", id)
   if (pharmacyId && shouldScopeByPharmacy(table)) query = query.eq("pharmacy_id", pharmacyId)
   const { error } = await query
   if (error) throw error

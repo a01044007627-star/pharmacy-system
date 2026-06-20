@@ -27,6 +27,7 @@ export const CORE_OFFLINE_ROUTES = [
   "/dashboard/items/price-groups",
   "/dashboard/items/deleted",
   "/dashboard/items/damaged",
+  "/dashboard/controlled-drugs",
   "/dashboard/stocktaking",
   "/dashboard/stocktaking/stock",
   "/dashboard/stocktaking/movements",
