@@ -4,18 +4,17 @@ import { useEffect, useMemo, useState } from "react"
 import {
   type LucideIcon,
   AlertTriangle,
-  BadgePercent,
-  Banknote,
   Calculator,
   Clock,
   CreditCard,
   ExternalLink,
-  Keyboard,
+  FileText,
   ListChecks,
-  PackageSearch,
-  ReceiptText,
+  Percent,
+  Receipt,
   RefreshCw,
   Save,
+  Search,
   ShoppingCart,
   Wallet,
 } from "lucide-react"
@@ -147,7 +146,7 @@ export function CashierSessionDialog({
               <Separator />
 
               <div>
-                <h4 className="mb-2 flex items-center gap-2 text-sm font-black text-slate-950"><ReceiptText className="size-4 text-brand" /> آخر فواتير الجلسة</h4>
+                <h4 className="mb-2 flex items-center gap-2 text-sm font-black text-slate-950"><Receipt className="size-4 text-brand" /> آخر فواتير الجلسة</h4>
                 <div className="space-y-2">
                   {snapshot.recentSales.map((sale) => (
                     <button
@@ -156,7 +155,7 @@ export function CashierSessionDialog({
                       onClick={() => onOpenSale?.(sale.id)}
                       className="flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 text-right transition hover:border-brand/30 hover:bg-brand/[0.03]"
                     >
-                      <ReceiptText className="size-4 shrink-0 text-slate-400" />
+                      <Receipt className="size-4 shrink-0 text-slate-400" />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-black text-slate-950">{sale.invoice_number} — {sale.customer_name}</span>
                         <span className="block text-[11px] font-bold text-slate-400">{new Date(sale.sale_date).toLocaleString("ar-EG")}</span>
@@ -207,7 +206,7 @@ export function CashierCloseDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent dir="rtl" className="z-[140] max-w-lg rounded-3xl text-right">
         <DialogHeader className="text-right">
-          <DialogTitle className="flex items-center gap-2 text-xl font-black"><Banknote className="size-5 text-brand" /> تقفيل جلسة الكاشير</DialogTitle>
+          <DialogTitle className="flex items-center gap-2 text-xl font-black"><Wallet className="size-5 text-brand" /> تقفيل جلسة الكاشير</DialogTitle>
           <DialogDescription className="font-bold">راجع الرصيد المتوقع، ثم أدخل النقدية الفعلية. سيظهر فرق الدرج قبل التأكيد.</DialogDescription>
         </DialogHeader>
         <div className="grid gap-3 sm:grid-cols-2">
@@ -230,7 +229,7 @@ export function CashierCloseDialog({
         <DialogFooter>
           <Button variant="outline" className="rounded-xl" onClick={() => onOpenChange(false)} disabled={loading}>رجوع</Button>
           <Button className="rounded-xl" onClick={() => onConfirm(safeActual, notes)} disabled={loading || !Number.isFinite(actual)}>
-            {loading ? <RefreshCw className="size-4 animate-spin" /> : <Banknote className="size-4" />} تأكيد التقفيل
+            {loading ? <RefreshCw className="size-4 animate-spin" /> : <Wallet className="size-4" />} تأكيد التقفيل
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -239,17 +238,17 @@ export function CashierCloseDialog({
 }
 
 const SHORTCUTS: Array<[string, string, LucideIcon]> = [
-  ["F2", "التركيز على بحث الصنف", PackageSearch],
+  ["F2", "التركيز على بحث الصنف", Search],
   ["F3", "فتح الآلة الحاسبة", Calculator],
   ["F4", "إظهار أو إخفاء قائمة الأصناف", ShoppingCart],
   ["F6", "عرض الجلسة الحالية حيًا", ListChecks],
-  ["F7", "فتح خصم الفاتورة", BadgePercent],
-  ["F8", "العمليات الأخيرة", ReceiptText],
+  ["F7", "فتح خصم الفاتورة", Percent],
+  ["F8", "العمليات الأخيرة", Receipt],
   ["F9", "حفظ مسودة", Save],
   ["F10", "فتح لوحة النظام دون إغلاق الجلسة", ExternalLink],
-  ["F12", "حفظ سريع نقدي", Banknote],
+  ["F12", "حفظ سريع نقدي", Wallet],
   ["Alt + 2", "حفظ ببطاقة", CreditCard],
-  ["Alt + 3", "حفظ آجل", ReceiptText],
+  ["Alt + 3", "حفظ آجل", Receipt],
   ["Alt + 4", "دفع متعدد", Wallet],
 ]
 
@@ -258,7 +257,7 @@ export function CashierShortcutsDialog({ open, onOpenChange }: { open: boolean; 
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent dir="rtl" className="z-[140] max-w-xl rounded-3xl text-right">
         <DialogHeader className="text-right">
-          <DialogTitle className="flex items-center gap-2 text-xl font-black"><Keyboard className="size-5 text-brand" /> اختصارات الكاشير</DialogTitle>
+          <DialogTitle className="flex items-center gap-2 text-xl font-black"><FileText className="size-5 text-brand" /> اختصارات الكاشير</DialogTitle>
           <DialogDescription className="font-bold">اختصارات ثابتة لتقليل استخدام الماوس وتسريع البيع.</DialogDescription>
         </DialogHeader>
         <div className="grid gap-2 sm:grid-cols-2">
@@ -301,7 +300,7 @@ export function InvoiceDiscountDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent dir="rtl" className="z-[140] max-w-md rounded-3xl text-right">
         <DialogHeader className="text-right">
-          <DialogTitle className="flex items-center gap-2 text-xl font-black"><BadgePercent className="size-5 text-brand" /> خصم الفاتورة</DialogTitle>
+          <DialogTitle className="flex items-center gap-2 text-xl font-black"><Percent className="size-5 text-brand" /> خصم الفاتورة</DialogTitle>
           <DialogDescription className="font-bold">متاح للمالك أو المدير أو الصيدلي أو من لديه صلاحية الخصم.</DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-4 gap-2">
@@ -318,7 +317,7 @@ export function InvoiceDiscountDialog({
         </div>
         <DialogFooter>
           <Button variant="outline" className="rounded-xl" onClick={() => onOpenChange(false)}>إلغاء</Button>
-          <Button className="rounded-xl" onClick={() => { onApply(value); onOpenChange(false) }}><BadgePercent className="size-4" /> تطبيق الخصم</Button>
+          <Button className="rounded-xl" onClick={() => { onApply(value); onOpenChange(false) }}><Percent className="size-4" /> تطبيق الخصم</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

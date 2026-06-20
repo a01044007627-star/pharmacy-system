@@ -5,9 +5,8 @@ import { toast } from "sonner"
 import {
   AlertCircle,
   Info,
-  Keyboard,
   ListChecks,
-  BadgePercent,
+  Percent,
   DollarSign,
   Barcode,
   Calculator as CalculatorIcon,
@@ -1483,11 +1482,11 @@ export function CashierView() {
                 ) : null}
                 {canDiscount ? (
                   <Button variant="outline" className="h-9 shrink-0 rounded-xl px-3 text-xs font-black" onClick={() => setDiscountDialogOpen(true)} disabled={lines.length === 0 || shiftClosedPendingReset} title="خصم الفاتورة — F7">
-                    <BadgePercent className="size-3.5" /> خصم F7
+                    <Percent className="size-3.5" /> خصم F7
                   </Button>
                 ) : null}
                 <Button variant="ghost" size="icon" className="size-9 shrink-0 rounded-xl" onClick={() => setShortcutsOpen(true)} title="كل اختصارات الكاشير">
-                  <Keyboard className="size-4" />
+                  <FileText className="size-4" />
                 </Button>
                 <Button variant="ghost" size="icon" className="size-9 shrink-0 rounded-xl" onClick={() => { setProducts([]); void fetchCatalogProducts(); void refreshSessionSnapshot() }} disabled={loading || catalogLoading || shiftLoading} title="تحديث بيانات الكاشير">
                   <RefreshCw className={cn("size-4", (loading || catalogLoading || shiftLoading) && "animate-spin")} />
@@ -1906,7 +1905,7 @@ export function CashierView() {
                 )}
                 <div className="flex items-center justify-end">
                   <Button type="button" size="sm" variant="ghost" className="h-8 rounded-xl text-xs font-black" onClick={() => setCouponPanelOpen((current) => !current)}>
-                    <BadgePercent className="size-3.5" /> {couponApplied ? "الكوبون مطبق" : couponPanelOpen ? "إخفاء الكوبون" : "إضافة كوبون"}
+                    <Percent className="size-3.5" /> {couponApplied ? "الكوبون مطبق" : couponPanelOpen ? "إخفاء الكوبون" : "إضافة كوبون"}
                   </Button>
                 </div>
                 {couponPanelOpen || couponApplied ? <div className="space-y-1 rounded-xl border border-slate-100 bg-slate-50/60 p-2">
