@@ -33,14 +33,53 @@ const SERIES_COLORS = ["#0ea5e9", "#334155", "#22c55e", "#f59e0b"]
 const SERVER_CACHE_TTL_MS = 45_000
 const serverCache = new Map<string, { expiresAt: number; payload: DashboardHomePayload }>()
 
-type AnyRow = Record<string, any>
+type DashboardRelatedRow = {
+  id?: string | null
+  name?: string | null
+  name_ar?: string | null
+  unit?: string | null
+  min_stock?: number | string | null
+  status?: string | null
+}
+
+type DashboardRow = Record<string, unknown> & {
+  id?: string | number | null
+  branch_id?: string | null
+  sale_date?: string | null
+  created_at?: string | null
+  expected_date?: string | null
+  expiry_date?: string | null
+  total?: number | string | null
+  due_amount?: number | string | null
+  quantity?: number | string | null
+  remaining_quantity?: number | string | null
+  customer_name?: string | null
+  supplier_name?: string | null
+  invoice_number?: string | null
+  purchase_number?: string | null
+  order_number?: string | null
+  payment_status?: string | null
+  status?: string | null
+  unit?: string | null
+  item?: DashboardRelatedRow | DashboardRelatedRow[] | null
+  branch?: DashboardRelatedRow | DashboardRelatedRow[] | null
+}
+
+type EqualityFilterBuilder = {
+  eq(column: string, value: unknown): EqualityFilterBuilder
+}
+
+type DashboardQueryResult = {
+  data: unknown[] | null
+  error: { message: string } | null
+}
 
 function numberValue(value: unknown) {
   const numeric = typeof value === "number" ? value : Number(value ?? 0)
   return Number.isFinite(numeric) ? numeric : 0
 }
 
-function sumRows(rows: AnyRow[] | null | undefined, key: string) {
+function sumRows(rows: DashboardRow[] | null | undefined, key: string) {
   return (rows ?? []).reduce((total, row) => total + numberValue(row[key]), 0)
 }
 
@@ -93,10 +132,10 @@ async function getDbClient(): Promise<SupabaseClient> {
   return (await createClient()) as unknown as SupabaseClient
 }
 
-function applyPharmacyBranchScope(query: any, pharmacyId: string, branchId: string | null, branchColumn = "branch_id") {
-  let scoped = query.eq("pharmacy_id", pharmacyId)
+function applyPharmacyBranchScope<T>(query: T, pharmacyId: string, branchId: string | null, branchColumn = "branch_id"): T {
+  let scoped = (query as unknown as EqualityFilterBuilder).eq("pharmacy_id", pharmacyId)
   if (branchId) scoped = scoped.eq(branchColumn, branchId)
-  return scoped
+  return scoped as unknown as T
 }
 
 function safeDateFilter(value: string | null): DashboardDateFilter {
@@ -143,20 +182,20 @@ function emptyPayload(dateFilter: DashboardDateFilter, branchFilter: string): Da
   }
 }
 
-async function readRows(query: any, label = "dashboard-query") {
+async function readRows(query: PromiseLike<DashboardQueryResult>, label = "dashboard-query"): Promise<DashboardRow[]> {
   const { data, error } = await query
   if (error) {
     console.warn(`[dashboard/home] ${label} skipped:`, error.message)
-    return [] as AnyRow[]
+    return []
   }
-  return (data ?? []) as AnyRow[]
+  return (data ?? []) as DashboardRow[]
 }
 
 function branchNameMap(scope: Awaited<ReturnType<typeof getServerAuthScope>>) {
   return new Map(scope.branches.map((branch) => [branch.id, `${branch.name}${branch.code ? ` (${branch.code})` : ""}`]))
 }
 
-function buildDailyChart(rows: AnyRow[], branches: Awaited<ReturnType<typeof getServerAuthScope>>["branches"], selectedBranchId: string | null): DashboardChartData {
+function buildDailyChart(rows: DashboardRow[], branches: Awaited<ReturnType<typeof getServerAuthScope>>["branches"], selectedBranchId: string | null): DashboardChartData {
   const start = new Date()
   start.setHours(0, 0, 0, 0)
   start.setDate(start.getDate() - 29)
@@ -170,7 +209,7 @@ function buildDailyChart(rows: AnyRow[], branches: Awaited<ReturnType<typeof get
     : branches.slice(0, 2).map((branch) => branch.id)
 
   const valuesForBranch = (branchId: string | null) => dateKeys.map((key) => rows.reduce((total, row) => {
-    const saleDate = isoDate(new Date(row.sale_date))
+    const saleDate = isoDate(new Date(row.sale_date ?? 0))
     if (saleDate !== key) return total
     if (branchId && row.branch_id !== branchId) return total
     return total + numberValue(row.total)
@@ -194,7 +233,7 @@ function buildDailyChart(rows: AnyRow[], branches: Awaited<ReturnType<typeof get
   return { title: "المبيعات في آخر 30 يوماً", unitLabel: "إجمالي المبيعات (EGP)", labels, series }
 }
 
-function buildMonthlyChart(rows: AnyRow[], branches: Awaited<ReturnType<typeof getServerAuthScope>>["branches"], selectedBranchId: string | null): DashboardChartData {
+function buildMonthlyChart(rows: DashboardRow[], branches: Awaited<ReturnType<typeof getServerAuthScope>>["branches"], selectedBranchId: string | null): DashboardChartData {
   const months = monthStarts(new Date().getFullYear())
   const labels = months.map(formatMonthLabel)
   const branchMap = new Map(branches.map((branch) => [branch.id, `${branch.name}${branch.code ? ` (${branch.code})` : ""}`]))
@@ -203,7 +242,7 @@ function buildMonthlyChart(rows: AnyRow[], branches: Awaited<ReturnType<typeof g
     : branches.slice(0, 2).map((branch) => branch.id)
 
   const valuesForBranch = (branchId: string | null) => months.map((month) => rows.reduce((total, row) => {
-    const saleDate = new Date(row.sale_date)
+    const saleDate = new Date(row.sale_date ?? 0)
     if (saleDate.getFullYear() !== month.getFullYear() || saleDate.getMonth() !== month.getMonth()) return total
     if (branchId && row.branch_id !== branchId) return total
     return total + numberValue(row.total)
@@ -387,15 +426,15 @@ export async function GET(request: Request) {
 
     const stockWarning: StockWarningRow[] = stockBalanceRows
       .map((row) => {
-        const item = firstRelated<AnyRow>(row.item)
-        const branch = firstRelated<AnyRow>(row.branch)
+        const item = firstRelated<DashboardRelatedRow>(row.item)
+        const branch = firstRelated<DashboardRelatedRow>(row.branch)
         const minStock = numberValue(item?.min_stock)
         const quantity = numberValue(row.quantity)
         if (!item || item.status === "inactive" || (minStock > 0 && quantity > minStock)) return null
         return {
           id: `${item.id}-${row.branch_id}`,
           item: item.name_ar ?? "صنف",
-          branch: branch?.name ?? branchesById.get(row.branch_id) ?? "—",
+          branch: branch?.name ?? branchesById.get(row.branch_id ?? "") ?? "—",
           currentStock: quantityText(quantity, item.unit),
         }
       })
@@ -403,12 +442,12 @@ export async function GET(request: Request) {
       .slice(0, 100) as StockWarningRow[]
 
     const expiryAlert: ExpiryAlertRow[] = expiryRows.map((row) => {
-      const item = firstRelated<AnyRow>(row.item)
-      const branch = firstRelated<AnyRow>(row.branch)
+      const item = firstRelated<DashboardRelatedRow>(row.item)
+      const branch = firstRelated<DashboardRelatedRow>(row.branch)
       return {
         id: String(row.id),
         item: item?.name_ar ?? "صنف",
-        branch: branch?.name ?? branchesById.get(row.branch_id) ?? "—",
+        branch: branch?.name ?? branchesById.get(row.branch_id ?? "") ?? "—",
         remainingStock: quantityText(row.remaining_quantity ?? row.quantity, row.unit ?? item?.unit),
         expiresAt: row.expiry_date ?? "—",
       }
@@ -421,7 +460,7 @@ export async function GET(request: Request) {
       orderNo: row.order_number ?? "—",
       customer: row.customer_name ?? "عميل",
       phone: "—",
-      branch: branchesById.get(row.branch_id) ?? "—",
+      branch: branchesById.get(row.branch_id ?? "") ?? "—",
       status: statusLabel(row.status),
       shippingStatus: statusLabel(row.status),
       remainingQty: "—",
@@ -447,7 +486,7 @@ export async function GET(request: Request) {
       invoiceNo: row.order_number ?? "—",
       customer: row.customer_name ?? "عميل",
       phone: "—",
-      branch: branchesById.get(row.branch_id) ?? "—",
+      branch: branchesById.get(row.branch_id ?? "") ?? "—",
       shippingStatus: statusLabel(row.status),
       paymentStatus: paymentLabel(row.payment_status),
     }))

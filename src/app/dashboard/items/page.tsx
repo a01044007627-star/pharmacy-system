@@ -57,7 +57,7 @@ export default function ItemsPage() {
               <label className="flex cursor-pointer flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-slate-300 p-8 transition hover:border-brand">
                 <Upload className="size-8 text-slate-400" />
                 <span className="font-bold text-slate-500">اختر ملف Excel</span>
-                <input type="file" accept=".xlsx,.xls" className="hidden" onChange={(e) => void handleImport(e)} disabled={uploading} />
+                <input type="file" accept=".xlsx,.csv" className="hidden" onChange={(e) => void handleImport(e)} disabled={uploading} />
               </label>
               {importResult ? (
                 <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-3 text-sm font-black text-slate-700">

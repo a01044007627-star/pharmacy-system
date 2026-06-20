@@ -16,7 +16,7 @@ import { useAuth } from "@/contexts/auth-context"
 import type { PharmacyItemListRow } from "@/features/inventory/lib/items-types"
 import { money, primaryBarcode } from "@/features/inventory/lib/items-helpers"
 import { encodeCode128 } from "@/features/inventory/lib/barcode-encoder"
-import { apiRequest } from "@/lib/api-client"
+import { apiRequest } from "@/lib/http/api-client"
 
 /** Renders a Code-128B barcode as a pure SVG — no external deps */
 function BarcodeSVG({ value }: { value: string; format?: string }) {

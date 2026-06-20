@@ -180,7 +180,6 @@ export function PartnerDetailView({ partnerId }: { partnerId: string }) {
   const [balanceLedger, setBalanceLedger] = useState<BalanceLedgerData[]>([])
   const [purchaseSummary, setPurchaseSummary] = useState({ count: 0, total: 0, paid: 0, due: 0 })
   const [salesSummary, setSalesSummary] = useState({ count: 0, total: 0, paid: 0, due: 0 })
-  const [salesReturnsSummary, setSalesReturnsSummary] = useState({ count: 0, total: 0, refunded: 0 })
   const [paymentsSummary, setPaymentsSummary] = useState({ count: 0, in: 0, out: 0 })
   const [loading, setLoading] = useState(true)
   const [showEditDialog, setShowEditDialog] = useState(false)
@@ -204,7 +203,6 @@ export function PartnerDetailView({ partnerId }: { partnerId: string }) {
       setBalanceLedger(data.balanceLedger ?? [])
       setPurchaseSummary(data.purchaseSummary ?? { count: 0, total: 0, paid: 0, due: 0 })
       setSalesSummary(data.salesSummary ?? { count: 0, total: 0, paid: 0, due: 0 })
-      setSalesReturnsSummary(data.salesReturnsSummary ?? { count: 0, total: 0, refunded: 0 })
       setPaymentsSummary(data.paymentsSummary ?? { count: 0, in: 0, out: 0 })
       if (data.partner) await localDB.putTableRow("pharmacy_partners", data.partner as unknown as Record<string, unknown>, true)
       await Promise.all([

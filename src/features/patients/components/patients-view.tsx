@@ -101,13 +101,6 @@ type PatientDetail = {
   last_visit: string | null
 }
 
-type PatientsResponse = {
-  patients?: PatientRow[]
-  summary?: { count: number; active: number; inactive: number; archived: number }
-  pagination?: { totalPages: number }
-  error?: string
-}
-
 type PatientDetailResponse = {
   patient?: PatientDetail
   error?: string
@@ -143,10 +136,8 @@ export function PatientsView() {
   const [saving, setSaving] = useState(false)
   const [createForm, setCreateForm] = useState<PatientFormData>(emptyForm)
 
-  const [detailId, setDetailId] = useState<string | null>(null)
   const [detail, setDetail] = useState<PatientDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
-  const [detailTab, setDetailTab] = useState("info")
 
   const canWrite = auth.isDeveloper || auth.can("crm:write")
 
@@ -178,10 +169,8 @@ export function PatientsView() {
   }, [load])
 
   const openDetail = useCallback(async (id: string) => {
-    setDetailId(id)
     setDetailLoading(true)
     setDetail(null)
-    setDetailTab("info")
     try {
       if (!auth.activePharmacyId) throw new Error("اختر صيدلية أولاً")
       const data = await patientsService.get(auth.activePharmacyId, id) as PatientDetailResponse

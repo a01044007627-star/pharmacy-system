@@ -24,7 +24,7 @@ const defaultSettings = {
 const defaultUnits = ["علبة", "شريط", "قرص", "كابسولة", "أمبول", "زجاجة", "بخاخ", "أنبوب", "قطارة", "عبوة"]
 
 function ExtraUnitsSettingsForm() {
-  const { getSetting, updateSetting, saveSettings, resetSettings, saving, canWrite, dirty } = useSettingsPage()
+  const { getSetting, updateSetting, saveSettings, resetSettings, saving, canWrite } = useSettingsPage()
   const [units, setUnits] = useState<string[]>([])
   const [newUnit, setNewUnit] = useState("")
 

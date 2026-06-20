@@ -1,14 +1,11 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
-import { Pencil, FileText, Mail, MessageSquare, Bell, Save } from "lucide-react"
+import { FileText, Mail, MessageSquare, Bell } from "lucide-react"
 import { toast } from "sonner"
-import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
-import { Switch } from "@/components/ui/switch"
-import { Separator } from "@/components/ui/separator"
 import { SettingsEntityService } from "@/features/settings/services/settings-entity-service"
 import { notificationScenarios } from "@/config/notification-scenarios"
 import { useAuth } from "@/contexts/auth-context"
@@ -88,7 +85,6 @@ function TemplatesContent() {
   const [templates, setTemplates] = useState<NotificationTemplate[]>([])
   const [loading, setLoading] = useState(true)
   const [activeGroup, setActiveGroup] = useState("sales")
-  const [saving, setSaving] = useState<string | null>(null)
 
   const canWriteTemplates = can("settings:write") && canWrite
 
@@ -114,7 +110,6 @@ function TemplatesContent() {
 
   async function handleSave(template: NotificationTemplate, field: string, value: string | boolean) {
     if (!canWriteTemplates) { toast.error("ليست لديك صلاحية تعديل القوالب"); return }
-    setSaving(template.id)
     try {
       await SettingsEntityService.update<NotificationTemplate>("notification-templates", template.id, { [field]: value })
       setTemplates((prev) => prev.map((t) => t.id === template.id ? { ...t, [field]: value } : t))
@@ -122,7 +117,7 @@ function TemplatesContent() {
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "فشل حفظ القالب")
     } finally {
-      setSaving(null)
+      // Keep the async boundary explicit so save failures are surfaced consistently.
     }
   }
 

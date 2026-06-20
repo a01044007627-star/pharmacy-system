@@ -17,7 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea"
 import { useAuth } from "@/contexts/auth-context"
 import { cn } from "@/lib/utils"
-import { apiRequest, isRequestAbort } from "@/lib/api-client"
+import { apiRequest, isRequestAbort } from "@/lib/http/api-client"
 
 type TransferLine = { item_id: string; item_name?: string | null; sku?: string | null; quantity: number; unit?: string | null }
 

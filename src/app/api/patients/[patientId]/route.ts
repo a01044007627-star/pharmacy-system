@@ -8,6 +8,46 @@ import { writeAuditLog } from "@/lib/audit/audit-log"
 
 type Context = { params: Promise<{ patientId: string }> }
 
+type PatientVisitRow = {
+  id: string
+  visit_type: string
+  reference_table?: string | null
+  reference_id?: string | null
+  visit_date: string
+  total_amount?: number | string | null
+  notes?: string | null
+}
+
+type PrescriptionRow = {
+  id: string
+  doctor_name?: string | null
+  diagnosis?: string | null
+  created_at: string
+  [key: string]: unknown
+}
+
+type PatientSaleRow = {
+  id: string
+  invoice_number?: string | null
+  total?: number | string | null
+  sale_date: string
+  [key: string]: unknown
+}
+
+type SaleLineRow = { sale_id: string }
+
+type PatientTimelineEntry = {
+  id: string
+  type: string
+  reference: string
+  date: string
+  total: number
+  items_count: number
+  doctor: string | null
+  diagnosis: string | null
+  notes?: string | null
+}
+
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
 }
@@ -63,17 +103,17 @@ export async function GET(request: Request, context: Context) {
     if (!row) return NextResponse.json({ error: "المريض غير موجود" }, { status: 404 })
 
     const [visits, prescriptions, sales] = await Promise.all([
-      readRows<any>(db.from("pharmacy_patient_visits")
+      readRows<PatientVisitRow>(db.from("pharmacy_patient_visits")
         .select("id,visit_type,reference_table,reference_id,visit_date,total_amount,notes")
         .eq("pharmacy_id", scope.activePharmacyId)
         .eq("patient_id", patientId)
         .order("visit_date", { ascending: false }).limit(100), "visits"),
-      readRows<any>(db.from("pharmacy_prescriptions")
+      readRows<PrescriptionRow>(db.from("pharmacy_prescriptions")
         .select("id,patient_record_id,patient_id,patient_name,doctor_name,diagnosis,status,notes,created_at,updated_at,sale_id")
         .eq("pharmacy_id", scope.activePharmacyId)
         .or(`patient_record_id.eq.${patientId}${row.partner_id ? `,patient_id.eq.${row.partner_id}` : ""}`)
         .order("created_at", { ascending: false }).limit(50), "prescriptions"),
-      readRows<any>(db.from("pharmacy_sales")
+      readRows<PatientSaleRow>(db.from("pharmacy_sales")
         .select("id,invoice_number,total,paid_amount,due_amount,payment_method,status,sale_date,patient_id,customer_id")
         .eq("pharmacy_id", scope.activePharmacyId)
         .or(`patient_id.eq.${patientId}${row.partner_id ? `,customer_id.eq.${row.partner_id}` : ""}`)
@@ -84,11 +124,11 @@ export async function GET(request: Request, context: Context) {
     const saleIds = sales.map((sale) => sale.id)
     const lineCounts = new Map<string, number>()
     if (saleIds.length) {
-      const lines = await readRows<any>(db.from("pharmacy_sale_lines").select("sale_id").eq("pharmacy_id", scope.activePharmacyId).in("sale_id", saleIds), "sale lines")
+      const lines = await readRows<SaleLineRow>(db.from("pharmacy_sale_lines").select("sale_id").eq("pharmacy_id", scope.activePharmacyId).in("sale_id", saleIds), "sale lines")
       for (const line of lines) lineCounts.set(line.sale_id, (lineCounts.get(line.sale_id) ?? 0) + 1)
     }
 
-    const visitMap = new Map<string, any>()
+    const visitMap = new Map<string, PatientTimelineEntry>()
     for (const visit of visits) {
       visitMap.set(visit.id, {
         id: visit.id,
@@ -107,7 +147,7 @@ export async function GET(request: Request, context: Context) {
       visitMap.set(key, {
         id: key,
         type: "sale",
-        reference: sale.invoice_number,
+        reference: sale.invoice_number ?? "—",
         date: sale.sale_date,
         total: Number(sale.total ?? 0),
         items_count: lineCounts.get(sale.id) ?? 0,
@@ -124,8 +164,8 @@ export async function GET(request: Request, context: Context) {
         date: prescription.created_at,
         total: 0,
         items_count: 0,
-        doctor: prescription.doctor_name,
-        diagnosis: prescription.diagnosis,
+        doctor: prescription.doctor_name ?? null,
+        diagnosis: prescription.diagnosis ?? null,
       })
     }
     const shapedVisits = Array.from(visitMap.values()).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())

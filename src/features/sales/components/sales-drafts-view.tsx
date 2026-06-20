@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { FileText, Plus, RefreshCw, Search, Trash2 } from "lucide-react"
+import { FileText, RefreshCw, Search, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { DashboardPageHeader } from "@/components/shared/page-ui"
@@ -13,7 +13,6 @@ import { Input } from "@/components/ui/input"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
-import { useAppSettings } from "@/contexts/settings-context"
 import { cn } from "@/lib/utils"
 
 type DraftRow = {
@@ -48,16 +47,12 @@ function statusColor(value: string) {
 
 export function SalesDraftsView() {
   const auth = useAuth()
-  const settings = useAppSettings()
-  const currency = settings.get("project", "currencySymbol", "ج.م")
   const [rows, setRows] = useState<DraftRow[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState("")
   const [statusFilter, setStatusFilter] = useState("all")
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
-
-  const money = useCallback((value: number) => `${Number(value || 0).toLocaleString("ar-EG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`, [currency])
 
   const load = useCallback(async () => {
     if (!auth.activePharmacyId) return

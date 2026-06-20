@@ -5,17 +5,17 @@
 ## المتطلبات
 
 - Node.js `20.x`
-- npm `10.x`
+- pnpm `10.x`
 - قاعدة Supabase
 
-> المشروع يستخدم **npm فقط**. لا تستخدم `pnpm install` أو Yarn داخل هذا المشروع.
+> المشروع يستخدم **pnpm فقط**. لا تستخدم `npm install` أو Yarn داخل هذا المشروع.
 
 ## التشغيل المحلي
 
 ```bash
 cp .env.example .env.local
-npm ci
-npm run dev
+pnpm install --frozen-lockfile
+pnpm dev
 ```
 
 ثم افتح:
@@ -27,17 +27,17 @@ http://localhost:3000
 ## فحوص الجودة
 
 ```bash
-npm run typecheck
-npm test -- --runInBand
-npm run lint -- --quiet
-npm run audit:project
-npm run build
+pnpm typecheck
+pnpm test:ci
+pnpm lint:ci
+pnpm audit:project
+pnpm build
 ```
 
 أو شغّل الفحص المجمّع:
 
 ```bash
-npm run verify
+pnpm verify
 ```
 
 ## النشر على Vercel
@@ -46,19 +46,19 @@ npm run verify
 
 ```json
 {
-  "installCommand": "npm ci",
-  "buildCommand": "npm run build"
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm build"
 }
 ```
 
-بالتالي لا يجب ضبط `pnpm install` يدويًا داخل إعدادات Vercel.
+بالتالي لا يجب ضبط `npm install` يدويًا داخل إعدادات Vercel.
 
 الإعدادات المطلوبة:
 
 1. Framework Preset: `Next.js`
 2. Node.js Version: `20.x`
-3. Install Command: اتركه Default، لأن `vercel.json` يفرض `npm ci`
-4. Build Command: اتركه Default، لأن `vercel.json` يفرض `npm run build`
+3. Install Command: اتركه Default، لأن `vercel.json` يفرض `pnpm install --frozen-lockfile`
+4. Build Command: اتركه Default، لأن `vercel.json` يفرض `pnpm build`
 5. أضف متغيرات البيئة الموجودة في `.env.example`
 
 ## قاعدة البيانات
@@ -74,7 +74,7 @@ supabase/final-repair.sql
 ### قاعدة جديدة
 
 ```bash
-npm run db:build
+pnpm db:build
 ```
 
 ثم طبّق:

@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Loader2, Percent, RefreshCw, Save, Search, Tag } from "lucide-react"
+import { Loader2, RefreshCw, Save, Search, Tag } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { Button } from "@/components/ui/button"

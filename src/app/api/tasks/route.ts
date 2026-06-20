@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
-import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-permissions"
+import { assertBranchScope } from "@/lib/auth/server-permissions"
 
 function clean(value: unknown) {
   return typeof value === "string" ? value.trim() : ""

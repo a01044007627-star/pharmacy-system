@@ -410,7 +410,7 @@ export function CashierView() {
   const linesDiscount = useMemo(() => lines.reduce((total, line) => total + line.discount, 0), [lines])
   const total = useMemo(() => Math.max(0, subtotal - linesDiscount - invoiceDiscount - couponDiscount), [couponDiscount, invoiceDiscount, linesDiscount, subtotal])
   const due = Math.max(0, total - paidAmount)
-  const hasControlledItems = useMemo(() => lines.some((line) => (line as any).is_controlled || (line as any).requires_prescription), [lines])
+  const hasControlledItems = useMemo(() => lines.some((line) => line.is_controlled || line.requires_prescription), [lines])
   const expectedDrawer = numberValue(shift?.expected_balance, numberValue(shift?.opening_balance))
   const cashierGridStyle = useMemo(() => ({
     "--cashier-catalog-width": `${catalogPanelWidth}px`,

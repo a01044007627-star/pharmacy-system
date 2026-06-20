@@ -1,5 +1,6 @@
 "use client"
 
+import Image from "next/image"
 import { useCallback, useEffect, useState } from "react"
 import { Building2, Edit, Loader2, Plus, RefreshCw, Trash2 } from "lucide-react"
 import { toast } from "sonner"
@@ -94,7 +95,7 @@ export function BrandsManagerView() {
                 <TableBody>{brands.map((brand) => (
                   <TableRow key={brand.id}>
                     <TableCell className="font-black">{brand.name}</TableCell>
-                    <TableCell className="text-center">{brand.logo_url ? <img src={brand.logo_url} alt={brand.name} className="mx-auto size-8 rounded-lg object-contain" /> : <span className="text-slate-400">—</span>}</TableCell>
+                    <TableCell className="text-center">{brand.logo_url ? <Image src={brand.logo_url} alt={brand.name} width={32} height={32} unoptimized className="mx-auto size-8 rounded-lg object-contain" /> : <span className="text-slate-400">—</span>}</TableCell>
                     <TableCell className="text-center"><div className="flex justify-center gap-2">
                       <Button size="sm" variant="outline" className="rounded-xl" disabled={!canWrite} onClick={() => openEdit(brand)}><Edit className="size-3.5" /></Button>
                       <Button size="sm" variant="outline" className="rounded-xl border-rose-200 text-rose-600" disabled={!canDelete} onClick={() => setDeleteTarget(brand)}><Trash2 className="size-3.5" /></Button>

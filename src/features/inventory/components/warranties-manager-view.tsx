@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { Loader2, Package, Plus, Save, ShieldCheck, Trash2 } from "lucide-react"
+import { Loader2, Plus, Save, ShieldCheck, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { DashboardPageHeader } from "@/components/shared/page-ui"

@@ -48,13 +48,6 @@ type PartnersSummary = {
   creditLimit: number
 }
 
-type PartnersResponse = {
-  partners?: PartnerRow[]
-  summary?: Partial<PartnersSummary>
-  pagination?: { totalPages: number }
-  error?: string
-}
-
 function typeLabel(value: string) {
   switch (value) {
     case "customer": return "عميل"
@@ -72,6 +65,16 @@ function exportPartnersCsv(rows: PartnerRow[], label: string) {
   saveCsv(`${label}.csv`, data)
 }
 
+const EMPTY_PARTNERS_SUMMARY: PartnersSummary = {
+  count: 0,
+  total: 0,
+  active: 0,
+  inactive: 0,
+  totalBalance: 0,
+  openingBalance: 0,
+  creditLimit: 0,
+}
+
 type PartnersListViewProps = {
   partnerType: "customer" | "supplier"
 }
@@ -81,8 +84,7 @@ export function PartnersListView({ partnerType }: PartnersListViewProps) {
   const settings = useAppSettings()
   const currency = settings.get("project", "currencySymbol", "ج.م")
   const [rows, setRows] = useState<PartnerRow[]>([])
-  const emptySummary: PartnersSummary = { count: 0, total: 0, active: 0, inactive: 0, totalBalance: 0, openingBalance: 0, creditLimit: 0 }
-  const [summary, setSummary] = useState<PartnersSummary>(emptySummary)
+  const [summary, setSummary] = useState<PartnersSummary>(EMPTY_PARTNERS_SUMMARY)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [bulkBusy, setBulkBusy] = useState(false)
   const [query, setQuery] = useState("")
@@ -114,7 +116,7 @@ export function PartnersListView({ partnerType }: PartnersListViewProps) {
       })
       setRows(data.partners as PartnerRow[])
       setSelectedIds([])
-      setSummary({ ...emptySummary, ...(data.summary ?? {}) })
+      setSummary({ ...EMPTY_PARTNERS_SUMMARY, ...(data.summary ?? {}) })
       setTotalPages(data.pagination?.totalPages ?? 1)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : `فشل تحميل ${label}`)

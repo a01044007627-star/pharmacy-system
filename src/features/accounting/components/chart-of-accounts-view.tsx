@@ -117,15 +117,6 @@ export function ChartOfAccountsView() {
     }
   }
 
-  const depthClass = (account: Account) => {
-    const depth = (() => {
-      let d = 0; let pid = account.parent_id
-      while (pid) { d++; const p = accounts.find((a) => a.id === pid); pid = p?.parent_id ?? null }
-      return d
-    })()
-    return `pr-${Math.min(depth * 6, 24)}`
-  }
-
   return (
     <PageAccess permission="financials:read">
       <section dir="rtl" className="page-container space-y-4 py-4 text-right sm:py-6">

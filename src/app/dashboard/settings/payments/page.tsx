@@ -38,7 +38,7 @@ const paymentMethodOptions = [
 ]
 
 function PaymentsSettingsForm() {
-  const { getSetting, updateSetting, saveSettings, resetSettings, saving, canWrite, dirty } = useSettingsPage()
+  const { getSetting, updateSetting, saveSettings, resetSettings, saving, canWrite } = useSettingsPage()
 
   return (
     <div className="space-y-5">

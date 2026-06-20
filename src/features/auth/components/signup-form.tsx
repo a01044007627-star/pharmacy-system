@@ -63,7 +63,7 @@ export function SignupForm({ className, ...props }: React.ComponentProps<"div">)
     mode: "onTouched",
   })
 
-  const { register, handleSubmit, setValue, trigger, control, formState: { errors, isSubmitting } } = form
+  const { handleSubmit, setValue, trigger, control, formState: { errors, isSubmitting } } = form
   const watchCurrency = useWatch({ control, name: "currency" })
   const watchTimezone = useWatch({ control, name: "timezone" })
   const watchTitle = useWatch({ control, name: "title" })

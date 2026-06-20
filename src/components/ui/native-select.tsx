@@ -54,7 +54,7 @@ function NativeSelect({
     const traverse = (node: React.ReactNode) => {
       React.Children.forEach(node, (child) => {
         if (!React.isValidElement(child)) return
-        const props = child.props as any
+        const props = child.props as { value?: React.Key | null; children?: React.ReactNode }
         if (props) {
           if ("value" in props && props.children !== undefined) {
             extracted[String(props.value)] = props.children

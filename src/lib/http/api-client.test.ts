@@ -57,4 +57,20 @@ describe("HttpClient", () => {
       isForbidden: true,
     } satisfies Partial<ApiError>)
   })
+
+  it("retries transient GET failures without retrying mutations", async () => {
+  const fetchMock = global.fetch as jest.MockedFunction<typeof fetch>
+  fetchMock
+    .mockResolvedValueOnce(jsonResponse({ error: "temporary" }, { status: 503 }))
+    .mockResolvedValueOnce(jsonResponse({ ok: true }))
+  const client = new HttpClient()
+
+  await expect(client.get<{ ok: boolean }>("/api/health", { retryDelayMs: 0 })).resolves.toEqual({ ok: true })
+  expect(fetchMock).toHaveBeenCalledTimes(2)
+
+  fetchMock.mockClear()
+  fetchMock.mockResolvedValue(jsonResponse({ error: "temporary" }, { status: 503 }))
+  await expect(client.post("/api/sales", { total: 10 }, { retries: 3 })).rejects.toMatchObject({ status: 503 })
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
 })

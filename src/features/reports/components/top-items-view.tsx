@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { BarChart3, Calendar, Download, RefreshCw, TrendingUp } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { BarChart3, Calendar, Download, RefreshCw } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { DashboardPageHeader } from "@/components/shared/page-ui"

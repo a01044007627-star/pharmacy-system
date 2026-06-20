@@ -1,14 +1,14 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { Gift, Package, Percent, Plus, RefreshCw, Search, Tag, Trash2 } from "lucide-react"
+import { Gift, Package, Percent, Plus, Search, Tag, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { DashboardPageHeader } from "@/components/shared/page-ui"
 import { EmptyState, SkeletonRows } from "@/components/shared/empty-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
@@ -21,7 +21,6 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog"
 
 type CouponRow = {
@@ -83,14 +82,14 @@ export function PromotionsView() {
           )}
         />
 
-        {tab === "coupons" ? <CouponsSection auth={auth} settings={settings} money={money} canWrite={canWrite} /> : null}
-        {tab === "bundles" ? <BundlesSection auth={auth} settings={settings} money={money} canWrite={canWrite} /> : null}
+        {tab === "coupons" ? <CouponsSection auth={auth} money={money} canWrite={canWrite} /> : null}
+        {tab === "bundles" ? <BundlesSection auth={auth} money={money} /> : null}
       </section>
     </PageAccess>
   )
 }
 
-function CouponsSection({ auth, settings, money, canWrite }: { auth: ReturnType<typeof useAuth>; settings: ReturnType<typeof useAppSettings>; money: (value: number) => string; canWrite: boolean }) {
+function CouponsSection({ auth, money, canWrite }: { auth: ReturnType<typeof useAuth>; money: (value: number) => string; canWrite: boolean }) {
   const [rows, setRows] = useState<CouponRow[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState("")
@@ -278,7 +277,7 @@ function CouponsSection({ auth, settings, money, canWrite }: { auth: ReturnType<
   )
 }
 
-function BundlesSection({ auth, settings, money, canWrite }: { auth: ReturnType<typeof useAuth>; settings: ReturnType<typeof useAppSettings>; money: (value: number) => string; canWrite: boolean }) {
+function BundlesSection({ auth, money }: { auth: ReturnType<typeof useAuth>; money: (value: number) => string }) {
   const [rows, setRows] = useState<BundleRow[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState("")

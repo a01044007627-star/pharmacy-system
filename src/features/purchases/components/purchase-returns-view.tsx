@@ -1,7 +1,7 @@
-﻿"use client"
+"use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Package, RefreshCw, RotateCcw, Search, Truck } from "lucide-react"
+import { Package, RefreshCw, RotateCcw, Search } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
 import { DashboardPageHeader } from "@/components/shared/page-ui"

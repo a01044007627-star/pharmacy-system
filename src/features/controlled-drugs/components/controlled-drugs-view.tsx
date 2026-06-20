@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
 import { cn } from "@/lib/utils"
+import { apiClient } from "@/lib/http/api-client"
 import { EmptyState } from "@/components/shared/empty-state"
 
 const ACTION_LABELS: Record<string, string> = {
@@ -33,12 +34,31 @@ const ACTION_COLORS: Record<string, string> = {
 
 const PAGE_LIMIT = 50
 
+type ControlledDrugEntry = {
+  id: string
+  created_at: string
+  action: string
+  quantity: number
+  patient_name?: string | null
+  doctor_name?: string | null
+  prescription_number?: string | null
+  notes?: string | null
+  pharmacy_items?: { name_ar?: string | null; sku?: string | null } | null
+  pharmacy_branches?: { name?: string | null } | null
+}
+
+type ControlledDrugsResponse = {
+  entries?: ControlledDrugEntry[]
+  total?: number
+  hasMore?: boolean
+}
+
 export function ControlledDrugsView() {
   const auth = useAuth()
   const pharmacyId = auth.activePharmacyId
   const branchId = auth.activeBranchId
 
-  const [entries, setEntries] = useState<any[]>([])
+  const [entries, setEntries] = useState<ControlledDrugEntry[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -63,9 +83,9 @@ export function ControlledDrugsView() {
       if (toDate) params.set("to", toDate)
       if (searchText.trim()) params.set("search", searchText.trim())
 
-      const response = await fetch(`/api/controlled-drugs?${params.toString()}`, { cache: "no-store" })
-      if (!response.ok) throw new Error("فشل تحميل السجل")
-      const data = await response.json()
+      const data = await apiClient.get<ControlledDrugsResponse>(`/api/controlled-drugs?${params.toString()}`, {
+        fallbackMessage: "فشل تحميل سجل الأدوية المراقبة",
+      })
       if (append) setEntries((prev) => [...prev, ...(data.entries ?? [])])
       else setEntries(data.entries ?? [])
       setTotal(data.total ?? 0)

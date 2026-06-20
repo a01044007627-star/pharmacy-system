@@ -6,6 +6,32 @@ import { getServerAuthScope } from "@/lib/auth/session"
 import { scopeCan, assertBranchScope } from "@/lib/auth/server-permissions"
 import { writeAuditLog } from "@/lib/audit/audit-log"
 
+
+type CashierItemRow = {
+  id: string
+  group_id?: string | null
+  brand_id?: string | null
+  sku?: string | null
+  expiry_date?: string | null
+  sell_price?: number | string | null
+  old_sell_price?: number | string | null
+  buy_price?: number | string | null
+  [key: string]: unknown
+}
+
+type ItemBarcodeRow = { item_id: string; barcode: string; is_primary?: boolean | null }
+type StockBalanceRow = { item_id: string; branch_id?: string | null; quantity?: number | string | null }
+type NamedLookupRow = { id: string; name: string }
+type ItemBatchRow = {
+  id: string
+  item_id: string
+  branch_id?: string | null
+  batch_number?: string | null
+  expiry_date?: string | null
+  remaining_quantity?: number | string | null
+}
+type QueryResult<T> = { data?: T[] | null; error?: { message: string } | null }
+
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
 }
@@ -63,7 +89,7 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
 
   const { data: items, error } = await itemsQuery
   if (error) throw error
-  const rows = [...(items ?? [])]
+  const rows = [...((items ?? []) as CashierItemRow[])]
 
   if (needle) {
     const barcodeNeedle = needle.replace(/[% ,().]/g, "")
@@ -74,8 +100,8 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
       .ilike("barcode", `%${barcodeNeedle}%`)
       .limit(Math.min(rowLimit, 120))
     if (barcodeError) throw barcodeError
-    const existingIds = new Set(rows.map((row: any) => row.id))
-    const ids = Array.from(new Set((barcodeRows ?? []).map((row: any) => row.item_id).filter(Boolean))).filter((id) => !existingIds.has(id))
+    const existingIds = new Set(rows.map((row) => row.id))
+    const ids = Array.from(new Set(((barcodeRows ?? []) as ItemBarcodeRow[]).map((row) => row.item_id).filter(Boolean))).filter((id) => !existingIds.has(id))
     if (ids.length > 0) {
       let barcodeItemsQuery = db
         .from("pharmacy_items")
@@ -87,14 +113,14 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
       if (branchId) barcodeItemsQuery = barcodeItemsQuery.or(`branch_id.is.null,branch_id.eq.${branchId}`)
       const { data: barcodeItems, error: barcodeItemsError } = await barcodeItemsQuery
       if (barcodeItemsError) throw barcodeItemsError
-      rows.push(...(barcodeItems ?? []))
+      rows.push(...((barcodeItems ?? []) as CashierItemRow[]))
     }
   }
 
   const limitedRows = rows.slice(0, rowLimit)
-  const itemIds = limitedRows.map((item: any) => item.id)
-  const groupIds = Array.from(new Set(limitedRows.map((item: any) => item.group_id).filter(Boolean)))
-  const brandIds = Array.from(new Set(limitedRows.map((item: any) => item.brand_id).filter(Boolean)))
+  const itemIds = limitedRows.map((item) => item.id)
+  const groupIds = Array.from(new Set(limitedRows.map((item) => item.group_id).filter((id): id is string => Boolean(id))))
+  const brandIds = Array.from(new Set(limitedRows.map((item) => item.brand_id).filter((id): id is string => Boolean(id))))
 
   const [barcodes, balances, groups, brands, batches] = itemIds.length ? await Promise.all([
     db.from("pharmacy_item_barcodes").select("item_id, barcode, is_primary").eq("pharmacy_id", pharmacyId).in("item_id", itemIds),
@@ -111,35 +137,39 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
       .order("expiry_date", { ascending: true }),
   ]) : [{ data: [] }, { data: [] }, { data: [] }, { data: [] }, { data: [] }]
 
-  if ((barcodes as any).error) throw (barcodes as any).error
-  if ((balances as any).error) throw (balances as any).error
-  if ((groups as any).error) throw (groups as any).error
-  if ((brands as any).error) throw (brands as any).error
-  if ((batches as any).error) throw (batches as any).error
+  const barcodeResult = barcodes as QueryResult<ItemBarcodeRow>
+  const balanceResult = balances as QueryResult<StockBalanceRow>
+  const groupResult = groups as QueryResult<NamedLookupRow>
+  const brandResult = brands as QueryResult<NamedLookupRow>
+  const batchResult = batches as QueryResult<ItemBatchRow>
 
-  const barcodesByItem = new Map<string, any[]>()
-  for (const row of (barcodes.data ?? []) as any[]) {
+  for (const result of [barcodeResult, balanceResult, groupResult, brandResult, batchResult]) {
+    if (result.error) throw result.error
+  }
+
+  const barcodesByItem = new Map<string, ItemBarcodeRow[]>()
+  for (const row of barcodeResult.data ?? []) {
     const list = barcodesByItem.get(row.item_id) ?? []
     list.push(row)
     barcodesByItem.set(row.item_id, list)
   }
   const qtyByItem = new Map<string, number>()
-  for (const row of (balances.data ?? []) as any[]) {
+  for (const row of balanceResult.data ?? []) {
     if (branchId && row.branch_id !== branchId) continue
     qtyByItem.set(row.item_id, (qtyByItem.get(row.item_id) ?? 0) + n(row.quantity))
   }
 
-  const groupMap = new Map<string, string>(((groups.data ?? []) as any[]).map((group: any) => [group.id, group.name]))
-  const brandMap = new Map<string, string>(((brands.data ?? []) as any[]).map((brand: any) => [brand.id, brand.name]))
-  const batchesByItem = new Map<string, any[]>()
-  for (const row of (batches.data ?? []) as any[]) {
+  const groupMap = new Map<string, string>((groupResult.data ?? []).map((group) => [group.id, group.name]))
+  const brandMap = new Map<string, string>((brandResult.data ?? []).map((brand) => [brand.id, brand.name]))
+  const batchesByItem = new Map<string, ItemBatchRow[]>()
+  for (const row of batchResult.data ?? []) {
     if (branchId && row.branch_id && row.branch_id !== branchId) continue
     const list = batchesByItem.get(row.item_id) ?? []
     list.push(row)
     batchesByItem.set(row.item_id, list)
   }
 
-  return limitedRows.map((item: any) => {
+  return limitedRows.map((item) => {
     const itemBarcodes = barcodesByItem.get(item.id) ?? []
     const itemBatches = batchesByItem.get(item.id) ?? []
     const nearestBatch = itemBatches[0] ?? null

@@ -272,7 +272,7 @@ export function DashboardHomeView() {
         })),
       })
       setFetchState("success")
-    } catch (err) {
+    } catch {
       setFetchState("error")
       toast.error("حدث خطأ أثناء تحميل البيانات", {
         description: "تأكد من الاتصال وحاول مرة أخرى",

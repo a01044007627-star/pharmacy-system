@@ -12,7 +12,6 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useAuth } from "@/contexts/auth-context"
-import { useAppSettings } from "@/contexts/settings-context"
 import { cn } from "@/lib/utils"
 
 type OfferRow = {
@@ -48,15 +47,11 @@ function statusColor(value: string) {
 
 export function PriceOffersView() {
   const auth = useAuth()
-  const settings = useAppSettings()
-  const currency = settings.get("project", "currencySymbol", "ج.م")
   const [rows, setRows] = useState<OfferRow[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState("")
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
-
-  const money = useCallback((value: number) => `${Number(value || 0).toLocaleString("ar-EG", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`, [currency])
 
   const load = useCallback(async () => {
     if (!auth.activePharmacyId) return

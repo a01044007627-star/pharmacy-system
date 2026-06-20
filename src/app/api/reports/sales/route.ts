@@ -13,10 +13,6 @@ function clean(value: unknown) {
   return typeof value === "string" ? value.trim() : ""
 }
 
-function safeSearch(value: string) {
-  return value.replace(/[,%().]/g, " ").replace(/\s+/g, " ").trim()
-}
-
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url)

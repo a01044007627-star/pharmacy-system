@@ -73,11 +73,16 @@ export async function GET(request: Request) {
       }
     }
 
-    // Supabase's recursive query-builder generic becomes excessively deep
-    // when the same filter pipeline is reused for data and summary selects.
-    // Keep the boundary local and return the original builder shape.
-    const applyFilters = (query: any) => {
-      let next = query.eq("pharmacy_id", scope.activePharmacyId)
+    type MovementFilterBuilder = {
+      eq(column: string, value: unknown): MovementFilterBuilder
+      in(column: string, values: readonly unknown[]): MovementFilterBuilder
+      gte(column: string, value: unknown): MovementFilterBuilder
+      lte(column: string, value: unknown): MovementFilterBuilder
+    }
+
+    const applyFilters = <T>(query: T): T => {
+      let next = query as unknown as MovementFilterBuilder
+      next = next.eq("pharmacy_id", scope.activePharmacyId)
       if (branchId) next = next.eq("branch_id", branchId)
       if (movementType) next = next.eq("movement_type", movementType)
       if (direction) next = next.eq("direction", direction)
@@ -86,7 +91,7 @@ export async function GET(request: Request) {
       if (sourceTable) next = next.eq("source_table", sourceTable)
       if (dateFrom) next = next.gte("created_at", `${dateFrom}T00:00:00`)
       if (dateTo) next = next.lte("created_at", `${dateTo}T23:59:59.999`)
-      return next
+      return next as unknown as T
     }
 
     const dbQuery = applyFilters(db

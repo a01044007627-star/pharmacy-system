@@ -1,4 +1,4 @@
-import type { Metadata } from "next"
+import type { Metadata, Viewport } from "next"
 import { Providers } from "@/components/providers"
 import "./globals.css"
 
@@ -6,7 +6,6 @@ export const metadata: Metadata = {
   title: "Logixa Pharmacy",
   description: "نظام إدارة الصيدليات المتكامل",
   manifest: "/manifest.json",
-  themeColor: "#0b63a8",
   icons: {
     icon: [
       { url: "/icon-192x192.png", sizes: "192x192", type: "image/png" },
@@ -15,6 +14,10 @@ export const metadata: Metadata = {
     apple: [{ url: "/icon-192x192.png", sizes: "192x192", type: "image/png" }],
   },
   appleWebApp: { capable: true, statusBarStyle: "default", title: "Pharmacy" },
+}
+
+export const viewport: Viewport = {
+  themeColor: "#0b63a8",
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

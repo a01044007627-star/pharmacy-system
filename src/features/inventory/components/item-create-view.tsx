@@ -40,7 +40,7 @@ import type {
   LookupOption,
 } from "@/features/inventory/lib/items-types";
 import { cacheItemDetail, queueItemApiRequest, readCachedItemDetail } from "@/features/inventory/lib/items-offline";
-import { apiRequest, isRequestAbort } from "@/lib/api-client"
+import { apiRequest, isRequestAbort } from "@/lib/http/api-client"
 import { network } from "@/lib/network";
 
 type UploadResult = {

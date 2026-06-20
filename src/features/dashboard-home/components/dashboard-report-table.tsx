@@ -46,7 +46,7 @@ function escapeHtml(value: string) {
     .replaceAll("'", "&#039;")
 }
 
-function columnKey(column: DashboardTableColumn<any>) {
+function columnKey<T extends { id: string }>(column: DashboardTableColumn<T>) {
   return String(column.key)
 }
 
@@ -258,7 +258,7 @@ function DashboardReportTableInner<T extends { id: string }>({ config, loading }
                     <DropdownMenuCheckboxItem
                       key={key}
                       checked={!hiddenColumns.includes(key)}
-                      onCheckedChange={(_checked: boolean) => toggleColumn(key)}
+                      onCheckedChange={() => toggleColumn(key)}
                       className="h-9 text-sm font-bold"
                     >
                       {column.header}

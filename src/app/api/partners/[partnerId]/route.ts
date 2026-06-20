@@ -8,6 +8,22 @@ import { writeAuditLog } from "@/lib/audit/audit-log"
 
 type Context = { params: Promise<{ partnerId: string }> }
 
+type TotalsRow = {
+  total?: number | string | null
+  paid_amount?: number | string | null
+  due_amount?: number | string | null
+}
+
+type ReturnTotalsRow = {
+  total?: number | string | null
+  refund_amount?: number | string | null
+}
+
+type PaymentTotalsRow = {
+  direction?: string | null
+  amount?: number | string | null
+}
+
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
 }
@@ -121,25 +137,25 @@ export async function GET(_request: Request, context: Context) {
       ),
     ])
 
-    const salesSummary = sales.reduce((acc: { count: number; total: number; paid: number; due: number }, row: any) => ({
+    const salesSummary = sales.reduce((acc: { count: number; total: number; paid: number; due: number }, row: TotalsRow) => ({
       count: acc.count + 1,
       total: acc.total + Number(row.total ?? 0),
       paid: acc.paid + Number(row.paid_amount ?? 0),
       due: acc.due + Number(row.due_amount ?? 0),
     }), { count: 0, total: 0, paid: 0, due: 0 })
-    const salesReturnsSummary = salesReturns.reduce((acc: { count: number; total: number; refunded: number }, row: any) => ({
+    const salesReturnsSummary = salesReturns.reduce((acc: { count: number; total: number; refunded: number }, row: ReturnTotalsRow) => ({
       count: acc.count + 1,
       total: acc.total + Number(row.total ?? 0),
       refunded: acc.refunded + Number(row.refund_amount ?? 0),
     }), { count: 0, total: 0, refunded: 0 })
 
-    const purchaseSummary = purchases.reduce((acc: { count: number; total: number; paid: number; due: number }, row: any) => ({
+    const purchaseSummary = purchases.reduce((acc: { count: number; total: number; paid: number; due: number }, row: TotalsRow) => ({
       count: acc.count + 1,
       total: acc.total + Number(row.total ?? 0),
       paid: acc.paid + Number(row.paid_amount ?? 0),
       due: acc.due + Number(row.due_amount ?? 0),
     }), { count: 0, total: 0, paid: 0, due: 0 })
-    const paymentsSummary = payments.reduce((acc: { count: number; in: number; out: number }, row: any) => ({
+    const paymentsSummary = payments.reduce((acc: { count: number; in: number; out: number }, row: PaymentTotalsRow) => ({
       count: acc.count + 1,
       in: acc.in + (row.direction === "in" ? Number(row.amount ?? 0) : 0),
       out: acc.out + (row.direction === "out" ? Number(row.amount ?? 0) : 0),

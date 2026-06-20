@@ -5,9 +5,9 @@ import { createAdminClient } from "@/lib/supabase/admin"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
 import { writeAuditLog } from "@/lib/audit/audit-log"
-import * as XLSX from "xlsx"
+import { excelWorkbookService, type SpreadsheetRow } from "@/lib/spreadsheets/excel-workbook-service"
 import { addOpeningStock } from "@/lib/inventory/opening-stock"
-import { normalizeBarcode, normalizeItemName } from "@/features/inventory/lib/item-input"
+import { normalizeBarcode } from "@/features/inventory/lib/item-input"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
@@ -65,7 +65,7 @@ const CLIENT_TEMPLATE_HEADERS = [
   "غير مخصص للبيع (1/0)",
 ] as const
 
-type ExcelRow = Record<string, unknown>
+type ExcelRow = SpreadsheetRow
 type LookupRow = { id: string; name: string }
 type BranchLookupRow = { id: string; name: string; code?: string | null; is_default?: boolean | null }
 type ImportError = { row: number; sku?: string; name?: string; message: string }
@@ -324,12 +324,8 @@ function parseDateValue(value: unknown): string | null {
   if (!value) return null
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10)
   if (typeof value === "number") {
-    const parsed = XLSX.SSF.parse_date_code(value)
-    if (parsed) {
-      const month = String(parsed.m).padStart(2, "0")
-      const day = String(parsed.d).padStart(2, "0")
-      return `${parsed.y}-${month}-${day}`
-    }
+    const parsed = excelWorkbookService.excelSerialToDate(value)
+    if (parsed) return parsed.toISOString().slice(0, 10)
   }
   const raw = clean(value)
   if (!raw) return null
@@ -680,12 +676,11 @@ async function fetchAllRows<T>(buildQuery: (from: number, to: number) => Promise
 }
 
 export async function GET() {
-  const worksheet = XLSX.utils.aoa_to_sheet([[...CLIENT_TEMPLATE_HEADERS]])
-  worksheet["!cols"] = CLIENT_TEMPLATE_HEADERS.map((header) => ({ wch: Math.min(Math.max(header.length + 3, 16), 55) }))
-  const workbook = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(workbook, worksheet, "Items_Ready")
-  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer
-  return new NextResponse(new Uint8Array(buffer), {
+  const buffer = await excelWorkbookService.createTemplate({
+    sheetName: "Items_Ready",
+    headers: CLIENT_TEMPLATE_HEADERS,
+  })
+  return new NextResponse(buffer, {
     headers: {
       "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "content-disposition": 'attachment; filename="pharmacy-items-import-template.xlsx"',
@@ -705,14 +700,13 @@ export async function POST(request: Request) {
     if (!file || !(file instanceof File)) return NextResponse.json({ error: "ارفع ملف Excel" }, { status: 400 })
     if (file.size <= 0) return NextResponse.json({ error: "ملف Excel فارغ" }, { status: 400 })
     if (file.size > MAX_IMPORT_FILE_BYTES) return NextResponse.json({ error: "حجم ملف الاستيراد أكبر من 25 ميجابايت؛ قسّمه إلى أكثر من ملف" }, { status: 413 })
-    if (!/\.(xlsx|xls|csv)$/i.test(file.name)) return NextResponse.json({ error: "صيغة الملف غير مدعومة؛ استخدم XLSX أو XLS أو CSV" }, { status: 400 })
+    if (!/\.(xlsx|csv)$/i.test(file.name)) return NextResponse.json({ error: "صيغة الملف غير مدعومة؛ استخدم XLSX أو CSV" }, { status: 400 })
 
     const buffer = Buffer.from(await file.arrayBuffer())
-    const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true, cellText: false, raw: true, cellFormula: false, bookVBA: false })
-    const sheetName = workbook.SheetNames.find((name) => normalizeItemName(name) === normalizeItemName("Items_Ready")) ?? workbook.SheetNames[0]
-    if (!sheetName) return NextResponse.json({ error: "ملف Excel فارغ" }, { status: 400 })
-
-    const rows = XLSX.utils.sheet_to_json<ExcelRow>(workbook.Sheets[sheetName], { defval: "", raw: false })
+    const rows: ExcelRow[] = await excelWorkbookService.readRows(buffer, {
+      fileName: file.name,
+      preferredSheetName: "Items_Ready",
+    })
     if (rows.length === 0) return NextResponse.json({ error: "لا توجد بيانات في الملف" }, { status: 400 })
     if (rows.length > MAX_IMPORT_ROWS) return NextResponse.json({ error: `الملف يحتوي على ${rows.length.toLocaleString("ar-EG")} صف؛ الحد الآمن لكل عملية 50,000 صف` }, { status: 413 })
 

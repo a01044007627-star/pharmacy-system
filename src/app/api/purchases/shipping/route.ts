@@ -1,4 +1,4 @@
-﻿import { NextResponse } from "next/server"
+import { NextResponse } from "next/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
@@ -7,10 +7,6 @@ import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-p
 
 function getDbClient(fallbackClient: Awaited<ReturnType<typeof createClient>>) {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : fallbackClient
-}
-
-function clean(value: unknown) {
-  return typeof value === "string" ? value.trim() : ""
 }
 
 function safeNumber(value: unknown, fallback: number, min: number, max: number) {

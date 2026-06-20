@@ -5,7 +5,7 @@ import type { Session, User } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/client"
 import { hasPermission, normalizeRole, type Permission } from "@/lib/auth/permissions"
 import type { AuthScope, BranchSummary, MedicalRole, PharmacyMembership, PharmacySummary, UserProfile } from "@/types"
-import { apiRequest } from "@/lib/api-client"
+import { apiRequest } from "@/lib/http/api-client"
 import { network } from "@/lib/network"
 import { localDB } from "@/lib/sync/local-db"
 

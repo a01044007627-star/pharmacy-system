@@ -9,7 +9,6 @@ import {
   Headphones, Gauge,
 } from "lucide-react"
 import { toast } from "sonner"
-import { Button } from "@/components/ui/button"
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuGroup,
   DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,

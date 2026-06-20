@@ -23,19 +23,29 @@ function safeSearch(value: string) {
   return value.replace(/[,%().]/g, " ").replace(/\s+/g, " ").trim()
 }
 
-function applyPartnerTypeFilter<T>(query: T, partnerType: string | null): T {
-  const builder = query as any
-  if (partnerType === "customer") return builder.in("type", ["customer", "both"]) as T
-  if (partnerType === "supplier") return builder.in("type", ["supplier", "both"]) as T
-  if (partnerType === "both") return builder.eq("type", "both") as T
+type PartnerFilterQuery<TQuery> = {
+  in(column: string, values: readonly unknown[]): TQuery
+  eq(column: string, value: unknown): TQuery
+  or(filters: string): TQuery
+}
+
+function applyPartnerTypeFilter<T extends PartnerFilterQuery<T>>(query: T, partnerType: string | null): T {
+  if (partnerType === "customer") return query.in("type", ["customer", "both"])
+  if (partnerType === "supplier") return query.in("type", ["supplier", "both"])
+  if (partnerType === "both") return query.eq("type", "both")
   return query
 }
 
-function applyPartnerFilters<T>(query: T, filters: { partnerType: string | null; status: string; search: string }): T {
-  let builder = applyPartnerTypeFilter(query, filters.partnerType) as any
+function applyPartnerFilters<T extends PartnerFilterQuery<T>>(
+  query: T,
+  filters: { partnerType: string | null; status: string; search: string },
+): T {
+  let builder = applyPartnerTypeFilter(query, filters.partnerType)
   if (filters.status && filters.status !== "all") builder = builder.eq("status", filters.status)
-  if (filters.search) builder = builder.or(`name.ilike.%${filters.search}%,phone.ilike.%${filters.search}%,email.ilike.%${filters.search}%,tax_id.ilike.%${filters.search}%`)
-  return builder as T
+  if (filters.search) {
+    builder = builder.or(`name.ilike.%${filters.search}%,phone.ilike.%${filters.search}%,email.ilike.%${filters.search}%,tax_id.ilike.%${filters.search}%`)
+  }
+  return builder
 }
 
 export async function GET(request: Request) {

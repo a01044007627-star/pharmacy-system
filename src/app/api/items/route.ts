@@ -29,7 +29,9 @@ async function readLookup<T = Record<string, unknown>>(query: PromiseLike<{ data
   return data ?? []
 }
 
-function applyBranchScope(query: any, branchId: string | null) {
+type OrFilterQuery<TQuery> = { or(filters: string): TQuery }
+
+function applyBranchScope<T extends OrFilterQuery<T>>(query: T, branchId: string | null): T {
   if (!branchId) return query
   // الأصناف العامة branch_id = null تظهر مع أي فرع، والأصناف الخاصة تظهر في فرعها فقط.
   return query.or(`branch_id.is.null,branch_id.eq.${branchId}`)

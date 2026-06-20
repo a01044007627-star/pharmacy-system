@@ -44,6 +44,8 @@ type ButtonProps = React.ComponentPropsWithoutRef<"button"> &
 
 const Button = React.forwardRef<HTMLElement, ButtonProps>(
   ({ className, variant = "default", size = "default", asChild = false, render, nativeButton: _nativeButton, children, ...props }, ref) => {
+    // Compatibility prop: consume it here so it is never forwarded to the native DOM element.
+    void _nativeButton
     const classes = cn(buttonVariants({ variant, size, className }))
     if (render) {
       return (

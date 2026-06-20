@@ -29,7 +29,6 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ChevronLeft, ChevronRight, Settings, FileSpreadsheet } from "lucide-react"
 import { cn } from "@/lib/utils"
@@ -66,6 +65,8 @@ export function DataTable<TData, TValue>({
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = React.useState<SortingState>([])
 
+  // TanStack Table intentionally returns mutable helpers; React Compiler must not memoize this call.
+  // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data,
     columns,

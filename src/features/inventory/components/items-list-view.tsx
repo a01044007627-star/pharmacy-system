@@ -68,7 +68,7 @@ import {
   unitEquationLabel,
 } from "@/features/inventory/lib/items-helpers"
 import { cacheItemsList, queueItemApiRequest, readCachedItemsList } from "@/features/inventory/lib/items-offline"
-import { apiRequest, isRequestAbort } from "@/lib/api-client"
+import { apiRequest, isRequestAbort } from "@/lib/http/api-client"
 import { network } from "@/lib/network"
 
 type ColumnKey =

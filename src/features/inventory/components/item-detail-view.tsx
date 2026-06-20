@@ -13,7 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import type { PharmacyItemListRow } from "@/features/inventory/lib/items-types"
 import { money, numberValue, statusLabel, unitCountLabel, unitEquationLabel } from "@/features/inventory/lib/items-helpers"
 import { cacheItemDetail, readCachedItemDetail } from "@/features/inventory/lib/items-offline"
-import { apiRequest, isRequestAbort } from "@/lib/api-client"
+import { apiRequest, isRequestAbort } from "@/lib/http/api-client"
 
 type DetailResponse = {
   item?: PharmacyItemListRow

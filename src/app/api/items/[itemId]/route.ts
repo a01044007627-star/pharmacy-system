@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
-import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-permissions"
+import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
 import { adjustOpeningStock } from "@/lib/inventory/opening-stock"
 import { cleanItemText, finiteNonNegative, normalizeBarcodeInputs, normalizeItemName, postgresErrorMessage } from "@/features/inventory/lib/item-input"
 
