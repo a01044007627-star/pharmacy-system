@@ -100,12 +100,14 @@ export class OperationalRelationsRepository {
   }) {
     if (params.lineIds.length === 0) return new Map<string, number>()
 
-    const { data: lines, error: linesError } = await this.db
+    const { data: rawLines, error: linesError } = await this.db
       .from(params.lineTable)
       .select(`return_id,${params.lineIdColumn},quantity`)
       .eq("pharmacy_id", this.pharmacyId)
       .in(params.lineIdColumn, params.lineIds)
     if (linesError) throw linesError
+
+    const lines = rawLines as unknown as Array<{ return_id: string; quantity: number | null; [key: string]: any }> | null
 
     const returnIds = uniqueIds((lines ?? []).map((row) => row.return_id as string | null))
     if (returnIds.length === 0) return new Map<string, number>()
