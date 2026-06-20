@@ -8,6 +8,8 @@ import { writeAuditLog } from "@/lib/audit/audit-log"
 import { Money } from "@/domain/shared/decimal-value"
 import { ItemQuantityPolicyRepository } from "@/features/inventory/server/item-quantity-policy-repository"
 import { CashierSaleService, cashierErrorResponse } from "@/features/sales/server/cashier-sale-service"
+import { resolveCashierStock } from "@/features/sales/lib/cashier-stock"
+import { CashierStockRepository } from "@/features/sales/server/cashier-stock-repository"
 
 
 type CashierItemRow = {
@@ -136,8 +138,7 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
       .eq("pharmacy_id", pharmacyId)
       .in("item_id", itemIds)
       .gt("remaining_quantity", 0)
-      .gte("expiry_date", new Date().toISOString().slice(0, 10))
-      .order("expiry_date", { ascending: true }),
+      .order("expiry_date", { ascending: true, nullsFirst: false }),
   ]) : [{ data: [] }, { data: [] }, { data: [] }, { data: [] }, { data: [] }]
 
   const barcodeResult = barcodes as QueryResult<ItemBarcodeRow>
@@ -172,24 +173,51 @@ async function loadProducts(db: SupabaseClient, pharmacyId: string, branchId: st
     batchesByItem.set(row.item_id, list)
   }
 
+  const today = new Date().toISOString().slice(0, 10)
   return limitedRows.map((item) => {
     const itemBarcodes = barcodesByItem.get(item.id) ?? []
     const itemBatches = batchesByItem.get(item.id) ?? []
-    const nearestBatch = itemBatches[0] ?? null
+    const validBatches = itemBatches.filter((batch) => !batch.expiry_date || batch.expiry_date >= today)
+    const expiredBatches = itemBatches.filter((batch) => Boolean(batch.expiry_date) && String(batch.expiry_date) < today)
+    const nearestBatch = validBatches[0] ?? null
+    const physicalQty = qtyByItem.get(item.id) ?? 0
+    const validBatchQty = validBatches.reduce((sum, batch) => sum + n(batch.remaining_quantity), 0)
+    const expiredBatchQty = expiredBatches.reduce((sum, batch) => sum + n(batch.remaining_quantity), 0)
+    const positiveBatchQty = itemBatches.reduce((sum, batch) => sum + n(batch.remaining_quantity), 0)
+    const availability = resolveCashierStock({
+      manageInventory: item.manage_inventory as boolean | null | undefined,
+      trackBatch: item.track_batch as boolean | null | undefined,
+      hasExpiry: item.has_expiry as boolean | null | undefined,
+      itemExpiry: typeof item.expiry_date === "string" ? item.expiry_date : null,
+      physicalQty,
+      validBatchQty,
+      expiredBatchQty,
+      positiveBatchQty,
+      today,
+    })
+
     return {
       ...item,
       sell_price: n(item.sell_price),
       old_sell_price: n(item.old_sell_price),
       buy_price: n(item.buy_price),
-      available_qty: qtyByItem.get(item.id) ?? 0,
+      available_qty: availability.sellableQty,
+      physical_qty: availability.physicalQty,
+      sellable_qty: availability.sellableQty,
+      valid_batch_qty: availability.validBatchQty,
+      expired_batch_qty: availability.expiredBatchQty,
+      unallocated_qty: availability.unallocatedQty,
+      stock_issue: availability.stockIssue,
+      stock_message: availability.stockMessage,
       barcode: itemBarcodes.find((b) => b.is_primary)?.barcode ?? itemBarcodes[0]?.barcode ?? item.sku ?? "",
       barcodes: itemBarcodes,
       group_name: item.group_id ? groupMap.get(item.group_id) ?? null : null,
       brand_name: item.brand_id ? brandMap.get(item.brand_id) ?? null : null,
       nearest_batch_id: nearestBatch?.id ?? null,
       nearest_batch_number: nearestBatch?.batch_number ?? null,
-      nearest_expiry: nearestBatch?.expiry_date ?? item.expiry_date ?? null,
-      active_batches_count: itemBatches.length,
+      nearest_expiry: nearestBatch?.expiry_date ?? null,
+      active_batches_count: validBatches.length,
+      expired_batches_count: expiredBatches.length,
     }
   })
 }
@@ -256,6 +284,7 @@ export async function POST(request: Request) {
     const rawLines = Array.isArray(body.lines) ? body.lines as Record<string, unknown>[] : []
     const quantityPolicies = new ItemQuantityPolicyRepository(db, pharmacyId)
     const lines = await quantityPolicies.normalizeTransactionLines(rawLines, { label: "كمية البيع" })
+    await new CashierStockRepository(db, pharmacyId, branchId).assertLines(lines)
     const shiftId = clean(body.shift_id)
     if (!shiftId) throw new Error("لازم تفتح جلسة الكاشير وتكتب نقدية الدرج قبل البيع")
     const clientRequestId = clean(body.client_request_id) || crypto.randomUUID()

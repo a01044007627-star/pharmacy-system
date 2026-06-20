@@ -1,7 +1,9 @@
 "use client"
 
-import { Monitor } from "lucide-react"
+import { Monitor, Volume2 } from "lucide-react"
 import { SettingsLayout } from "@/features/settings/components/settings-layout"
+import { Button } from "@/components/ui/button"
+import { useSound } from "@/hooks/use-sound"
 import {
   SettingsPageProvider,
   useSettingsPage,
@@ -34,6 +36,8 @@ const defaultSettings = {
   enableCalculator: "true",
   holdSaleEnabled: "true",
   quickSaleEnabled: "true",
+  enableSounds: "true",
+  soundVolume: "55",
   audioOnScan: "true",
 }
 
@@ -45,6 +49,9 @@ const layoutOptions = [
 
 function CashierSettingsForm() {
   const { getSetting, updateSetting, saveSettings, resetSettings, saving, canWrite } = useSettingsPage()
+  const soundsEnabled = getSetting("enableSounds", "true") === "true"
+  const soundVolume = Math.min(1, Math.max(0, Number(getSetting("soundVolume", "55")) / 100))
+  const { play, unlock } = useSound({ enabled: soundsEnabled, defaultVolume: soundVolume })
 
   return (
     <div className="space-y-5">
@@ -148,11 +155,36 @@ function CashierSettingsForm() {
             disabled={!canWrite}
           />
           <ToggleField
-            label="صوت عند المسح"
-            checked={getSetting("audioOnScan", "true") === "true"}
-            onChange={(v) => updateSetting("audioOnScan", String(v))}
+            label="تفعيل أصوات الكاشير"
+            checked={getSetting("enableSounds", "true") === "true"}
+            onChange={(v) => updateSetting("enableSounds", String(v))}
             disabled={!canWrite}
           />
+          <NumberField
+            label="مستوى صوت الكاشير (%)"
+            value={Number(getSetting("soundVolume", "55"))}
+            onChange={(v) => updateSetting("soundVolume", String(v))}
+            min={0}
+            max={100}
+            disabled={!canWrite || getSetting("enableSounds", "true") !== "true"}
+          />
+          <ToggleField
+            label="صوت عند المسح وإضافة الصنف"
+            checked={getSetting("audioOnScan", "true") === "true"}
+            onChange={(v) => updateSetting("audioOnScan", String(v))}
+            disabled={!canWrite || getSetting("enableSounds", "true") !== "true"}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            className="h-10 w-full rounded-xl font-black"
+            disabled={!soundsEnabled}
+            onClick={() => {
+              void unlock().then(() => play("payment-received", soundVolume))
+            }}
+          >
+            <Volume2 className="size-4" /> اختبار صوت الكاشير
+          </Button>
         </div>
       </SettingsSectionCard>
 

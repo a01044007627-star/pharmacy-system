@@ -212,6 +212,8 @@ export interface CashierSettings {
   quickSaleEnabled: boolean
   cashCategoryScope: CashCategoryScope
   defaultCashCategory: string
+  enableSounds: boolean
+  soundVolume: number
   audioOnScan: boolean
 }
 

@@ -135,6 +135,8 @@ export const SETTINGS_DEFAULTS: Record<SettingsNamespace, Record<string, string>
     quickSaleEnabled: "true",
     cashCategoryScope: "pos",
     defaultCashCategory: "",
+    enableSounds: "true",
+    soundVolume: "55",
     audioOnScan: "true",
   },
   sales: {

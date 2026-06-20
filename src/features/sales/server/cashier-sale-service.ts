@@ -1,6 +1,7 @@
 import "server-only"
 
 import type { SupabaseClient } from "@supabase/supabase-js"
+import { CashierStockAvailabilityError } from "@/features/sales/server/cashier-stock-repository"
 
 export type CashierSaleRpcInput = {
   p_pharmacy_id: string
@@ -107,6 +108,9 @@ export class CashierSaleService {
 }
 
 export function cashierErrorResponse(error: unknown) {
+  if (error instanceof CashierStockAvailabilityError) {
+    return { status: 409, code: error.code, message: error.message }
+  }
   if (error instanceof CashierDatabaseUpgradeRequiredError) {
     return { status: 503, code: error.code, message: error.message }
   }
@@ -123,7 +127,7 @@ export function cashierErrorResponse(error: unknown) {
   const cases: Array<[RegExp, string, string, number]> = [
     [/جلسة الكاشير غير مفتوحة|وردية.*غير مفتوحة|انتهت/i, "CASHIER_SHIFT_NOT_OPEN", "جلسة الكاشير انتهت أو لم تعد مفتوحة. حدّث حالة الجلسة ثم افتحها من جديد.", 409],
     [/الكمية غير كافية|أكبر من المتاح/i, "INSUFFICIENT_STOCK", raw, 409],
-    [/تشغيلة صالحة|منتهية الصلاحية/i, "NO_VALID_BATCH", raw, 409],
+    [/تشغيلة صالحة|منتهية الصلاحية|المتاح للبيع|رصيد التشغيلات/i, "NO_VALID_BATCH", raw, 409],
     [/صلاحية تنفيذ البيع|صلاحية.*البيع/i, "SALE_PERMISSION_DENIED", raw, 403],
     [/خصم|discount/i, "DISCOUNT_NOT_ALLOWED", raw, 403],
     [/duplicate key|unique constraint|23505/i, "DUPLICATE_SALE", "تم إرسال نفس الفاتورة من قبل. حدّث العمليات الأخيرة للتأكد منها.", 409],

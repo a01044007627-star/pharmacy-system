@@ -156,6 +156,8 @@ export const DEFAULT_CASHIER_SETTINGS: CashierSettings = {
   quickSaleEnabled: true,
   cashCategoryScope: "pos",
   defaultCashCategory: "",
+  enableSounds: true,
+  soundVolume: 55,
   audioOnScan: true,
 }
 

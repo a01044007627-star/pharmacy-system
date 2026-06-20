@@ -1,6 +1,7 @@
 "use client"
 
 import { localDB } from "@/lib/sync/local-db"
+import { resolveCashierStock, type CashierStockIssue } from "@/features/sales/lib/cashier-stock"
 
 export type OfflineCashierProduct = {
   id: string
@@ -14,6 +15,13 @@ export type OfflineCashierProduct = {
   old_sell_price?: number | null
   buy_price?: number
   available_qty: number
+  physical_qty?: number
+  sellable_qty?: number
+  valid_batch_qty?: number
+  expired_batch_qty?: number
+  unallocated_qty?: number
+  stock_issue?: CashierStockIssue
+  stock_message?: string | null
   manage_inventory?: boolean
   min_stock?: number | null
   group_id?: string | null
@@ -84,8 +92,6 @@ export async function loadOfflineCashierCatalog(input: { pharmacyId: string; bra
     if (row.pharmacy_id !== input.pharmacyId || !itemIds.has(String(row.item_id))) continue
     if (row.branch_id && row.branch_id !== input.branchId) continue
     if (number(row.remaining_quantity, number(row.quantity)) <= 0) continue
-    const expiry = text(row.expiry_date)
-    if (expiry && expiry < today) continue
     const itemId = String(row.item_id)
     const list = batchesByItem.get(itemId) ?? []
     list.push(row)
@@ -98,10 +104,27 @@ export async function loadOfflineCashierCatalog(input: { pharmacyId: string; bra
     const id = String(row.id)
     const barcodes = barcodesByItem.get(id) ?? []
     const batches = batchesByItem.get(id) ?? []
-    const nearest = batches[0]
+    const validBatches = batches.filter((batch) => !text(batch.expiry_date) || text(batch.expiry_date) >= today)
+    const expiredBatches = batches.filter((batch) => Boolean(text(batch.expiry_date)) && text(batch.expiry_date) < today)
+    const nearest = validBatches[0]
     const groupId = text(row.group_id) || null
     const brandId = text(row.brand_id) || null
     const primaryBarcode = (barcodes.find((barcode) => barcode.is_primary)?.barcode ?? barcodes[0]?.barcode ?? text(row.sku)) || null
+    const physicalQty = quantityByItem.has(id) ? quantityByItem.get(id)! : number(row.opening_stock)
+    const validBatchQty = validBatches.reduce((sum, batch) => sum + number(batch.remaining_quantity, number(batch.quantity)), 0)
+    const expiredBatchQty = expiredBatches.reduce((sum, batch) => sum + number(batch.remaining_quantity, number(batch.quantity)), 0)
+    const positiveBatchQty = batches.reduce((sum, batch) => sum + number(batch.remaining_quantity, number(batch.quantity)), 0)
+    const availability = resolveCashierStock({
+      manageInventory: boolean(row.manage_inventory, true),
+      trackBatch: boolean(row.track_batch),
+      hasExpiry: boolean(row.has_expiry),
+      itemExpiry: text(row.expiry_date) || null,
+      physicalQty,
+      validBatchQty,
+      expiredBatchQty,
+      positiveBatchQty,
+      today,
+    })
     return {
       id,
       name_ar: text(row.name_ar) || text(row.name_en) || "صنف بدون اسم",
@@ -113,7 +136,14 @@ export async function loadOfflineCashierCatalog(input: { pharmacyId: string; bra
       sell_price: number(row.sell_price),
       old_sell_price: number(row.old_sell_price),
       buy_price: number(row.buy_price),
-      available_qty: quantityByItem.has(id) ? quantityByItem.get(id)! : number(row.opening_stock),
+      available_qty: availability.sellableQty,
+      physical_qty: availability.physicalQty,
+      sellable_qty: availability.sellableQty,
+      valid_batch_qty: availability.validBatchQty,
+      expired_batch_qty: availability.expiredBatchQty,
+      unallocated_qty: availability.unallocatedQty,
+      stock_issue: availability.stockIssue,
+      stock_message: availability.stockMessage,
       manage_inventory: boolean(row.manage_inventory, true),
       min_stock: number(row.min_stock),
       group_id: groupId,
@@ -127,8 +157,8 @@ export async function loadOfflineCashierCatalog(input: { pharmacyId: string; bra
       track_batch: boolean(row.track_batch),
       nearest_batch_id: nearest ? text(nearest.id) || null : null,
       nearest_batch_number: nearest ? text(nearest.batch_number) || null : null,
-      nearest_expiry: nearest ? text(nearest.expiry_date) || null : text(row.expiry_date) || null,
-      active_batches_count: batches.length,
+      nearest_expiry: nearest ? text(nearest.expiry_date) || null : null,
+      active_batches_count: validBatches.length,
     }
   }).filter((product) => !needle || searchable([
     product.name_ar, product.name_en, product.sku, product.barcode, product.unit, product.group_name,
