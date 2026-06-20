@@ -8,6 +8,21 @@ type TemplateOptions = {
   headers: readonly string[]
   minColumnWidth?: number
   maxColumnWidth?: number
+  requiredHeaders?: readonly string[]
+  textHeaders?: readonly string[]
+  numberHeaders?: readonly string[]
+  dateHeaders?: readonly string[]
+  listValidations?: readonly {
+    header: string
+    values: readonly (string | number)[]
+  }[]
+  instructions?: readonly {
+    field: string
+    required?: boolean
+    format?: string
+    example?: string
+    notes?: string
+  }[]
 }
 
 type ReadOptions = {
@@ -33,6 +48,8 @@ export class ExcelWorkbookService {
     const minWidth = options.minColumnWidth ?? 16
     const maxWidth = options.maxColumnWidth ?? 55
     const workbook = new ExcelJS.Workbook()
+    workbook.creator = "Logixa Digital Systems"
+    workbook.created = new Date()
     const worksheet = workbook.addWorksheet(options.sheetName)
 
     worksheet.addRow([...options.headers])
@@ -40,11 +57,96 @@ export class ExcelWorkbookService {
       width: Math.min(Math.max(header.length + 3, minWidth), maxWidth),
     }))
 
+    const requiredHeaders = new Set(options.requiredHeaders ?? [])
+    const textHeaders = new Set(options.textHeaders ?? [])
+    const numberHeaders = new Set(options.numberHeaders ?? [])
+    const dateHeaders = new Set(options.dateHeaders ?? [])
+
     const headerRow = worksheet.getRow(1)
-    headerRow.font = { bold: true }
-    headerRow.alignment = { vertical: "middle", horizontal: "right" }
-    headerRow.height = 24
+    headerRow.height = 32
+    headerRow.eachCell((cell, columnNumber) => {
+      const header = options.headers[columnNumber - 1]
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } }
+      cell.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: requiredHeaders.has(header) ? "FFB42318" : "FF155EEF" },
+      }
+      cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true }
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFD0D5DD" } },
+        bottom: { style: "thin", color: { argb: "FFD0D5DD" } },
+        left: { style: "thin", color: { argb: "FFD0D5DD" } },
+        right: { style: "thin", color: { argb: "FFD0D5DD" } },
+      }
+    })
+
+    for (let index = 0; index < options.headers.length; index += 1) {
+      const header = options.headers[index]
+      const column = worksheet.getColumn(index + 1)
+      if (textHeaders.has(header)) column.numFmt = "@"
+      if (numberHeaders.has(header)) column.numFmt = "0.###"
+      if (dateHeaders.has(header)) column.numFmt = "yyyy-mm-dd"
+      column.alignment = { vertical: "middle", horizontal: "right", wrapText: true }
+    }
+
+    const maxTemplateRows = 5_000
+    for (const validation of options.listValidations ?? []) {
+      const columnIndex = options.headers.indexOf(validation.header) + 1
+      if (columnIndex <= 0 || validation.values.length === 0) continue
+      const formula = `"${validation.values.map(String).join(",")}"`
+      for (let rowNumber = 2; rowNumber <= maxTemplateRows; rowNumber += 1) {
+        worksheet.getCell(rowNumber, columnIndex).dataValidation = {
+          type: "list",
+          allowBlank: true,
+          showErrorMessage: true,
+          errorStyle: "error",
+          errorTitle: "قيمة غير مدعومة",
+          error: "اختر قيمة من القائمة المتاحة.",
+          formulae: [formula],
+        }
+      }
+    }
+
+    worksheet.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: options.headers.length },
+    }
     worksheet.views = [{ rightToLeft: true, state: "frozen", ySplit: 1 }]
+
+    if (options.instructions?.length) {
+      const instructions = workbook.addWorksheet("تعليمات")
+      instructions.views = [{ rightToLeft: true, state: "frozen", ySplit: 1 }]
+      instructions.addRow(["الحقل", "إجباري؟", "الصيغة", "مثال", "ملاحظات"])
+      for (const item of options.instructions) {
+        instructions.addRow([
+          item.field,
+          item.required ? "نعم" : "لا",
+          item.format ?? "نص",
+          item.example ?? "",
+          item.notes ?? "",
+        ])
+      }
+      instructions.columns = [
+        { width: 34 },
+        { width: 12 },
+        { width: 28 },
+        { width: 30 },
+        { width: 65 },
+      ]
+      const instructionHeader = instructions.getRow(1)
+      instructionHeader.height = 28
+      instructionHeader.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } }
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF344054" } }
+        cell.alignment = { vertical: "middle", horizontal: "center" }
+      })
+      instructions.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+        if (rowNumber === 1) return
+        row.alignment = { vertical: "top", horizontal: "right", wrapText: true }
+        row.height = 36
+      })
+    }
 
     const output = await workbook.xlsx.writeBuffer()
     if (output instanceof ArrayBuffer) return output

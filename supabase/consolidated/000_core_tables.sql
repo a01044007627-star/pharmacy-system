@@ -261,7 +261,8 @@ ALTER TABLE pharmacy_items
   ADD COLUMN IF NOT EXISTS custom_field_3 TEXT,
   ADD COLUMN IF NOT EXISTS custom_field_4 TEXT,
   ADD COLUMN IF NOT EXISTS product_locations TEXT[] DEFAULT ARRAY[]::TEXT[],
-  ADD COLUMN IF NOT EXISTS import_metadata JSONB DEFAULT '{}'::JSONB;
+  ADD COLUMN IF NOT EXISTS import_metadata JSONB DEFAULT '{}'::JSONB,
+  ADD COLUMN IF NOT EXISTS import_request_id TEXT;
 
 ALTER TABLE pharmacy_items DROP CONSTRAINT IF EXISTS pharmacy_items_item_type_check;
 ALTER TABLE pharmacy_items ADD CONSTRAINT pharmacy_items_item_type_check CHECK(item_type IN ('stocked','service','digital','consignment'));
@@ -454,6 +455,8 @@ CREATE TABLE IF NOT EXISTS pharmacy_damaged_stock (
   cost_value NUMERIC(14,2) DEFAULT 0,
   notes TEXT,
   status TEXT DEFAULT 'posted',
+  client_request_id TEXT,
+  batch_allocations JSONB NOT NULL DEFAULT '[]'::JSONB,
   created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -572,6 +575,7 @@ CREATE TABLE IF NOT EXISTS pharmacy_sales_returns (
   branch_id UUID NOT NULL REFERENCES pharmacy_branches(id) ON DELETE RESTRICT,
   sale_id UUID REFERENCES pharmacy_sales(id) ON DELETE SET NULL,
   return_number TEXT NOT NULL,
+  client_request_id TEXT,
   customer_name TEXT DEFAULT 'زبون نقدي' NOT NULL,
   total NUMERIC(14,2) DEFAULT 0 NOT NULL,
   refund_amount NUMERIC(14,2) DEFAULT 0 NOT NULL,
@@ -596,10 +600,14 @@ CREATE TABLE IF NOT EXISTS pharmacy_sales_return_lines (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pharmacy_id UUID NOT NULL REFERENCES pharmacies(id) ON DELETE CASCADE,
   return_id UUID NOT NULL REFERENCES pharmacy_sales_returns(id) ON DELETE CASCADE,
+  sale_line_id UUID REFERENCES pharmacy_sale_lines(id) ON DELETE RESTRICT,
   item_id UUID NOT NULL REFERENCES pharmacy_items(id) ON DELETE RESTRICT,
+  batch_id UUID REFERENCES pharmacy_item_batches(id) ON DELETE SET NULL,
+  unit TEXT,
   quantity NUMERIC(14,3) NOT NULL,
   unit_price NUMERIC(14,2) NOT NULL,
-  total NUMERIC(14,2) DEFAULT 0 NOT NULL
+  total NUMERIC(14,2) DEFAULT 0 NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- CHECK constraint from 20260618008000
@@ -643,6 +651,7 @@ CREATE TABLE IF NOT EXISTS pharmacy_purchases (
   pharmacy_id UUID NOT NULL REFERENCES pharmacies(id) ON DELETE CASCADE,
   branch_id UUID NOT NULL REFERENCES pharmacy_branches(id) ON DELETE RESTRICT,
   purchase_number TEXT NOT NULL,
+  client_request_id TEXT,
   supplier_id UUID REFERENCES pharmacy_partners(id) ON DELETE SET NULL,
   supplier_name TEXT DEFAULT 'مورد نقدي' NOT NULL,
   status TEXT DEFAULT 'received' NOT NULL,
@@ -684,11 +693,17 @@ CREATE TABLE IF NOT EXISTS pharmacy_purchase_lines (
   pharmacy_id UUID NOT NULL REFERENCES pharmacies(id) ON DELETE CASCADE,
   purchase_id UUID NOT NULL REFERENCES pharmacy_purchases(id) ON DELETE CASCADE,
   item_id UUID NOT NULL REFERENCES pharmacy_items(id) ON DELETE RESTRICT,
+  batch_id UUID REFERENCES pharmacy_item_batches(id) ON DELETE SET NULL,
+  item_name TEXT,
+  unit TEXT,
+  batch_number TEXT,
+  expiry_date DATE,
   quantity NUMERIC(14,3) NOT NULL,
   buy_price NUMERIC(14,2) NOT NULL,
   sell_price NUMERIC(14,2) DEFAULT 0 NOT NULL,
   discount NUMERIC(14,2) DEFAULT 0 NOT NULL,
-  net_total NUMERIC(14,2) DEFAULT 0 NOT NULL
+  net_total NUMERIC(14,2) DEFAULT 0 NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- CHECK constraint from 20260618008000
@@ -704,11 +719,16 @@ CREATE TABLE IF NOT EXISTS pharmacy_purchase_returns (
   branch_id UUID NOT NULL REFERENCES pharmacy_branches(id) ON DELETE RESTRICT,
   purchase_id UUID REFERENCES pharmacy_purchases(id) ON DELETE SET NULL,
   return_number TEXT NOT NULL,
+  client_request_id TEXT,
+  supplier_id UUID REFERENCES pharmacy_partners(id) ON DELETE SET NULL,
   supplier_name TEXT DEFAULT 'مورد نقدي' NOT NULL,
   total NUMERIC(14,2) DEFAULT 0 NOT NULL,
   refund_amount NUMERIC(14,2) DEFAULT 0 NOT NULL,
   stock_mode TEXT,
   reason TEXT,
+  voided_at TIMESTAMPTZ,
+  voided_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  void_reason TEXT,
   created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -724,10 +744,14 @@ CREATE TABLE IF NOT EXISTS pharmacy_purchase_return_lines (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   pharmacy_id UUID NOT NULL REFERENCES pharmacies(id) ON DELETE CASCADE,
   return_id UUID NOT NULL REFERENCES pharmacy_purchase_returns(id) ON DELETE CASCADE,
+  purchase_line_id UUID REFERENCES pharmacy_purchase_lines(id) ON DELETE RESTRICT,
   item_id UUID NOT NULL REFERENCES pharmacy_items(id) ON DELETE RESTRICT,
+  batch_id UUID REFERENCES pharmacy_item_batches(id) ON DELETE SET NULL,
+  unit TEXT,
   quantity NUMERIC(14,3) NOT NULL,
   buy_price NUMERIC(14,2) NOT NULL,
-  total NUMERIC(14,2) DEFAULT 0 NOT NULL
+  total NUMERIC(14,2) DEFAULT 0 NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- CHECK constraint from 20260618008000

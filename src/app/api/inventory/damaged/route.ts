@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { assertBranchScope, isBranchScoped, scopeCan } from "@/lib/auth/server-permissions"
 import { ItemQuantityPolicyRepository } from "@/features/inventory/server/item-quantity-policy-repository"
+import { writeAuditLog } from "@/lib/audit/audit-log"
 
 function getDbClient() {
   return process.env.SUPABASE_SERVICE_ROLE_KEY ? createAdminClient() : null
@@ -72,7 +73,7 @@ export async function POST(request: Request) {
     const scope = await getServerAuthScope({ requestedPharmacyId: clean(body.pharmacy_id) || null, requestedBranchId: clean(body.branch_id) || null })
     if (!scope.user) return NextResponse.json({ error: "غير مسجل الدخول" }, { status: 401 })
     if (!scope.activePharmacyId) return NextResponse.json({ error: "اختر صيدلية أولاً" }, { status: 400 })
-    if (!scopeCan(scope, "inventory:create")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
+    if (!scopeCan(scope, "inventory:damaged.write")) return NextResponse.json({ error: "ليست لديك صلاحية تسجيل التالف" }, { status: 403 })
 
     const itemId = clean(body.item_id)
     if (!itemId) return NextResponse.json({ error: "اختر الصنف" }, { status: 400 })
@@ -89,22 +90,45 @@ export async function POST(request: Request) {
       unit: clean(body.unit) || undefined,
       quantity: body.quantity,
     }], { label: "كمية التالف" })
-    const now = new Date().toISOString()
-
-    const { data, error } = await db.from("pharmacy_damaged_stock").insert({
-      pharmacy_id: pharmacyId,
-      branch_id: branchId,
-      item_id: itemId,
-      quantity: line.quantity,
-      reason: clean(body.reason) || "تالف",
-      notes: clean(body.notes) || null,
-      recorded_by: scope.user.id,
-      created_at: now,
-      updated_at: now,
-    }).select("*").maybeSingle()
+    const clientRequestId = clean(body.client_request_id) || clean(request.headers.get("x-idempotency-key")) || crypto.randomUUID()
+    const { data, error } = await db.rpc("record_damaged_stock_v1", {
+      p_pharmacy_id: pharmacyId,
+      p_branch_id: branchId,
+      p_item_id: itemId,
+      p_actor_id: scope.user.id,
+      p_client_request_id: clientRequestId,
+      p_quantity: line.quantity,
+      p_unit: clean(body.unit) || null,
+      p_reason: clean(body.reason) || "تالف",
+      p_notes: clean(body.notes) || null,
+      p_batch_id: clean(body.batch_id) || null,
+    })
 
     if (error) throw error
-    return NextResponse.json({ record: data }, { status: 201 })
+    const result = (data ?? {}) as {
+      duplicate?: boolean
+      record?: Record<string, unknown>
+      remaining_stock?: number
+    }
+
+    await writeAuditLog(db, {
+      pharmacyId,
+      branchId,
+      actorId: scope.user.id,
+      eventType: result.duplicate ? "inventory.damaged.duplicate_ignored" : "inventory.damaged.posted",
+      source: "inventory",
+      description: result.duplicate ? "تم تجاهل تسجيل تالف مكرر" : "تم تسجيل التالف وخصمه ذريًا من المخزون والتشغيلات",
+      severity: "warning",
+      metadata: {
+        damaged_id: result.record?.id,
+        item_id: itemId,
+        quantity: line.quantity,
+        client_request_id: clientRequestId,
+        remaining_stock: result.remaining_stock,
+      },
+    })
+
+    return NextResponse.json(result, { status: result.duplicate ? 200 : 201 })
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "فشل تسجيل التالف" }, { status: 400 })
   }

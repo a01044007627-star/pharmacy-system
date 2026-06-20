@@ -13,9 +13,10 @@ export async function GET(request: Request) {
     return NextResponse.json({
       status: online ? "online" : "offline",
       last_sync: new Date().toISOString(),
-      pending_changes: 0,
+      pending_changes: null,
+      pending_source: "client_device",
       tables: { items: true, sales: true, purchases: true, inventory: true },
-      note: "المزامنة المحلية تتم من المتصفح نفسه، ومبيعات الكاشير الأوفلاين تتم مزامنتها تلقائيًا من شاشة الكاشير عند رجوع الاتصال.",
+      note: "عدد العمليات المعلقة يُقرأ من قاعدة الجهاز المحلية داخل المتصفح، وليس من الخادم. تتم إعادة الإرسال تلقائيًا عند رجوع الاتصال.",
     })
   } catch (error) {
     const message = error instanceof Error ? error.message : "فشل حالة المزامنة"
@@ -30,7 +31,7 @@ export async function POST() {
     if (!scopeCan(scope, "sync:read")) return NextResponse.json({ error: "ليست لديك صلاحية" }, { status: 403 })
 
     return NextResponse.json({
-      message: "الخادم جاهز. مزامنة مبيعات الكاشير الأوفلاين تتم تلقائيًا من شاشة الكاشير عند رجوع الاتصال.",
+      message: "اكتملت محاولة مزامنة طابور الجهاز المحلي مع الخادم.",
       synced_at: new Date().toISOString(),
       tables: ["items", "sales", "purchases", "inventory"],
       duration_ms: 0,

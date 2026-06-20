@@ -12,13 +12,14 @@
     "test:watch": "jest --config jest.config.cjs --watch --passWithNoTests",
     "db:build": "node scripts/build-supabase-deploy.mjs",
     "audit:project": "node scripts/audit-project.mjs",
-    "verify": "tsc --noEmit && jest --config jest.config.cjs --runInBand --passWithNoTests && eslint src scripts --quiet && node scripts/audit-project.mjs && node scripts/audit-operational-loading.mjs && node scripts/audit-domain-architecture.mjs",
+    "verify": "tsc --noEmit && jest --config jest.config.cjs --runInBand --passWithNoTests && eslint src scripts --quiet && node scripts/audit-project.mjs && node scripts/audit-operational-loading.mjs && node scripts/audit-domain-architecture.mjs && node scripts/audit-p0-p1-integrity.mjs",
     "clean": "node -e \"const fs=require('fs'); for (const p of ['.next','coverage']) fs.rmSync(p,{recursive:true,force:true})\"",
     "ci:verify": "corepack pnpm install --frozen-lockfile && corepack pnpm run verify && corepack pnpm run build",
     "lint:ci": "eslint src scripts --quiet",
     "test:ci": "jest --config jest.config.cjs --runInBand --passWithNoTests",
     "audit:operational-loading": "node scripts/audit-operational-loading.mjs",
-    "audit:domain": "node scripts/audit-domain-architecture.mjs"
+    "audit:domain": "node scripts/audit-domain-architecture.mjs",
+    "audit:p0-p1": "node scripts/audit-p0-p1-integrity.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",

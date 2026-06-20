@@ -9,6 +9,7 @@ import { API_MUTATION_TABLE, LEGACY_ITEM_API_MUTATION_TABLE, type QueuedApiReque
 export interface SyncStatus {
   isSyncing: boolean
   pendingMutations: number
+  failedMutations: number
   lastSync: string | null
   online: boolean
 }
@@ -111,6 +112,7 @@ export class SyncManager {
   private _lastSync: string | null = null
   private _online = network.isOnline
   private _pendingMutations = 0
+  private _failedMutations = 0
   private syncTimer: ReturnType<typeof setInterval> | null = null
   private coreSyncPromise: Promise<void> | null = null
 
@@ -125,7 +127,13 @@ export class SyncManager {
   }
 
   get status(): SyncStatus {
-    return { isSyncing: this.isSyncing, pendingMutations: this._pendingMutations, lastSync: this._lastSync, online: this._online }
+    return {
+      isSyncing: this.isSyncing,
+      pendingMutations: this._pendingMutations,
+      failedMutations: this._failedMutations,
+      lastSync: this._lastSync,
+      online: this._online,
+    }
   }
 
   subscribe(listener: Listener) {
@@ -140,7 +148,14 @@ export class SyncManager {
   }
 
   async refreshPending() {
-    try { this._pendingMutations = await localDB.countMutations() } catch { this._pendingMutations = 0 }
+    try {
+      const [pending, failed] = await Promise.all([localDB.countMutations(), localDB.countDeadLetters()])
+      this._pendingMutations = pending
+      this._failedMutations = failed
+    } catch {
+      this._pendingMutations = 0
+      this._failedMutations = 0
+    }
     this.notify()
   }
 

@@ -29,7 +29,12 @@ function readReady(pharmacyId?: string | null): ReadyState | null {
 
 export default function SyncPage() {
   const auth = useAuth()
-  const [serverStatus, setServerStatus] = useState<{ status: string; last_sync: string; pending_changes: number } | null>(null)
+  const [serverStatus, setServerStatus] = useState<{
+    status: string
+    last_sync: string
+    pending_changes: number | null
+    pending_source?: "client_device"
+  } | null>(null)
   const [clientStatus, setClientStatus] = useState<SyncStatus>(syncManager.status)
   const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
@@ -44,11 +49,11 @@ export default function SyncPage() {
       await syncManager.refreshPending()
       const reachable = await network.check()
       if (!reachable) {
-        setServerStatus((current) => current ? { ...current, status: "offline" } : { status: "offline", last_sync: "", pending_changes: 0 })
+        setServerStatus((current) => current ? { ...current, status: "offline" } : { status: "offline", last_sync: "", pending_changes: null, pending_source: "client_device" })
         return
       }
       const response = await fetch(`/api/sync?pharmacy_id=${auth.activePharmacyId}&status=1`, { cache: "no-store" })
-      const data = await response.json().catch(() => ({})) as { status: string; last_sync: string; pending_changes: number }
+      const data = await response.json().catch(() => ({})) as { status: string; last_sync: string; pending_changes: number | null; pending_source?: "client_device" }
       if (!response.ok) throw new Error("فشل تحميل حالة المزامنة")
       setServerStatus(data)
     } catch (error) {
@@ -110,7 +115,7 @@ export default function SyncPage() {
   }
 
   const isOnline = clientStatus.online && serverStatus?.status !== "offline"
-  const pending = clientStatus.pendingMutations + (serverStatus?.pending_changes ?? 0)
+  const pending = clientStatus.pendingMutations
   const lastSync = clientStatus.lastSync ?? serverStatus?.last_sync ?? null
 
   return (
@@ -137,7 +142,17 @@ export default function SyncPage() {
             <div><p className="text-xs font-black text-slate-500">تشغيل الجهاز دون إنترنت</p><p className={cn("mt-1 text-lg font-black", ready ? "text-emerald-700" : "text-amber-700")}>{ready ? "جاهز" : "يحتاج تجهيز"}</p></div>
           </CardContent></Card>
           <Card className="rounded-2xl border-slate-200 shadow-sm"><CardContent className="p-4"><p className="text-xs font-black text-slate-400">آخر مزامنة</p><p className="mt-2 text-base font-black text-slate-950">{lastSync ? new Date(lastSync).toLocaleString("ar-EG") : "—"}</p></CardContent></Card>
-          <Card className="rounded-2xl border-slate-200 shadow-sm"><CardContent className="p-4"><p className="text-xs font-black text-slate-400">التغييرات المعلقة</p><p className="mt-2 text-xl font-black text-amber-600">{pending.toLocaleString("ar-EG")}</p></CardContent></Card>
+          <Card className="rounded-2xl border-slate-200 shadow-sm"><CardContent className="p-4">
+            <p className="text-xs font-black text-slate-400">التغييرات على هذا الجهاز</p>
+            <div className="mt-2 flex items-end justify-between gap-2">
+              <p className="text-xl font-black text-amber-600">{pending.toLocaleString("ar-EG")} معلقة</p>
+              {clientStatus.failedMutations > 0 ? (
+                <Badge variant="outline" className="border-rose-200 bg-rose-50 font-black text-rose-700">
+                  {clientStatus.failedMutations.toLocaleString("ar-EG")} للمراجعة
+                </Badge>
+              ) : null}
+            </div>
+          </CardContent></Card>
         </div>
 
         <Card className="rounded-3xl border-slate-200 shadow-sm"><CardContent className="p-5">

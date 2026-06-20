@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AlertTriangle, ChevronLeft, ChevronRight, Loader2, Plus, RefreshCw, Search } from "lucide-react"
 import { toast } from "sonner"
 import { PageAccess } from "@/components/auth/page-access"
@@ -27,7 +27,7 @@ type DamagedRecord = {
 
 export function DamagedStockView() {
   const auth = useAuth()
-  const canWrite = auth.can("inventory:create") || auth.isDeveloper
+  const canWrite = auth.can("inventory:damaged.write") || auth.isDeveloper
   const [records, setRecords] = useState<DamagedRecord[]>([])
   const [items, setItems] = useState<PharmacyItemListRow[]>([])
   const [loading, setLoading] = useState(true)
@@ -42,6 +42,7 @@ export function DamagedStockView() {
   const [notes, setNotes] = useState("")
   const [page, setPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
+  const requestIdRef = useRef("")
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -83,6 +84,7 @@ export function DamagedStockView() {
 
   async function addRecord() {
     if (!selectedItemId) { toast.error("اختر صنفاً"); return }
+    if (!requestIdRef.current) requestIdRef.current = crypto.randomUUID()
     setSaving(true)
     try {
       const res = await fetch("/api/inventory/damaged", {
@@ -95,6 +97,7 @@ export function DamagedStockView() {
           quantity: Math.max(1, Number(quantity) || 1),
           reason: reason.trim() || "تالف",
           notes: notes.trim() || null,
+          client_request_id: requestIdRef.current,
         }),
       })
       const data = await res.json() as { error?: string }
@@ -107,6 +110,7 @@ export function DamagedStockView() {
   }
 
   function resetForm() {
+    requestIdRef.current = crypto.randomUUID()
     setSelectedItemId(""); setSelectedItemName(""); setQuantity("1"); setReason("تالف"); setNotes(""); setItemSearch("")
   }
 

@@ -183,6 +183,7 @@ export const localDB = {
     return (await getDB()).put("deadLetters", entry)
   },
   async getDeadLetters() { return (await getDB()).getAll("deadLetters") },
+  async countDeadLetters() { return (await getDB()).count("deadLetters") },
   async clearDeadLetters() { return (await getDB()).clear("deadLetters") },
   async clearPrivateData() {
     const db = await getDB()

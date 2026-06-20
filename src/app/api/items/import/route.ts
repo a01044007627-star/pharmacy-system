@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { NextResponse } from "next/server"
 import type { SupabaseClient } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/server"
@@ -6,14 +7,14 @@ import { getServerAuthScope } from "@/lib/auth/session"
 import { assertBranchScope, scopeCan } from "@/lib/auth/server-permissions"
 import { writeAuditLog } from "@/lib/audit/audit-log"
 import { excelWorkbookService, type SpreadsheetRow } from "@/lib/spreadsheets/excel-workbook-service"
-import { addOpeningStock } from "@/lib/inventory/opening-stock"
-import { normalizeBarcode } from "@/features/inventory/lib/item-input"
+import { normalizeBarcode, normalizeItemName } from "@/features/inventory/lib/item-input"
+import { unitPolicyService } from "@/domain/inventory/units/unit-policy"
 
 export const runtime = "nodejs"
 export const maxDuration = 300
 
 const IMPORT_BATCH_SIZE = 500
-const AUX_IMPORT_BATCH_SIZE = 1000
+const ATOMIC_IMPORT_BATCH_SIZE = 200
 const RESPONSE_SAMPLE_LIMIT = 100
 const RESPONSE_ERROR_LIMIT = 300
 const MAX_IMPORT_FILE_BYTES = 25 * 1024 * 1024
@@ -22,6 +23,7 @@ const MAX_IMPORT_ROWS = 50_000
 const CLIENT_TEMPLATE_HEADERS = [
   "اسم الدواء / الصنف",
   "الاسم الإنجليزي",
+  "كود الصنف (SKU)",
   "النوع الصيدلي",
   "الاسم العلمي",
   "المادة الفعالة",
@@ -40,15 +42,23 @@ const CLIENT_TEMPLATE_HEADERS = [
   "الوحدة الرئيسية",
   "الوحدة الفرعية",
   "عدد الوحدات الفرعية",
+  "وحدة فرعية ثانية",
+  "عدد الوحدة الفرعية الثانية",
   "الباركود",
   "نوع الباركود",
-  "سعر الشراء",
+  "إدارة المخزون (1/0)",
+  "سعر الشراء شامل الضريبة",
+  "سعر الشراء غير شامل الضريبة",
   "سعر البيع القديم",
   "سعر البيع الجديد",
+  "هامش الربح %",
   "الحد الأدنى للمخزون",
+  "الحد الأقصى للمخزون",
   "الرصيد الافتتاحي",
   "فرع الرصيد الافتتاحي",
   "رقم التشغيلة",
+  "له صلاحية (1/0)",
+  "تتبع التشغيلات (1/0)",
   "تاريخ الصلاحية",
   "مدة الصلاحية",
   "وحدة مدة الصلاحية (months/days)",
@@ -57,13 +67,62 @@ const CLIENT_TEMPLATE_HEADERS = [
   "شرط التخزين",
   "الضريبة",
   "نوع ضريبة البيع (inclusive/exclusive)",
+  "نوع المنتج (single/variable)",
+  "اسم المتغير",
+  "قيم المتغير (مفصولة بـ |)",
+  "أكواد المتغيرات SKU (مفصولة بـ |)",
+  "تتبع السيريال/IMEI (1/0)",
+  "الوزن",
   "الرف",
   "الصف",
   "المكان",
   "الصورة",
   "ملاحظات صيدلية",
+  "الحقل المخصص 1",
+  "الحقل المخصص 2",
+  "الحقل المخصص 3",
+  "الحقل المخصص 4",
   "غير مخصص للبيع (1/0)",
+  "مواقع المنتج (مفصولة بـ |)",
 ] as const
+
+const CLIENT_TEMPLATE_INSTRUCTIONS = CLIENT_TEMPLATE_HEADERS.map((field) => {
+  const required = field === "اسم الدواء / الصنف"
+  const formats: Record<string, string> = {
+    "كود الصنف (SKU)": "نص فريد؛ اتركه فارغًا للتوليد التلقائي",
+    "الباركود": "نص رقمي من 4 إلى 30 رقمًا",
+    "إدارة المخزون (1/0)": "0 أو 1",
+    "له صلاحية (1/0)": "0 أو 1",
+    "تتبع التشغيلات (1/0)": "0 أو 1",
+    "دواء مراقب (1/0)": "0 أو 1",
+    "يتطلب روشتة (1/0)": "0 أو 1",
+    "تتبع السيريال/IMEI (1/0)": "0 أو 1",
+    "غير مخصص للبيع (1/0)": "0 أو 1",
+    "تاريخ الصلاحية": "YYYY-MM-DD",
+    "وحدة مدة الصلاحية (months/days)": "months أو days",
+    "نوع ضريبة البيع (inclusive/exclusive)": "inclusive أو exclusive",
+    "نوع المنتج (single/variable)": "single أو variable",
+    "قيم المتغير (مفصولة بـ |)": "قيمة1|قيمة2|قيمة3",
+    "أكواد المتغيرات SKU (مفصولة بـ |)": "SKU-1|SKU-2|SKU-3",
+    "مواقع المنتج (مفصولة بـ |)": "موقع1|موقع2",
+  }
+  const notes: Record<string, string> = {
+    "اسم الدواء / الصنف": "الحقل الوحيد الإجباري. يجب ألا يكون رقمًا فقط وألا يكرر صنفًا موجودًا.",
+    "فرع الرصيد الافتتاحي": "اتركه فارغًا لاستخدام الفرع النشط. عند كتابته يجب أن يطابق اسم الفرع أو كوده.",
+    "وحدة البيع": "إن تُركت فارغة ستستخدم المنظومة وحدة افتراضية باسم «وحدة».",
+    "عدد الوحدات الفرعية": "مثال: العلبة تحتوي 10 شرائط؛ اكتب 10.",
+    "سعر الشراء غير شامل الضريبة": "هو السعر الأساسي المعتمد للتكلفة عند وجوده.",
+    "الضريبة": "يمكن كتابة 14% أو 14.",
+    "الباركود": "يُحفظ كنص للحفاظ على الأصفار في البداية.",
+  }
+  return {
+    field,
+    required,
+    format: formats[field] ?? (/سعر|رصيد|مخزون|الوزن|عدد/.test(field) ? "رقم أكبر من أو يساوي صفر" : "نص"),
+    notes: notes[field] ?? "",
+  }
+})
+
 
 type ExcelRow = SpreadsheetRow
 type LookupRow = { id: string; name: string }
@@ -151,9 +210,11 @@ function clean(value: unknown) {
 
 function normalizeHeader(value: string) {
   return clean(value)
+    .normalize("NFKC")
     .toUpperCase()
+    .replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .replace(/\s+/g, " ")
-    .replace(/[\u200E\u200F]/g, "")
     .trim()
 }
 
@@ -173,9 +234,38 @@ function valueOf(row: Map<string, unknown>, aliases: string[]) {
   return ""
 }
 
+function hasHeader(row: ExcelRow, aliases: string[]) {
+  const headers = new Set(Object.keys(row).map(normalizeHeader))
+  return aliases.some((alias) => headers.has(normalizeHeader(alias)))
+}
+
+function numberField(row: Map<string, unknown>, aliases: string[], label: string, fallback = 0) {
+  const raw = valueOf(row, aliases)
+  if (clean(raw) === "") return fallback
+  const parsed = numberValue(raw, Number.NaN)
+  if (!Number.isFinite(parsed)) throw new Error(`${label} يجب أن يكون رقمًا صالحًا`)
+  return parsed
+}
+
 function numberValue(value: unknown, fallback = 0) {
   if (typeof value === "number") return Number.isFinite(value) ? Math.max(0, value) : fallback
-  const normalized = clean(value).replace(/,/g, "").replace(/%/g, "").replace(/[ججمEGP\s]/gi, "")
+  let normalized = normalizeArabicDigits(clean(value))
+    .replace(/[٪%]/g, "")
+    .replace(/[ججمEGP\s]/gi, "")
+    .replace(/٬/g, ",")
+    .replace(/٫/g, ".")
+  if (normalized.includes(",") && normalized.includes(".")) {
+    if (normalized.lastIndexOf(",") > normalized.lastIndexOf(".")) {
+      normalized = normalized.replace(/\./g, "").replace(/,/g, ".")
+    } else {
+      normalized = normalized.replace(/,/g, "")
+    }
+  } else if (normalized.includes(",")) {
+    const parts = normalized.split(",")
+    normalized = parts.length === 2 && parts[1].length > 0 && (parts[1].length <= 2 || (parts[0] === "0" && parts[1].length <= 3))
+      ? `${parts[0]}.${parts[1]}`
+      : parts.join("")
+  }
   const parsed = Number(normalized)
   return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback
 }
@@ -183,7 +273,9 @@ function numberValue(value: unknown, fallback = 0) {
 function boolValue(value: unknown, fallback = false) {
   const normalized = clean(value).toLowerCase()
   if (!normalized) return fallback
-  return ["1", "yes", "y", "true", "نعم", "اه", "أه", "صح"].includes(normalized)
+  if (["1", "yes", "y", "true", "نعم", "اه", "أه", "صح"].includes(normalized)) return true
+  if (["0", "no", "n", "false", "لا", "خطأ", "غلط"].includes(normalized)) return false
+  throw new Error(`القيمة المنطقية "${clean(value)}" غير صحيحة؛ استخدم 1 أو 0`)
 }
 
 function splitPipe(value: unknown) {
@@ -195,14 +287,25 @@ function splitPipe(value: unknown) {
 
 function normalizeTaxType(value: unknown) {
   const normalized = clean(value).toLowerCase()
+  if (!normalized) return null
   if (["inclusive", "شامل", "شاملة", "include", "incl"].includes(normalized)) return "inclusive"
   if (["exclusive", "غير شامل", "غير شاملة", "exclude", "excl"].includes(normalized)) return "exclusive"
-  return normalized || null
+  throw new Error("نوع ضريبة البيع يجب أن يكون inclusive أو exclusive")
 }
 
 function normalizeProductType(value: unknown): "single" | "variable" {
   const normalized = clean(value).toLowerCase()
-  return normalized === "variable" || normalized === "متغير" ? "variable" : "single"
+  if (!normalized || normalized === "single" || normalized === "فردي") return "single"
+  if (normalized === "variable" || normalized === "متغير") return "variable"
+  throw new Error("نوع المنتج يجب أن يكون single أو variable")
+}
+
+function normalizeExpiryPeriodUnit(value: unknown) {
+  const normalized = clean(value).toLowerCase()
+  if (!normalized) return ""
+  if (["month", "months", "شهر", "شهور", "أشهر", "اشهر"].includes(normalized)) return "months"
+  if (["day", "days", "يوم", "أيام", "ايام"].includes(normalized)) return "days"
+  throw new Error("وحدة مدة الصلاحية يجب أن تكون months أو days")
 }
 
 
@@ -268,8 +371,8 @@ function parseImportedUnit(row: Map<string, unknown>) {
   const explicitMainUnit = clean(valueOf(row, ["الوحدة الرئيسية", "MAIN UNIT", "PRIMARY UNIT", "وحدة رئيسية"]))
   const explicitSubUnit = clean(valueOf(row, ["الوحدة الفرعية", "SUB UNIT", "SUB-UNIT", "وحدة فرعية"]))
   const explicitFactor = numberValue(valueOf(row, ["عدد الوحدات الفرعية", "QTY PER MAIN UNIT", "UNITS PER MAIN UNIT", "COUNT PER UNIT", "عدد لكل واحدة", "عدد الوحدة الفرعية داخل الرئيسية"]), 0)
-  const explicitSecondaryUnit = clean(valueOf(row, ["SECONDARY UNIT", "وحدة فرعية ثانية"]))
-  const explicitSecondaryFactor = numberValue(valueOf(row, ["SECONDARY QTY", "SECONDARY UNIT COUNT", "عدد الوحدة الفرعية الثانية"]), 0)
+  const explicitSecondaryUnit = clean(valueOf(row, ["وحدة فرعية ثانية", "SECONDARY UNIT"]))
+  const explicitSecondaryFactor = numberValue(valueOf(row, ["عدد الوحدة الفرعية الثانية", "SECONDARY QTY", "SECONDARY UNIT COUNT"]), 0)
   const unitParseNote = clean(valueOf(row, ["UNIT PARSE NOTE", "ملاحظة الوحدة"]))
 
   if (explicitMainUnit || explicitSubUnit || explicitFactor > 0) {
@@ -289,7 +392,7 @@ function parseImportedUnit(row: Map<string, unknown>) {
   const source = rawUnit || unitInput
   const normalized = normalizeUnitText(source)
   if (!normalized) {
-    return { unit: "", unitRaw: "", mainUnit: "", subUnit: "", unitFactor: 1, secondaryUnit: "", secondaryUnitFactor: 0, unitParseNote: "الوحدة فارغة" }
+    return { unit: "وحدة", unitRaw: "", mainUnit: "وحدة", subUnit: "", unitFactor: 1, secondaryUnit: "", secondaryUnitFactor: 0, unitParseNote: "تم استخدام وحدة افتراضية لأن الوحدة فارغة" }
   }
 
   const pairs = extractUnitPairs(normalized)
@@ -320,6 +423,13 @@ function looksLikeBarcode(value: string) {
   return /^\d{4,30}$/.test(normalized)
 }
 
+function validIsoDate(year: number, month: number, day: number) {
+  const date = new Date(Date.UTC(year, month - 1, day))
+  if (Number.isNaN(date.getTime())) return null
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null
+  return date.toISOString().slice(0, 10)
+}
+
 function parseDateValue(value: unknown): string | null {
   if (!value) return null
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10)
@@ -327,18 +437,18 @@ function parseDateValue(value: unknown): string | null {
     const parsed = excelWorkbookService.excelSerialToDate(value)
     if (parsed) return parsed.toISOString().slice(0, 10)
   }
-  const raw = clean(value)
+  const raw = normalizeArabicDigits(clean(value))
   if (!raw) return null
   const iso = raw.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/)
-  if (iso) return `${iso[1]}-${iso[2].padStart(2, "0")}-${iso[3].padStart(2, "0")}`
+  if (iso) return validIsoDate(Number(iso[1]), Number(iso[2]), Number(iso[3]))
   const egyptian = raw.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/)
-  if (egyptian) return `${egyptian[3]}-${egyptian[2].padStart(2, "0")}-${egyptian[1].padStart(2, "0")}`
+  if (egyptian) return validIsoDate(Number(egyptian[3]), Number(egyptian[2]), Number(egyptian[1]))
   const date = new Date(raw)
   return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10)
 }
 
 function parseTaxPercent(value: unknown) {
-  const raw = clean(value)
+  const raw = normalizeArabicDigits(clean(value)).replace(/٫/g, ".").replace(/٬/g, ",")
   const match = raw.match(/\d+(?:[.,]\d+)?/)
   return match ? numberValue(match[0]) : 0
 }
@@ -350,7 +460,6 @@ function makeSku(rowNum: number, usedSkus: Set<string>) {
     counter += 1
     sku = `ITM-${Date.now().toString(36).toUpperCase()}-${String(counter).padStart(4, "0")}`
   }
-  usedSkus.add(sku.toLowerCase())
   return sku
 }
 
@@ -379,15 +488,20 @@ function normalizePharmacyType(value: unknown, hint = "") {
 
 function normalizeProductRow(row: ExcelRow): NormalizedProductRow {
   const normalized = normalizeRow(row)
-  const productType = normalizeProductType(valueOf(normalized, ["PRODUCT TYPE (single or variable)", "PRODUCT TYPE", "نوع المنتج"]))
-  const expiryDate = parseDateValue(valueOf(normalized, ["تاريخ الصلاحية", "EXPIRY DATE", "expiry_date"]))
-  const expiresIn = numberValue(valueOf(normalized, ["مدة الصلاحية", "EXPIRES IN", "تنتهي خلال", "expires_in"]))
+  const productType = normalizeProductType(valueOf(normalized, ["نوع المنتج (single/variable)", "PRODUCT TYPE (single or variable)", "PRODUCT TYPE", "نوع المنتج"]))
+  const rawExpiryDate = valueOf(normalized, ["تاريخ الصلاحية", "EXPIRY DATE", "expiry_date"])
+  const expiryDate = parseDateValue(rawExpiryDate)
+  if (clean(rawExpiryDate) && !expiryDate) throw new Error("تاريخ الصلاحية غير صحيح؛ استخدم YYYY-MM-DD")
+  const expiresIn = numberField(normalized, ["مدة الصلاحية", "EXPIRES IN", "تنتهي خلال", "expires_in"], "مدة الصلاحية")
   const applicableTax = clean(valueOf(normalized, ["الضريبة", "APPLICABLE TAX", "الضريبة المطبقة", "tax", "tax_name"]))
   const unitInfo = parseImportedUnit(normalized)
   const legacyBarcode = clean(valueOf(normalized, ["الباركود", "باركود", "barcode", "Barcode", "BARCODE"]))
-  const variationSkus = splitPipe(valueOf(normalized, ["VARIATION SKUs (| seperated values & blank if product type if single)", "VARIATION SKUs", "variation_skus"]))
-  const skuValue = clean(valueOf(normalized, ["SKU (Leave blank to auto generate sku)", "SKU", "كود", "sku", "كود الصنف"]))
-  const primaryBarcode = legacyBarcode || (productType === "single" ? variationSkus.find((value) => looksLikeBarcode(value)) || (looksLikeBarcode(skuValue) ? skuValue : "") : "")
+  if (legacyBarcode && !looksLikeBarcode(normalizeBarcode(legacyBarcode))) {
+    throw new Error("الباركود يجب أن يحتوي على أرقام فقط بطول من 4 إلى 30 رقمًا")
+  }
+  const variationSkus = splitPipe(valueOf(normalized, ["أكواد المتغيرات SKU (مفصولة بـ |)", "VARIATION SKUs (| seperated values & blank if product type if single)", "VARIATION SKUs", "variation_skus"]))
+  const skuValue = clean(valueOf(normalized, ["كود الصنف (SKU)", "SKU (Leave blank to auto generate sku)", "SKU", "كود", "sku", "كود الصنف"]))
+  const primaryBarcode = legacyBarcode
   return {
     name: clean(valueOf(normalized, ["اسم الدواء / الصنف", "NAME", "الاسم", "اسم الصنف", "name_ar", "Name"])),
     pharmacyType: normalizePharmacyType(valueOf(normalized, ["النوع الصيدلي", "PHARMACY TYPE", "pharmacy_type"]), `${clean(valueOf(normalized, ["CATEGORY", "المجموعة الرئيسية", "مجموعة", "التصنيف"]))} ${clean(valueOf(normalized, ["NAME", "اسم الدواء / الصنف", "اسم الصنف"]))}`),
@@ -418,44 +532,44 @@ function normalizeProductRow(row: ExcelRow): NormalizedProductRow {
     subCategory: clean(valueOf(normalized, ["المجموعة الفرعية", "SUB-CATEGORY", "SUB CATEGORY", "sub_category", "تصنيف فرعي"])),
     sku: skuValue,
     barcodeType: clean(valueOf(normalized, ["BARCODE TYPE", "نوع الباركود", "barcode_type"])),
-    manageStock: boolValue(valueOf(normalized, ["MANAGE STOCK (1=yes 0=No)", "MANAGE STOCK", "إدارة المخزون", "manage_inventory"]), true),
-    alertQuantity: numberValue(valueOf(normalized, ["الحد الأدنى للمخزون", "ALERT QUANTITY", "حد أدنى", "min_stock", "Min Stock"])),
+    manageStock: boolValue(valueOf(normalized, ["إدارة المخزون (1/0)", "MANAGE STOCK (1=yes 0=No)", "MANAGE STOCK", "إدارة المخزون", "manage_inventory"]), true),
+    alertQuantity: numberField(normalized, ["الحد الأدنى للمخزون", "ALERT QUANTITY", "حد أدنى", "min_stock", "Min Stock"], "الحد الأدنى للمخزون"),
     expiresIn,
-    expiryPeriodUnit: clean(valueOf(normalized, ["EXPIRY PERIOD UNIT (months/days)", "EXPIRY PERIOD UNIT", "expiry_period_unit"])).toLowerCase(),
+    expiryPeriodUnit: normalizeExpiryPeriodUnit(valueOf(normalized, ["وحدة مدة الصلاحية (months/days)", "EXPIRY PERIOD UNIT (months/days)", "EXPIRY PERIOD UNIT", "expiry_period_unit"])),
     applicableTax,
     taxPercent: parseTaxPercent(applicableTax),
     sellingPriceTaxType: normalizeTaxType(valueOf(normalized, ["نوع ضريبة البيع (inclusive/exclusive)", "Selling Price Tax Type (inclusive or exclusive)", "SELLING PRICE TAX TYPE", "selling_price_tax_type"])) ?? "exclusive",
     productType,
-    variationName: clean(valueOf(normalized, ["VARIATION NAME (Keep blank if product type is single)", "VARIATION NAME", "variation_name"])),
-    variationValues: splitPipe(valueOf(normalized, ["VARIATION VALUES (| seperated values & blank if product type if single)", "VARIATION VALUES", "variation_values"])),
+    variationName: clean(valueOf(normalized, ["اسم المتغير", "VARIATION NAME (Keep blank if product type is single)", "VARIATION NAME", "variation_name"])),
+    variationValues: splitPipe(valueOf(normalized, ["قيم المتغير (مفصولة بـ |)", "VARIATION VALUES (| seperated values & blank if product type if single)", "VARIATION VALUES", "variation_values"])),
     variationSkus,
-    purchasePriceIncludingTax: numberValue(valueOf(normalized, ["PURCHASE PRICE (Including tax)", "PURCHASE PRICE INCLUDING TAX", "purchase_price_including_tax"])),
-    purchasePriceExcludingTax: numberValue(valueOf(normalized, ["سعر الشراء", "PURCHASE PRICE (Excluding tax)", "PURCHASE PRICE EXCLUDING TAX", "purchase_price_excluding_tax", "buy_price", "Buy Price"])),
-    profitMargin: numberValue(valueOf(normalized, ["PROFIT MARGIN", "هامش الربح", "profit_margin"])),
-    oldSellingPrice: numberValue(valueOf(normalized, ["سعر البيع القديم", "OLD SELLING PRICE", "PREVIOUS SELLING PRICE", "old_sell_price"])),
-    sellingPrice: numberValue(valueOf(normalized, ["سعر البيع الجديد", "SELLING PRICE", "سعر البيع", "sell_price", "Sell Price"])),
-    openingStock: numberValue(valueOf(normalized, ["الرصيد الافتتاحي", "OPENING STOCK", "رصيد افتتاحي", "opening_stock", "Opening Stock"])),
+    purchasePriceIncludingTax: numberField(normalized, ["سعر الشراء شامل الضريبة", "PURCHASE PRICE (Including tax)", "PURCHASE PRICE INCLUDING TAX", "purchase_price_including_tax"], "سعر الشراء شامل الضريبة"),
+    purchasePriceExcludingTax: numberField(normalized, ["سعر الشراء غير شامل الضريبة", "سعر الشراء", "PURCHASE PRICE (Excluding tax)", "PURCHASE PRICE EXCLUDING TAX", "purchase_price_excluding_tax", "buy_price", "Buy Price"], "سعر الشراء غير شامل الضريبة"),
+    profitMargin: numberField(normalized, ["هامش الربح %", "PROFIT MARGIN", "هامش الربح", "profit_margin"], "هامش الربح"),
+    oldSellingPrice: numberField(normalized, ["سعر البيع القديم", "OLD SELLING PRICE", "PREVIOUS SELLING PRICE", "old_sell_price"], "سعر البيع القديم"),
+    sellingPrice: numberField(normalized, ["سعر البيع الجديد", "SELLING PRICE", "سعر البيع", "sell_price", "Sell Price"], "سعر البيع الجديد"),
+    openingStock: numberField(normalized, ["الرصيد الافتتاحي", "OPENING STOCK", "رصيد افتتاحي", "opening_stock", "Opening Stock"], "الرصيد الافتتاحي"),
     openingStockLocation: clean(valueOf(normalized, ["فرع الرصيد الافتتاحي", "OPENING STOCK LOCATION", "opening_stock_location"])),
     expiryDate,
-    serialTrackingEnabled: boolValue(valueOf(normalized, ["ENABLE IMEI OR SERIAL NUMBER(1=yes 0=No)", "ENABLE IMEI OR SERIAL NUMBER", "serial_tracking_enabled"])),
-    weight: numberValue(valueOf(normalized, ["WEIGHT", "الوزن", "weight"])),
+    serialTrackingEnabled: boolValue(valueOf(normalized, ["تتبع السيريال/IMEI (1/0)", "ENABLE IMEI OR SERIAL NUMBER(1=yes 0=No)", "ENABLE IMEI OR SERIAL NUMBER", "serial_tracking_enabled"])),
+    weight: numberField(normalized, ["WEIGHT", "الوزن", "weight"], "الوزن"),
     rack: clean(valueOf(normalized, ["RACK", "رف", "rack"])),
     shelfRow: clean(valueOf(normalized, ["ROW", "صف", "shelf_row"])),
     position: clean(valueOf(normalized, ["POSITION", "مكان", "position"])),
     imageUrl: clean(valueOf(normalized, ["IMAGE", "صورة", "image_url"])),
     productDescription: clean(valueOf(normalized, ["ملاحظات صيدلية", "PRODUCT DESCRIPTION", "وصف المنتج", "PRODUCT DESC", "notes", "ملاحظات"])),
-    customField1: clean(valueOf(normalized, ["CUSTOM FIELD 1", "custom_field_1"])),
-    customField2: clean(valueOf(normalized, ["CUSTOM FIELD 2", "custom_field_2"])),
-    customField3: clean(valueOf(normalized, ["CUSTOM FIELD 3", "custom_field_3"])),
-    customField4: clean(valueOf(normalized, ["CUSTOM FIELD 4", "custom_field_4"])),
+    customField1: clean(valueOf(normalized, ["الحقل المخصص 1", "CUSTOM FIELD 1", "custom_field_1"])),
+    customField2: clean(valueOf(normalized, ["الحقل المخصص 2", "CUSTOM FIELD 2", "custom_field_2"])),
+    customField3: clean(valueOf(normalized, ["الحقل المخصص 3", "CUSTOM FIELD 3", "custom_field_3"])),
+    customField4: clean(valueOf(normalized, ["الحقل المخصص 4", "CUSTOM FIELD 4", "custom_field_4"])),
     notForSelling: boolValue(valueOf(normalized, ["غير مخصص للبيع (1/0)", "NOT FOR SELLING(1=yes 0=No)", "NOT FOR SELLING", "not_for_sale"])),
-    productLocations: splitPipe(valueOf(normalized, ["PRODUCT LOCATIONS", "مواقع المنتج", "product_locations"])),
+    productLocations: splitPipe(valueOf(normalized, ["مواقع المنتج (مفصولة بـ |)", "PRODUCT LOCATIONS", "مواقع المنتج", "product_locations"])),
     legacyBarcode,
-    legacyNameEn: clean(valueOf(normalized, ["اسم إنجليزي", "name_en", "Name En"])),
+    legacyNameEn: clean(valueOf(normalized, ["الاسم الإنجليزي", "اسم إنجليزي", "name_en", "Name En"])),
     legacyManufacturer: clean(valueOf(normalized, ["الشركة المنتجة", "الشركة المصنعة", "manufacturer", "Manufacturer"])),
-    legacyMaxStock: numberValue(valueOf(normalized, ["حد أقصى", "max_stock", "Max Stock"])),
-    legacyHasExpiry: boolValue(valueOf(normalized, ["صلاحية", "has_expiry", "expiry"]), Boolean(expiryDate || expiresIn)),
-    legacyTrackBatch: boolValue(valueOf(normalized, ["تشغيلات", "track_batch", "batch"]), Boolean(expiryDate)),
+    legacyMaxStock: numberField(normalized, ["الحد الأقصى للمخزون", "حد أقصى", "max_stock", "Max Stock"], "الحد الأقصى للمخزون"),
+    legacyHasExpiry: boolValue(valueOf(normalized, ["له صلاحية (1/0)", "صلاحية", "has_expiry", "expiry"]), Boolean(expiryDate || expiresIn)),
+    legacyTrackBatch: boolValue(valueOf(normalized, ["تتبع التشغيلات (1/0)", "تشغيلات", "track_batch", "batch"]), Boolean(expiryDate)),
   }
 }
 
@@ -466,7 +580,11 @@ function findBranchId(branches: BranchLookupRow[], nameOrCode: string, fallbackI
     if (!branch) throw new Error(`فرع المخزون غير موجود: ${nameOrCode}`)
     return branch.id
   }
-  return fallbackId || branches.find((branch) => branch.is_default)?.id || branches[0]?.id || null
+  if (fallbackId && branches.some((branch) => branch.id === fallbackId)) return fallbackId
+  const defaultBranches = branches.filter((branch) => branch.is_default)
+  if (defaultBranches.length === 1) return defaultBranches[0].id
+  if (branches.length === 1) return branches[0].id
+  return null
 }
 
 
@@ -479,15 +597,6 @@ type PreparedImportRow = {
   itemPayload: Record<string, unknown>
 }
 
-type InsertedImportItem = {
-  id: string
-  name_ar: string
-  sku: string
-  unit?: string | null
-  buy_price?: unknown
-  track_batch?: boolean | null
-  has_expiry?: boolean | null
-}
 
 function chunkArray<T>(rows: T[], size: number) {
   const chunks: T[][] = []
@@ -496,7 +605,7 @@ function chunkArray<T>(rows: T[], size: number) {
 }
 
 function normalizeLookupKey(value: string) {
-  return clean(value).toLowerCase()
+  return clean(value).normalize("NFKC").toLowerCase().replace(/\s+/g, " ")
 }
 
 function uniqueNames(values: string[]) {
@@ -554,7 +663,7 @@ function buildItemPayload(
     category: row.category || null,
     group_id: groupId,
     brand_id: brandId,
-    unit: row.unit || null,
+    unit: row.unit || "وحدة",
     item_type: "stocked",
     manufacturer_name: row.legacyManufacturer || row.brand || null,
     manufacturer_country: row.manufacturerCountry || null,
@@ -578,8 +687,8 @@ function buildItemPayload(
     min_stock: row.alertQuantity,
     max_stock: row.legacyMaxStock,
     opening_stock: row.openingStock,
-    has_expiry: Boolean(row.legacyHasExpiry || row.expiryDate || row.expiresIn > 0 || ["medicine", "medical_supply", "supplement", "cosmetic", "personal_care", "baby_care"].includes(row.pharmacyType)),
-    track_batch: Boolean(row.legacyTrackBatch || row.expiryDate || ["medicine", "supplement"].includes(row.pharmacyType)),
+    has_expiry: Boolean(row.legacyHasExpiry || row.expiryDate || row.expiresIn > 0),
+    track_batch: Boolean(row.legacyTrackBatch || row.expiryDate),
     expiry_date: row.expiryDate,
     image_url: row.imageUrl || null,
     notes: row.productDescription || null,
@@ -590,15 +699,15 @@ function buildItemPayload(
     tax_name: row.applicableTax || null,
     tax_percent: row.taxPercent,
     selling_price_tax_type: row.sellingPriceTaxType,
-    product_type: "single",
-    variation_name: null,
-    variation_values: [],
-    variation_skus: [],
+    product_type: row.productType,
+    variation_name: row.productType === "variable" ? row.variationName || "متغير" : null,
+    variation_values: row.productType === "variable" ? row.variationValues : [],
+    variation_skus: row.productType === "variable" ? row.variationSkus : [],
     purchase_price_including_tax: row.purchasePriceIncludingTax,
     purchase_price_excluding_tax: row.purchasePriceExcludingTax,
     profit_margin: row.profitMargin,
     opening_stock_location: row.openingStockLocation || null,
-    serial_tracking_enabled: false,
+    serial_tracking_enabled: row.serialTrackingEnabled,
     weight: row.weight,
     rack: row.rack || null,
     shelf_row: row.shelfRow || null,
@@ -626,40 +735,105 @@ function buildItemPayload(
   }
 }
 
-function buildBarcodeRows(pharmacyId: string, itemId: string, row: NormalizedProductRow) {
+function buildBarcodeRows(row: NormalizedProductRow) {
   const barcodeValues = Array.from(new Set([
     row.primaryBarcode,
     row.legacyBarcode,
-    ...(row.productType === "single" ? row.variationSkus : []),
   ].map(normalizeBarcode).filter((value) => value && looksLikeBarcode(value))))
 
   return barcodeValues.map((barcode, barcodeIndex) => ({
-    pharmacy_id: pharmacyId,
-    item_id: itemId,
     barcode,
     is_primary: barcodeIndex === 0,
   }))
 }
 
-function buildUnitRows(pharmacyId: string, itemId: string, row: NormalizedProductRow, sellPrice: number) {
+function buildUnitRows(row: NormalizedProductRow, sellPrice: number) {
   const units = new Map<string, { unit_name: string; factor: number; is_base: boolean; sell_price: number | null }>()
-  if (row.unit) units.set(row.unit, { unit_name: row.unit, factor: 1, is_base: true, sell_price: sellPrice || null })
-  if (row.mainUnit && row.mainUnit !== row.unit && row.unitFactor > 1) units.set(row.mainUnit, { unit_name: row.mainUnit, factor: row.unitFactor, is_base: false, sell_price: null })
-  if (row.subUnit && row.subUnit !== row.unit && row.subUnit !== row.mainUnit) units.set(row.subUnit, { unit_name: row.subUnit, factor: 1, is_base: false, sell_price: null })
+  const baseUnit = row.unit || "وحدة"
+  if (baseUnit) units.set(baseUnit, { unit_name: baseUnit, factor: 1, is_base: true, sell_price: sellPrice || null })
+  if (row.mainUnit && row.mainUnit !== baseUnit && row.unitFactor > 1) units.set(row.mainUnit, { unit_name: row.mainUnit, factor: row.unitFactor, is_base: false, sell_price: sellPrice > 0 ? Number((sellPrice * row.unitFactor).toFixed(2)) : null })
+  if (row.subUnit && row.subUnit !== baseUnit && row.subUnit !== row.mainUnit) units.set(row.subUnit, { unit_name: row.subUnit, factor: 1, is_base: false, sell_price: sellPrice || null })
   if (row.secondaryUnit && row.secondaryUnit !== row.unit && row.secondaryUnit !== row.mainUnit && row.secondaryUnitFactor > 0) {
-    units.set(row.secondaryUnit, { unit_name: row.secondaryUnit, factor: row.secondaryUnitFactor, is_base: false, sell_price: null })
+    units.set(row.secondaryUnit, { unit_name: row.secondaryUnit, factor: row.secondaryUnitFactor, is_base: false, sell_price: sellPrice > 0 ? Number((sellPrice * row.secondaryUnitFactor).toFixed(2)) : null })
   }
-  return Array.from(units.values()).map((unit) => ({ pharmacy_id: pharmacyId, item_id: itemId, ...unit }))
+  return Array.from(units.values()).map((unit, index) => ({
+    ...unitPolicyService.normalizeItemUnit({
+      ...unit,
+      main_unit: row.mainUnit || baseUnit,
+      sub_unit: row.subUnit || baseUnit,
+      qty_per_main_unit: unit.unit_name === row.secondaryUnit
+        ? unit.factor
+        : row.unitFactor > 0 ? row.unitFactor : unit.factor,
+      unit_raw: row.unitRaw || unit.unit_name,
+    }, index),
+  }))
 }
 
-async function insertAuxiliaryRows(db: SupabaseClient, table: string, rows: Record<string, unknown>[], onConflict?: string) {
-  if (rows.length === 0) return
-  for (const chunk of chunkArray(rows, AUX_IMPORT_BATCH_SIZE)) {
-    const query = onConflict
-      ? db.from(table).upsert(chunk, { onConflict, ignoreDuplicates: true })
-      : db.from(table).insert(chunk)
-    const { error } = await query
-    if (error) throw error
+function buildVariantRows(row: NormalizedProductRow) {
+  if (row.productType !== "variable" || row.variationValues.length === 0) return []
+  const purchasePrice = row.purchasePriceExcludingTax || row.purchasePriceIncludingTax || 0
+  return row.variationValues.map((value, index) => ({
+    name: row.variationName || "متغير",
+    value,
+    sku: row.variationSkus[index] || null,
+    purchase_price: purchasePrice,
+    sell_price: row.sellingPrice || 0,
+    metadata: { source: "items_excel_import", index },
+  }))
+}
+
+type AtomicImportResult = {
+  row_num: number
+  sku?: string | null
+  name?: string | null
+  status: "imported" | "skipped" | "error"
+  duplicate?: boolean
+  message?: string
+  item?: { id?: string; name_ar?: string; sku?: string }
+}
+
+function atomicImportRowPayload(prepared: PreparedImportRow, fileDigest: string) {
+  const clientRequestId = createHash("sha256")
+    .update(`${fileDigest}:${prepared.rowNum}:${prepared.sku}`)
+    .digest("hex")
+
+  return {
+    row_num: prepared.rowNum,
+    sku: prepared.sku,
+    name: prepared.row.name,
+    branch_id: prepared.branchId,
+    client_request_id: clientRequestId,
+    item: prepared.itemPayload,
+    barcodes: buildBarcodeRows(prepared.row),
+    units: buildUnitRows(prepared.row, prepared.row.sellingPrice),
+    variants: buildVariantRows(prepared.row),
+    opening_stock: {
+      quantity: prepared.row.manageStock ? prepared.row.openingStock : 0,
+      expiry_date: prepared.row.expiryDate,
+      batch_number: prepared.row.batchNumber || null,
+    },
+  }
+}
+
+function consumeAtomicImportResults(
+  results: AtomicImportResult[],
+  imported: Array<{ id: string; name: string; sku: string }>,
+  skipped: ImportError[],
+  errors: ImportError[],
+) {
+  for (const result of results) {
+    if (result.status === "imported" && result.item?.id && result.item.name_ar && result.item.sku) {
+      imported.push({ id: result.item.id, name: result.item.name_ar, sku: result.item.sku })
+      continue
+    }
+    const issue = {
+      row: Number(result.row_num) || 0,
+      sku: clean(result.sku) || undefined,
+      name: clean(result.name) || undefined,
+      message: clean(result.message) || (result.duplicate ? "تم استيراد هذا الصف سابقًا" : "تعذر استيراد الصف"),
+    }
+    if (result.status === "skipped") skipped.push(issue)
+    else errors.push(issue)
   }
 }
 
@@ -679,6 +853,25 @@ export async function GET() {
   const buffer = await excelWorkbookService.createTemplate({
     sheetName: "Items_Ready",
     headers: CLIENT_TEMPLATE_HEADERS,
+    requiredHeaders: ["اسم الدواء / الصنف"],
+    textHeaders: ["كود الصنف (SKU)", "رقم التسجيل", "الباركود"],
+    numberHeaders: CLIENT_TEMPLATE_HEADERS.filter((header) => /سعر|رصيد|مخزون|الوزن|عدد|هامش/.test(header)),
+    dateHeaders: ["تاريخ الصلاحية"],
+    listValidations: [
+      { header: "النوع الصيدلي", values: ["دواء", "مستلزم طبي", "مكمل غذائي", "مستحضر تجميل", "عناية شخصية", "أم وطفل", "جهاز طبي", "أخرى"] },
+      { header: "نوع الباركود", values: ["C128", "EAN13", "EAN8", "UPC-A"] },
+      { header: "إدارة المخزون (1/0)", values: [1, 0] },
+      { header: "له صلاحية (1/0)", values: [1, 0] },
+      { header: "تتبع التشغيلات (1/0)", values: [1, 0] },
+      { header: "دواء مراقب (1/0)", values: [1, 0] },
+      { header: "يتطلب روشتة (1/0)", values: [1, 0] },
+      { header: "تتبع السيريال/IMEI (1/0)", values: [1, 0] },
+      { header: "غير مخصص للبيع (1/0)", values: [1, 0] },
+      { header: "وحدة مدة الصلاحية (months/days)", values: ["months", "days"] },
+      { header: "نوع ضريبة البيع (inclusive/exclusive)", values: ["exclusive", "inclusive"] },
+      { header: "نوع المنتج (single/variable)", values: ["single", "variable"] },
+    ],
+    instructions: CLIENT_TEMPLATE_INSTRUCTIONS,
   })
   return new NextResponse(buffer, {
     headers: {
@@ -703,12 +896,19 @@ export async function POST(request: Request) {
     if (!/\.(xlsx|csv)$/i.test(file.name)) return NextResponse.json({ error: "صيغة الملف غير مدعومة؛ استخدم XLSX أو CSV" }, { status: 400 })
 
     const buffer = Buffer.from(await file.arrayBuffer())
+    const fileDigest = createHash("sha256").update(buffer).digest("hex")
     const rows: ExcelRow[] = await excelWorkbookService.readRows(buffer, {
       fileName: file.name,
       preferredSheetName: "Items_Ready",
     })
     if (rows.length === 0) return NextResponse.json({ error: "لا توجد بيانات في الملف" }, { status: 400 })
     if (rows.length > MAX_IMPORT_ROWS) return NextResponse.json({ error: `الملف يحتوي على ${rows.length.toLocaleString("ar-EG")} صف؛ الحد الآمن لكل عملية 50,000 صف` }, { status: 413 })
+    if (!hasHeader(rows[0], ["اسم الدواء / الصنف", "NAME", "الاسم", "اسم الصنف", "name_ar"])) {
+      return NextResponse.json({
+        error: "رؤوس الأعمدة لا تطابق قالب استيراد الأصناف. حمّل القالب الجديد وانقل البيانات إليه دون تغيير أسماء الأعمدة.",
+        supported_headers: CLIENT_TEMPLATE_HEADERS,
+      }, { status: 400 })
+    }
 
     const supabase = await createClient()
     const db = getDbClient(supabase) as SupabaseClient
@@ -729,7 +929,7 @@ export async function POST(request: Request) {
     let groupMap = new Map(groups.map((g) => [normalizeLookupKey(g.name), g.id]))
     let brandMap = new Map(brands.map((b) => [normalizeLookupKey(b.name), b.id]))
     const usedSkus = new Set(existingItems.map((item) => clean(item.sku).toLowerCase()).filter(Boolean))
-    const usedNames = new Map(existingItems.map((item) => [normalizeLookupKey(item.name_ar), item.name_ar]))
+    const usedNames = new Map(existingItems.map((item) => [normalizeItemName(item.name_ar), item.name_ar]))
     const usedBarcodes = new Set([...existingBarcodes, ...existingUnitBarcodes].map((item) => normalizeBarcode(item.barcode)).filter(Boolean))
 
     const normalizedRows: Array<Omit<PreparedImportRow, "itemPayload">> = []
@@ -737,8 +937,9 @@ export async function POST(request: Request) {
     for (let index = 0; index < rows.length; index++) {
       const rowNum = index + 2
       const sourceRow = rows[index]
-      const row = normalizeProductRow(sourceRow)
+      let row: NormalizedProductRow | null = null
       try {
+        row = normalizeProductRow(sourceRow)
         if (!row.name) {
           errors.push({ row: rowNum, message: "NAME / اسم الصنف مطلوب" })
           continue
@@ -748,24 +949,36 @@ export async function POST(request: Request) {
           continue
         }
 
-        const nameKey = normalizeLookupKey(row.name)
+        const nameKey = normalizeItemName(row.name)
         if (usedNames.has(nameKey)) {
           skipped.push({ row: rowNum, name: row.name, message: `اسم الصنف "${row.name}" مطابق لصنف موجود "${usedNames.get(nameKey)}"` })
           continue
         }
-        usedNames.set(nameKey, row.name)
 
         const candidateBarcodes = Array.from(new Set([
           row.primaryBarcode,
           row.legacyBarcode,
-          ...(row.productType === "single" ? row.variationSkus : []),
         ].map(normalizeBarcode).filter((value) => value && looksLikeBarcode(value))))
         const duplicatedBarcode = candidateBarcodes.find((value) => usedBarcodes.has(value))
         if (duplicatedBarcode) {
           skipped.push({ row: rowNum, name: row.name, message: `الباركود "${duplicatedBarcode}" مستخدم بالفعل لصنف أو وحدة أخرى` })
           continue
         }
-        candidateBarcodes.forEach((value) => usedBarcodes.add(value))
+        if (row.productType === "variable" && row.variationValues.length === 0) {
+          throw new Error("نوع المنتج variable يحتاج قيمًا في عمود قيم المتغير")
+        }
+        if (row.variationSkus.length > row.variationValues.length) {
+          throw new Error("عدد أكواد المتغيرات أكبر من عدد قيم المتغير")
+        }
+        const variantSkuKeys = row.variationSkus.map((value) => clean(value).toLowerCase()).filter(Boolean)
+        if (new Set(variantSkuKeys).size !== variantSkuKeys.length) {
+          throw new Error("يوجد SKU مكرر داخل أكواد المتغيرات")
+        }
+        const usedVariantSku = variantSkuKeys.find((value) => usedSkus.has(value))
+        if (usedVariantSku) {
+          skipped.push({ row: rowNum, name: row.name, sku: usedVariantSku, message: `SKU المتغير "${usedVariantSku}" مستخدم بالفعل` })
+          continue
+        }
 
         let sku = row.sku
         if (sku) {
@@ -774,18 +987,22 @@ export async function POST(request: Request) {
             skipped.push({ row: rowNum, sku, name: row.name, message: "SKU موجود مسبقًا؛ تم تخطي الصف لتجنب تكرار الصنف" })
             continue
           }
-          usedSkus.add(normalizedSku)
         } else {
           sku = makeSku(rowNum, usedSkus)
         }
+        if (variantSkuKeys.includes(sku.toLowerCase())) throw new Error("كود الصنف لا يمكن أن يساوي كود أحد المتغيرات")
 
         const branchId = findBranchId(branches, row.openingStockLocation, scope.activeBranchId)
-        if (row.openingStock > 0 && !branchId) throw new Error("حدد الفرع النشط أو اكتب OPENING STOCK LOCATION صحيح قبل استيراد رصيد افتتاحي")
+        if (row.openingStock > 0 && !branchId) throw new Error("حدد الفرع النشط أو اكتب اسم/كود فرع الرصيد الافتتاحي بصورة صحيحة")
         if (branchId) assertBranchScope(scope, branchId)
 
+        usedNames.set(nameKey, row.name)
+        candidateBarcodes.forEach((value) => usedBarcodes.add(value))
+        usedSkus.add(sku.toLowerCase())
+        variantSkuKeys.forEach((value) => usedSkus.add(value))
         normalizedRows.push({ rowNum, sourceRow, row, sku, branchId })
       } catch (error) {
-        errors.push({ row: rowNum, sku: row.sku || undefined, name: row.name || undefined, message: error instanceof Error ? error.message : "خطأ غير متوقع" })
+        errors.push({ row: rowNum, sku: row?.sku || undefined, name: row?.name || undefined, message: error instanceof Error ? error.message : "خطأ غير متوقع" })
       }
     }
 
@@ -803,170 +1020,46 @@ export async function POST(request: Request) {
       ),
     }))
 
-    const insertedBySku = new Map<string, { item: InsertedImportItem; prepared: PreparedImportRow }>()
+    for (const preparedChunk of chunkArray(preparedRows, ATOMIC_IMPORT_BATCH_SIZE)) {
+      const rpcRows = preparedChunk.map((prepared) => atomicImportRowPayload(prepared, fileDigest))
+      const { data, error } = await db.rpc("import_pharmacy_items_batch_v1", {
+        p_pharmacy_id: pharmacyId,
+        p_actor_id: scope.user.id,
+        p_rows: rpcRows,
+      })
 
-    for (const preparedChunk of chunkArray(preparedRows, IMPORT_BATCH_SIZE)) {
-      const { data, error } = await db
-        .from("pharmacy_items")
-        .insert(preparedChunk.map((row) => row.itemPayload))
-        .select("id,name_ar,sku,unit,buy_price,track_batch,has_expiry")
-
-      if (error) {
-        // Fallback row-by-row only for the failed chunk so one bad row does not stop the full file.
-        for (const prepared of preparedChunk) {
-          const { data: item, error: itemError } = await db
-            .from("pharmacy_items")
-            .insert(prepared.itemPayload)
-            .select("id,name_ar,sku,unit,buy_price,track_batch,has_expiry")
-            .single()
-          if (itemError || !item) {
-            errors.push({ row: prepared.rowNum, sku: prepared.sku, name: prepared.row.name, message: itemError?.message ?? "فشل إنشاء الصنف" })
-            continue
+      if (!error) {
+        const results = ((data ?? {}) as { results?: AtomicImportResult[] }).results ?? []
+        consumeAtomicImportResults(results, imported, skipped, errors)
+        if (results.length !== rpcRows.length) {
+          const returnedRows = new Set(results.map((result) => result.row_num))
+          for (const prepared of preparedChunk) {
+            if (!returnedRows.has(prepared.rowNum)) errors.push({ row: prepared.rowNum, sku: prepared.sku, name: prepared.row.name, message: "لم تُرجع قاعدة البيانات نتيجة لهذا الصف" })
           }
-          const inserted = item as InsertedImportItem
-          insertedBySku.set(inserted.sku.toLowerCase(), { item: inserted, prepared })
         }
         continue
       }
 
-      for (const item of (data ?? []) as InsertedImportItem[]) {
-        const prepared = preparedChunk.find((row) => row.sku.toLowerCase() === item.sku.toLowerCase())
-        if (!prepared) continue
-        insertedBySku.set(item.sku.toLowerCase(), { item, prepared })
-      }
-    }
-
-    const barcodeRows: Record<string, unknown>[] = []
-    const unitRows: Record<string, unknown>[] = []
-
-    for (const { item, prepared } of insertedBySku.values()) {
-      imported.push({ id: item.id, name: item.name_ar, sku: item.sku })
-      barcodeRows.push(...buildBarcodeRows(pharmacyId, item.id, prepared.row))
-      unitRows.push(...buildUnitRows(pharmacyId, item.id, prepared.row, prepared.row.sellingPrice))
-    }
-
-    try {
-      await insertAuxiliaryRows(db, "pharmacy_item_barcodes", barcodeRows, "pharmacy_id,barcode")
-    } catch (error) {
-      errors.push({ row: 0, message: `تم استيراد الأصناف، لكن فشل حفظ بعض الباركودات: ${error instanceof Error ? error.message : "خطأ غير متوقع"}` })
-    }
-
-    try {
-      await insertAuxiliaryRows(db, "pharmacy_item_units", unitRows, "pharmacy_id,item_id,unit_name")
-    } catch (error) {
-      errors.push({ row: 0, message: `تم استيراد الأصناف، لكن فشل حفظ بعض الوحدات: ${error instanceof Error ? error.message : "خطأ غير متوقع"}` })
-    }
-
-
-    try {
-      const batchRows = []
-      for (const { item, prepared } of insertedBySku.values()) {
-        if (prepared.row.openingStock <= 0 || !prepared.row.manageStock) continue
-        const quantity = prepared.row.openingStock
-        const expiryDate = prepared.row.expiryDate
-        const shouldCreateBatch = Boolean(item.track_batch || item.has_expiry || expiryDate)
-        if (shouldCreateBatch) {
-          batchRows.push({
-            pharmacy_id: pharmacyId,
-            item_id: item.id,
-            branch_id: prepared.branchId,
-            batch_number: prepared.row.batchNumber || "OPENING",
-            expiry_date: expiryDate || null,
-            quantity,
-            remaining_quantity: quantity,
-            unit: item.unit || null,
-            cost_price: item.buy_price || 0,
-            source_type: "opening_stock",
-            source_id: item.id,
-          })
-        }
-      }
-
-      const batchMap = new Map<string, string>()
-      if (batchRows.length > 0) {
-        for (const chunk of chunkArray(batchRows, AUX_IMPORT_BATCH_SIZE)) {
-          const { data, error } = await db
-            .from("pharmacy_item_batches")
-            .insert(chunk)
-            .select("id, item_id")
-          if (error) throw error
-          if (data) {
-            for (const row of data as Array<{ id: string; item_id: string }>) {
-              batchMap.set(row.item_id, row.id)
-            }
-          }
-        }
-      }
-
-      const balanceRows = []
-      const movementRows = []
-      const nowStr = new Date().toISOString()
-      for (const { item, prepared } of insertedBySku.values()) {
-        if (prepared.row.openingStock <= 0 || !prepared.row.manageStock) continue
-        const quantity = prepared.row.openingStock
-        const unitPrice = Number(item.buy_price) || 0
-
-        balanceRows.push({
-          pharmacy_id: pharmacyId,
-          item_id: item.id,
-          branch_id: prepared.branchId,
-          quantity,
-          updated_at: nowStr,
+      // A global/network RPC failure rolls the full batch back. Retry one row at
+      // a time; the deterministic request id makes an uncertain network retry safe.
+      console.warn("Atomic import batch failed, retrying rows individually:", error.message)
+      for (const prepared of preparedChunk) {
+        const payload = atomicImportRowPayload(prepared, fileDigest)
+        const { data: rowData, error: rowError } = await db.rpc("import_pharmacy_items_batch_v1", {
+          p_pharmacy_id: pharmacyId,
+          p_actor_id: scope.user.id,
+          p_rows: [payload],
         })
-
-        movementRows.push({
-          pharmacy_id: pharmacyId,
-          item_id: item.id,
-          batch_id: batchMap.get(item.id) || null,
-          branch_id: prepared.branchId,
-          direction: "in",
-          quantity,
-          unit_price: unitPrice,
-          total_value: Number((quantity * unitPrice).toFixed(2)),
-          movement_type: "opening_stock",
-          source_table: "pharmacy_items",
-          source_id: item.id,
-          created_by: scope.user.id || null,
-        })
-      }
-
-      if (balanceRows.length > 0) {
-        for (const chunk of chunkArray(balanceRows, AUX_IMPORT_BATCH_SIZE)) {
-          const { error } = await db
-            .from("pharmacy_stock_balances")
-            .upsert(chunk, { onConflict: "pharmacy_id,item_id,branch_id" })
-          if (error) throw error
+        if (rowError) {
+          errors.push({ row: prepared.rowNum, sku: prepared.sku, name: prepared.row.name, message: rowError.message })
+          continue
         }
-      }
-
-      if (movementRows.length > 0) {
-        for (const chunk of chunkArray(movementRows, AUX_IMPORT_BATCH_SIZE)) {
-          const { error } = await db
-            .from("pharmacy_stock_movements")
-            .insert(chunk)
-          if (error) throw error
+        const rowResults = ((rowData ?? {}) as { results?: AtomicImportResult[] }).results ?? []
+        if (rowResults.length === 0) {
+          errors.push({ row: prepared.rowNum, sku: prepared.sku, name: prepared.row.name, message: "لم تُرجع قاعدة البيانات نتيجة لهذا الصف" })
+          continue
         }
-      }
-    } catch (bulkError) {
-      console.warn("Bulk opening stock insert failed, falling back to row-by-row:", bulkError)
-      for (const { item, prepared } of insertedBySku.values()) {
-        if (prepared.row.openingStock <= 0 || !prepared.row.manageStock) continue
-        try {
-          await addOpeningStock(db, {
-            pharmacyId,
-            itemId: item.id,
-            branchId: prepared.branchId,
-            actorId: scope.user.id,
-            quantity: prepared.row.openingStock,
-            unitPrice: item.buy_price,
-            unit: item.unit,
-            expiryDate: prepared.row.expiryDate,
-            trackBatch: Boolean(item.track_batch),
-            hasExpiry: Boolean(item.has_expiry),
-          })
-        } catch (error) {
-          errors.push({ row: prepared.rowNum, sku: item.sku, name: item.name_ar, message: `تم إنشاء الصنف لكن فشل تسجيل الرصيد الافتتاحي: ${error instanceof Error ? error.message : "خطأ غير متوقع"}` })
-        }
+        consumeAtomicImportResults(rowResults, imported, skipped, errors)
       }
     }
 
