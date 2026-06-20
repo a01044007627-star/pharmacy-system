@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState, useCallback } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, usePathname } from "next/navigation"
 import { DashboardSidebar } from "@/components/layout/dashboard-sidebar"
 import { DashboardNavbar } from "@/components/layout/dashboard-navbar"
 import { cn } from "@/lib/utils"
@@ -19,12 +19,15 @@ function getInitialCollapsed(): boolean {
 
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   const router = useRouter()
+  const pathname = usePathname()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(getInitialCollapsed)
   const { loading, user, role, error, signOut, isDeveloper, activePharmacy } = useAuth()
   const appSettings = useAppSettings()
   const maintenanceMode = appSettings.bool("system", "maintenanceMode", false)
   const appName = appSettings.get("system", "appName", "Logixa Pharmacy")
+
+  const isCashier = pathname === ROUTES.dashboardCashier
 
   useEffect(() => {
     if (!loading && !user) router.replace(ROUTES.login)
@@ -93,19 +96,26 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div dir="rtl" className="min-h-dvh overflow-x-hidden bg-dashboard-bg text-slate-900">
-      <DashboardSidebar
-        open={sidebarOpen}
-        onOpenChange={setSidebarOpen}
-        collapsed={sidebarCollapsed}
-        onCollapsedChange={setSidebarCollapsed}
-      />
+      {!isCashier && (
+        <DashboardSidebar
+          open={sidebarOpen}
+          onOpenChange={setSidebarOpen}
+          collapsed={sidebarCollapsed}
+          onCollapsedChange={setSidebarCollapsed}
+        />
+      )}
       <div className={cn(
         "min-h-dvh min-w-0 transition-[padding] duration-200 ease-in-out",
-        sidebarCollapsed ? "lg:pr-0" : "lg:pr-[280px]",
+        (sidebarCollapsed || isCashier) ? "lg:pr-0" : "lg:pr-[280px]",
       )}>
         {loading ? <div className="fixed inset-x-0 top-0 z-[100] h-0.5 overflow-hidden bg-transparent" aria-hidden="true"><div className="h-full w-1/3 animate-pulse rounded-full bg-brand/40" /></div> : null}
-        <DashboardNavbar onMenuClick={toggleSidebar} sidebarCollapsed={sidebarCollapsed} />
-        <main className="dashboard-clean-ui arabic-leading min-w-0 flex-1 overflow-x-clip py-3 sm:py-5">
+        {!isCashier && (
+          <DashboardNavbar onMenuClick={toggleSidebar} sidebarCollapsed={sidebarCollapsed} />
+        )}
+        <main className={cn(
+          "dashboard-clean-ui arabic-leading min-w-0 flex-1 overflow-x-clip",
+          isCashier ? "p-0" : "py-3 sm:py-5"
+        )}>
           {children}
         </main>
       </div>
