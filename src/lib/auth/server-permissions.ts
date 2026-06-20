@@ -3,7 +3,7 @@ import "server-only"
 import { NextResponse } from "next/server"
 import { getServerAuthScope } from "@/lib/auth/session"
 import { hasPermission, hasAnyPermission, canAccess, type Permission } from "@/lib/auth/permissions"
-import type { AuthScope } from "@/types"
+import type { AuthScope, PharmacyMembership } from "@/types"
 
 export class PermissionError extends Error {
   status: number
@@ -18,12 +18,19 @@ export function permissionErrorResponse(error: unknown) {
   return null
 }
 
+function activeMembership(scope: AuthScope): PharmacyMembership | undefined {
+  const candidates = scope.memberships.filter((membership) => membership.pharmacy_id === scope.activePharmacyId)
+  return candidates.find((membership) => membership.branch_id === scope.activeBranchId)
+    ?? candidates.find((membership) => membership.branch_id === null)
+    ?? candidates[0]
+}
+
 export function activeMembershipPermissions(scope: AuthScope): string[] {
-  return scope.memberships.find((membership) => membership.pharmacy_id === scope.activePharmacyId)?.permissions ?? []
+  return activeMembership(scope)?.permissions ?? []
 }
 
 export function activeMembershipDeniedPermissions(scope: AuthScope): string[] {
-  return scope.memberships.find((membership) => membership.pharmacy_id === scope.activePharmacyId)?.denied_permissions ?? []
+  return activeMembership(scope)?.denied_permissions ?? []
 }
 
 export function scopeCan(scope: AuthScope, permission: Permission): boolean {
@@ -40,20 +47,22 @@ export function scopeCanAll(scope: AuthScope, permissions: Permission[]): boolea
 
 export function isBranchScoped(scope: AuthScope): boolean {
   if (scope.isDeveloper || scope.isOwner || ["owner", "admin"].includes(scope.role)) return false
-  const membership = scope.memberships.find((row) => row.pharmacy_id === scope.activePharmacyId)
-  return Boolean(membership?.branch_id)
+  return Boolean(activeMembership(scope)?.branch_id)
 }
 
 export function assertBranchScope(scope: AuthScope, branchId?: string | null) {
   if (!isBranchScoped(scope)) return
-  const membership = scope.memberships.find((row) => row.pharmacy_id === scope.activePharmacyId)
+  const membership = activeMembership(scope)
   if (branchId && membership?.branch_id && branchId !== membership.branch_id) {
     throw new PermissionError("ليست لديك صلاحية على هذا الفرع", 403)
   }
 }
 
 export async function requireAuthScope(params?: { requestedPharmacyId?: string | null; requestedBranchId?: string | null }) {
-  const scope = await getServerAuthScope(params)
+  const scope = await getServerAuthScope({
+    ...params,
+    strictRequested: Boolean(params?.requestedPharmacyId || params?.requestedBranchId),
+  })
   if (!scope.user) throw new PermissionError("غير مسجل الدخول", 401)
   return scope
 }

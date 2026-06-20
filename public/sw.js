@@ -1,5 +1,5 @@
 /* Logixa Pharmacy offline worker. Keep this file plain ES2017 for older clients. */
-const SW_VERSION = "2026.06.20.1"
+const SW_VERSION = "2026.06.20.2"
 const STATIC_CACHE = `logixa-pharmacy-static-${SW_VERSION}`
 const PAGE_CACHE = `logixa-pharmacy-pages-${SW_VERSION}`
 const API_CACHE = `logixa-pharmacy-api-${SW_VERSION}`
@@ -68,14 +68,11 @@ async function networkFirstNavigation(request) {
 }
 
 async function networkFirstApi(request) {
-  const cache = await caches.open(API_CACHE)
   try {
-    const response = await fetchWithTimeout(request, 3500)
-    if (response.ok && !response.redirected && response.type !== "opaque") await cache.put(request, response.clone())
-    return response
+    // Authenticated API responses must never be stored in Cache Storage because
+    // a shared browser profile could expose one tenant's data to another user.
+    return await fetchWithTimeout(request, 5000)
   } catch {
-    const cached = await cache.match(request)
-    if (cached) return cached
     return new Response(JSON.stringify({ error: "offline", offline: true }), {
       status: 503,
       headers: { "Content-Type": "application/json; charset=utf-8" },

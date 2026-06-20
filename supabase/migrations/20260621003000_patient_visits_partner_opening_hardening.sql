@@ -1,6 +1,14 @@
 BEGIN;
 
 -- Manual patient visits are first-class, idempotent offline operations.
+-- Repeat the additive return columns here as a defensive dependency guard.
+-- This keeps the migration safe when a previous transaction was rolled back
+-- and the file is re-run manually from the Supabase SQL editor.
+ALTER TABLE public.pharmacy_purchase_returns
+  ADD COLUMN IF NOT EXISTS supplier_id UUID REFERENCES public.pharmacy_partners(id) ON DELETE SET NULL;
+ALTER TABLE public.pharmacy_sales_returns
+  ADD COLUMN IF NOT EXISTS customer_id UUID REFERENCES public.pharmacy_partners(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS patient_id UUID REFERENCES public.pharmacy_patients(id) ON DELETE SET NULL;
 
 ALTER TABLE public.pharmacy_partners
   ADD COLUMN IF NOT EXISTS client_request_id UUID;
@@ -8,22 +16,30 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_partners_client_request
   ON public.pharmacy_partners(pharmacy_id, client_request_id)
   WHERE client_request_id IS NOT NULL;
 
--- Backfill relations for historic returns without changing financial values.
-UPDATE public.pharmacy_purchase_returns r
-SET supplier_id = p.supplier_id
-FROM public.pharmacy_purchases p
-WHERE r.purchase_id = p.id
-  AND r.pharmacy_id = p.pharmacy_id
-  AND r.supplier_id IS NULL
-  AND p.supplier_id IS NOT NULL;
-
-UPDATE public.pharmacy_sales_returns r
-SET customer_id = s.customer_id,
-    patient_id = s.patient_id
-FROM public.pharmacy_sales s
-WHERE r.sale_id = s.id
-  AND r.pharmacy_id = s.pharmacy_id
-  AND (r.customer_id IS NULL OR r.patient_id IS NULL);
+-- Backfill relations defensively when older manual runs stopped mid-file.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='pharmacy_purchase_returns' AND column_name='supplier_id') THEN
+    EXECUTE $repair$
+      UPDATE public.pharmacy_purchase_returns AS pr
+      SET supplier_id = p.supplier_id
+      FROM public.pharmacy_purchases AS p
+      WHERE pr.purchase_id=p.id AND pr.pharmacy_id=p.pharmacy_id
+        AND pr.supplier_id IS NULL AND p.supplier_id IS NOT NULL
+    $repair$;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='pharmacy_sales_returns' AND column_name='customer_id')
+     AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='pharmacy_sales_returns' AND column_name='patient_id') THEN
+    EXECUTE $repair$
+      UPDATE public.pharmacy_sales_returns AS sr
+      SET customer_id=COALESCE(sr.customer_id,s.customer_id), patient_id=COALESCE(sr.patient_id,s.patient_id)
+      FROM public.pharmacy_sales AS s
+      WHERE sr.sale_id=s.id AND sr.pharmacy_id=s.pharmacy_id
+        AND (sr.customer_id IS NULL OR sr.patient_id IS NULL)
+    $repair$;
+  END IF;
+END;
+$$;
 
 ALTER TABLE public.pharmacy_patient_visits
   ADD COLUMN IF NOT EXISTS client_request_id UUID;

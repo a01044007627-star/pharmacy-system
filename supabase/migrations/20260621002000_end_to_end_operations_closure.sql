@@ -384,37 +384,108 @@ $$;
 -- Correct report aggregations: aggregate invoices and lines separately to avoid duplicate totals.
 
 CREATE OR REPLACE FUNCTION public.get_daily_sales_summary(
-  p_pharmacy_id UUID,p_from_date DATE DEFAULT CURRENT_DATE-INTERVAL '30 days',p_to_date DATE DEFAULT CURRENT_DATE,p_branch_id UUID DEFAULT NULL
-) RETURNS TABLE(sale_date DATE,invoice_count BIGINT,total_sales NUMERIC,total_discounts NUMERIC,total_tax NUMERIC,total_cost NUMERIC,total_profit NUMERIC,cash_sales NUMERIC,card_sales NUMERIC,credit_sales NUMERIC,item_count BIGINT)
-LANGUAGE sql STABLE SECURITY DEFINER SET search_path=public AS $$
-  WITH headers AS (
-    SELECT s.sale_date::DATE day,COUNT(*)::BIGINT invoices,SUM(s.total) sales,SUM(s.discount_total) discounts,SUM(s.tax_total) tax,
-      SUM(CASE WHEN s.payment_method='cash' THEN s.paid_amount ELSE 0 END) cash,
-      SUM(CASE WHEN s.payment_method IN ('card','wallet','bank','bank-transfer','mixed') THEN s.paid_amount ELSE 0 END) cards,
-      SUM(CASE WHEN s.payment_method='credit' THEN s.total ELSE 0 END) credit
-    FROM public.pharmacy_sales s WHERE s.pharmacy_id=p_pharmacy_id AND s.voided_at IS NULL AND s.status NOT IN ('void','cancelled')
-      AND s.sale_date::DATE BETWEEN p_from_date AND p_to_date AND (p_branch_id IS NULL OR s.branch_id=p_branch_id)
+  p_pharmacy_id UUID,
+  p_from_date DATE DEFAULT (CURRENT_DATE - 30),
+  p_to_date DATE DEFAULT CURRENT_DATE,
+  p_branch_id UUID DEFAULT NULL
+) RETURNS TABLE(
+  sale_date DATE,
+  invoice_count BIGINT,
+  total_sales NUMERIC,
+  total_discounts NUMERIC,
+  total_tax NUMERIC,
+  total_cost NUMERIC,
+  total_profit NUMERIC,
+  cash_sales NUMERIC,
+  card_sales NUMERIC,
+  credit_sales NUMERIC,
+  item_count BIGINT
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  WITH sales_headers AS (
+    SELECT
+      s.sale_date::DATE AS report_date,
+      COUNT(*)::BIGINT AS invoices,
+      COALESCE(SUM(s.total), 0)::NUMERIC AS sales,
+      COALESCE(SUM(s.discount_total), 0)::NUMERIC AS discounts,
+      COALESCE(SUM(s.tax_total), 0)::NUMERIC AS tax,
+      COALESCE(SUM(CASE WHEN s.payment_method = 'cash' THEN s.paid_amount ELSE 0 END), 0)::NUMERIC AS cash,
+      COALESCE(SUM(CASE WHEN s.payment_method IN ('card','wallet','bank','bank-transfer','mixed') THEN s.paid_amount ELSE 0 END), 0)::NUMERIC AS cards,
+      COALESCE(SUM(CASE WHEN s.payment_method = 'credit' THEN s.total ELSE 0 END), 0)::NUMERIC AS credit
+    FROM public.pharmacy_sales s
+    WHERE s.pharmacy_id = p_pharmacy_id
+      AND s.voided_at IS NULL
+      AND s.status NOT IN ('void', 'cancelled')
+      AND s.sale_date::DATE BETWEEN p_from_date AND p_to_date
+      AND (p_branch_id IS NULL OR s.branch_id = p_branch_id)
     GROUP BY s.sale_date::DATE
-  ), lines AS (
-    SELECT s.sale_date::DATE day,SUM(sl.purchase_price*sl.quantity) cost,SUM(sl.quantity)::BIGINT item_count
-    FROM public.pharmacy_sale_lines sl JOIN public.pharmacy_sales s ON s.id=sl.sale_id AND s.pharmacy_id=sl.pharmacy_id
-    WHERE sl.pharmacy_id=p_pharmacy_id AND s.voided_at IS NULL AND s.status NOT IN ('void','cancelled')
-      AND s.sale_date::DATE BETWEEN p_from_date AND p_to_date AND (p_branch_id IS NULL OR s.branch_id=p_branch_id)
+  ),
+  sale_costs AS (
+    SELECT
+      s.sale_date::DATE AS report_date,
+      COALESCE(SUM(sl.purchase_price * sl.quantity), 0)::NUMERIC AS cost,
+      COALESCE(SUM(sl.quantity), 0)::BIGINT AS sold_item_count
+    FROM public.pharmacy_sale_lines sl
+    JOIN public.pharmacy_sales s
+      ON s.id = sl.sale_id
+     AND s.pharmacy_id = sl.pharmacy_id
+    WHERE sl.pharmacy_id = p_pharmacy_id
+      AND s.voided_at IS NULL
+      AND s.status NOT IN ('void', 'cancelled')
+      AND s.sale_date::DATE BETWEEN p_from_date AND p_to_date
+      AND (p_branch_id IS NULL OR s.branch_id = p_branch_id)
     GROUP BY s.sale_date::DATE
-  ), returns AS (
-    SELECT r.return_date::DATE day,SUM(r.total) amount,
-      COALESCE(SUM(rl.quantity*COALESCE(sl.purchase_price,0)),0) cost
-    FROM public.pharmacy_sales_returns r LEFT JOIN public.pharmacy_sales_return_lines rl ON rl.return_id=r.id AND rl.pharmacy_id=r.pharmacy_id
-    LEFT JOIN public.pharmacy_sale_lines sl ON sl.id=rl.sale_line_id
-    WHERE r.pharmacy_id=p_pharmacy_id AND r.voided_at IS NULL AND r.return_date::DATE BETWEEN p_from_date AND p_to_date
-      AND (p_branch_id IS NULL OR r.branch_id=p_branch_id)
+  ),
+  return_headers AS (
+    SELECT
+      r.return_date::DATE AS report_date,
+      COALESCE(SUM(r.total), 0)::NUMERIC AS return_amount
+    FROM public.pharmacy_sales_returns r
+    WHERE r.pharmacy_id = p_pharmacy_id
+      AND r.voided_at IS NULL
+      AND r.return_date::DATE BETWEEN p_from_date AND p_to_date
+      AND (p_branch_id IS NULL OR r.branch_id = p_branch_id)
+    GROUP BY r.return_date::DATE
+  ),
+  return_costs AS (
+    SELECT
+      r.return_date::DATE AS report_date,
+      COALESCE(SUM(rl.quantity * COALESCE(sl.purchase_price, 0)), 0)::NUMERIC AS returned_cost,
+      COALESCE(SUM(rl.quantity), 0)::BIGINT AS returned_item_count
+    FROM public.pharmacy_sales_returns r
+    JOIN public.pharmacy_sales_return_lines rl
+      ON rl.return_id = r.id
+     AND rl.pharmacy_id = r.pharmacy_id
+    LEFT JOIN public.pharmacy_sale_lines sl
+      ON sl.id = rl.sale_line_id
+     AND sl.pharmacy_id = rl.pharmacy_id
+    WHERE r.pharmacy_id = p_pharmacy_id
+      AND r.voided_at IS NULL
+      AND r.return_date::DATE BETWEEN p_from_date AND p_to_date
+      AND (p_branch_id IS NULL OR r.branch_id = p_branch_id)
     GROUP BY r.return_date::DATE
   )
-  SELECT h.day,h.invoices,GREATEST(h.sales-COALESCE(r.amount,0),0),h.discounts,h.tax,
-    GREATEST(COALESCE(l.cost,0)-COALESCE(r.cost,0),0),
-    GREATEST(h.sales-COALESCE(r.amount,0),0)-GREATEST(COALESCE(l.cost,0)-COALESCE(r.cost,0),0),
-    h.cash,h.cards,h.credit,COALESCE(l.item_count,0)
-  FROM headers h LEFT JOIN lines l ON l.day=h.day LEFT JOIN returns r ON r.day=h.day ORDER BY h.day DESC;
+  SELECT
+    h.report_date AS sale_date,
+    h.invoices AS invoice_count,
+    (h.sales - COALESCE(rh.return_amount, 0))::NUMERIC AS total_sales,
+    h.discounts AS total_discounts,
+    h.tax AS total_tax,
+    (COALESCE(sc.cost, 0) - COALESCE(rc.returned_cost, 0))::NUMERIC AS total_cost,
+    ((h.sales - COALESCE(rh.return_amount, 0)) - (COALESCE(sc.cost, 0) - COALESCE(rc.returned_cost, 0)))::NUMERIC AS total_profit,
+    h.cash AS cash_sales,
+    h.cards AS card_sales,
+    h.credit AS credit_sales,
+    GREATEST(COALESCE(sc.sold_item_count, 0) - COALESCE(rc.returned_item_count, 0), 0)::BIGINT AS item_count
+  FROM sales_headers h
+  LEFT JOIN sale_costs sc ON sc.report_date = h.report_date
+  LEFT JOIN return_headers rh ON rh.report_date = h.report_date
+  LEFT JOIN return_costs rc ON rc.report_date = h.report_date
+  ORDER BY h.report_date DESC;
 $$;
 
 CREATE OR REPLACE FUNCTION public.get_top_selling_items(

@@ -3,45 +3,33 @@ param(
     [switch]$Paste
 )
 
-$Consolidated = Join-Path $PSScriptRoot "consolidated"
-$Migrations = Join-Path $PSScriptRoot "migrations"
+$ProjectRoot = Split-Path $PSScriptRoot -Parent
+$Builder = Join-Path $ProjectRoot "scripts/build-supabase-deploy.mjs"
 $Output = Join-Path $PSScriptRoot "deploy.sql"
 
-Write-Host "Creating deploy.sql from all 47 files..." -ForegroundColor Cyan
-
-# Collect files in order
-$files = @()
-foreach ($f in "000_core_tables.sql","001_helper_functions.sql","002_atomic_rpcs.sql","003_rls_policies.sql","004_triggers_views_constraints.sql","005_data_migrations.sql") {
-    $files += Join-Path $Consolidated $f
+Write-Host "Building the ordered Supabase deployment bundle..." -ForegroundColor Cyan
+Push-Location $ProjectRoot
+try {
+    & node $Builder
+    if ($LASTEXITCODE -ne 0) { throw "Database bundle build failed (exit $LASTEXITCODE)." }
 }
-Get-ChildItem $Migrations -Filter *.sql | Sort-Object Name | ForEach-Object { $files += $_.FullName }
-
-# Concatenate
-Clear-Content $Output -Force
-foreach ($f in $files) {
-    $sep = "-- ===== $(Split-Path $f -Leaf) ====="
-    Add-Content $Output $sep
-    Get-Content $f | Add-Content $Output
-    Add-Content $Output "`n"
+finally {
+    Pop-Location
 }
 
-Write-Host "✓ deploy.sql created ($((Get-Item $Output).Length / 1KB) KB)" -ForegroundColor Green
+Write-Host "deploy.sql is ready ($([math]::Round((Get-Item $Output).Length / 1KB, 1)) KB)." -ForegroundColor Green
 
 if ($Paste) {
-    Write-Host "`nOpen: https://supabase.com/dashboard/project/YOUR_PROJECT_ID/sql/new" -ForegroundColor Yellow
-    Write-Host "Then paste the entire contents of deploy.sql and click RUN." -ForegroundColor Yellow
-    Write-Host "(You may need to split into chunks if >200KB for the web editor)" -ForegroundColor Yellow
+    Write-Host "`nOpen the Supabase SQL Editor, paste supabase/deploy.sql, then run it." -ForegroundColor Yellow
 }
 elseif ($PGString) {
     Write-Host "Running via psql..." -ForegroundColor Yellow
-    & "psql" $PGString -f $Output -v ON_ERROR_STOP=1
-    if ($LASTEXITCODE -eq 0) { Write-Host "✓ Done!" -ForegroundColor Green }
-    else { Write-Host "✗ Failed (exit $LASTEXITCODE)" -ForegroundColor Red }
+    & psql $PGString -f $Output -v ON_ERROR_STOP=1
+    if ($LASTEXITCODE -eq 0) { Write-Host "Database deployment completed." -ForegroundColor Green }
+    else { throw "psql failed (exit $LASTEXITCODE)." }
 }
 else {
     Write-Host "`nUsage:" -ForegroundColor Cyan
-    Write-Host "  1) Paste in Supabase SQL Editor:" -ForegroundColor White
-    Write-Host "     .\deploy.ps1 -Paste" -ForegroundColor Green
-    Write-Host "  2) Run via psql:" -ForegroundColor White
-    Write-Host "     .\deploy.ps1 'postgresql://postgres:password@host:5432/postgres'" -ForegroundColor Green
+    Write-Host "  .\deploy.ps1 -Paste" -ForegroundColor White
+    Write-Host "  .\deploy.ps1 -PGString 'postgresql://postgres:password@host:5432/postgres'" -ForegroundColor White
 }

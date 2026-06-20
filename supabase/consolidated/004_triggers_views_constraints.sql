@@ -106,7 +106,7 @@ BEGIN
   v_full_name := COALESCE(NULLIF(NEW.raw_user_meta_data->>'full_name', ''), NULLIF(NEW.raw_user_meta_data->>'display_name', ''), split_part(NEW.email, '@', 1));
   v_phone := COALESCE(NULLIF(NEW.raw_user_meta_data->>'phone', ''), NULLIF(NEW.raw_user_meta_data->>'mobile', ''));
   v_role := CASE
-    WHEN lower(NEW.email) = lower('mostafa0falcon@gmail.com') THEN 'developer'
+    WHEN lower(NEW.email) = lower('developer@example.invalid') THEN 'developer'
     WHEN COALESCE(NEW.raw_user_meta_data->>'role', '') IN (
       'owner','admin','manager','accountant','pharmacist','cashier','technician','worker','viewer','no-access'
     ) THEN NEW.raw_user_meta_data->>'role'

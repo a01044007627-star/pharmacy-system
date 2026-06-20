@@ -1,53 +1,9 @@
 import { NextResponse } from "next/server"
-import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/server"
-import { createAdminClient } from "@/lib/supabase/admin"
-import { isSuperAdmin, SUPER_ADMIN_ROLE } from "@/config/super-admin"
+import { SUPER_ADMIN_ROLE } from "@/config/super-admin"
+import { DeveloperProvisioningService } from "@/lib/developer/developer-provisioning-service"
+import { isDeveloperBootstrapEmail } from "@/lib/developer/bootstrap-authority"
 import { getServerAuthScope } from "@/lib/auth/session"
-
-function getAdminClient(): SupabaseClient | null {
-  try {
-    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) return null
-    return createAdminClient() as SupabaseClient
-  } catch {
-    return null
-  }
-}
-
-async function ensureDeveloperAccess(user: User) {
-  if (!isSuperAdmin(user.email)) return
-
-  const admin = getAdminClient()
-  if (!admin) return
-
-  const email = user.email ?? ""
-  const meta = user.user_metadata ?? {}
-  const fullName = (meta.full_name ?? meta.display_name ?? "Mostafa Falcon") as string
-
-  await Promise.allSettled([
-    admin.auth.admin.updateUserById(user.id, {
-      user_metadata: {
-        ...meta,
-        full_name: fullName,
-        display_name: fullName,
-        role: SUPER_ADMIN_ROLE,
-      },
-    }),
-    admin.from("user_profiles").upsert({
-      user_id: user.id,
-      email,
-      full_name: fullName,
-      global_role: SUPER_ADMIN_ROLE,
-      is_active: true,
-    }, { onConflict: "user_id" }),
-    admin.from("developer_users").upsert({
-      user_id: user.id,
-      role: "super_admin",
-      is_active: true,
-      permissions: ["system:all"],
-    }, { onConflict: "user_id" }),
-  ])
-}
 
 export async function POST(request: Request) {
   try {
@@ -61,14 +17,9 @@ export async function POST(request: Request) {
     if (error) return NextResponse.json({ error: error.message }, { status: 401 })
 
     const meta = data.user.user_metadata ?? {}
-    const role = isSuperAdmin(data.user.email) ? SUPER_ADMIN_ROLE : (meta.role ?? "no-access")
-
-    if (role === SUPER_ADMIN_ROLE && meta.role !== SUPER_ADMIN_ROLE) {
-      await supabase.auth.updateUser({ data: { ...meta, role: SUPER_ADMIN_ROLE } })
+    if (isDeveloperBootstrapEmail(data.user.email)) {
+      await DeveloperProvisioningService.fromEnvironment().provision(data.user)
     }
-
-    await ensureDeveloperAccess(data.user)
-
     const scope = await getServerAuthScope()
 
     return NextResponse.json({
@@ -90,6 +41,6 @@ export async function POST(request: Request) {
     })
   } catch (error) {
     console.error("login failed", error)
-    return NextResponse.json({ error: "طلب غير صالح" }, { status: 400 })
+    return NextResponse.json({ error: error instanceof Error ? error.message : "طلب غير صالح" }, { status: 400 })
   }
 }

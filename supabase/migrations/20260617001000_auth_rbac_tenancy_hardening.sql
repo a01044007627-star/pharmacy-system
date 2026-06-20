@@ -57,7 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_pharmacy_profiles_active ON public.pharmacy_profi
 INSERT INTO public.developer_users (user_id, role, is_active, permissions)
 SELECT u.id, 'super_admin', true, ARRAY['system:all']::TEXT[]
 FROM auth.users u
-WHERE lower(u.email) = lower('mostafa0falcon@gmail.com')
+WHERE lower(u.email) = lower('developer@example.invalid')
 ON CONFLICT (user_id) DO UPDATE SET
   role = 'super_admin',
   is_active = true,
@@ -85,7 +85,7 @@ AS $$
       SELECT 1
       FROM auth.users u
       WHERE u.id = p_user_id
-        AND lower(u.email) = lower('mostafa0falcon@gmail.com')
+        AND lower(u.email) = lower('developer@example.invalid')
     ),
     false
   );
@@ -208,7 +208,7 @@ DECLARE
   v_role TEXT;
 BEGIN
   v_role := COALESCE(NEW.raw_user_meta_data->>'role', 'no-access');
-  IF lower(NEW.email) = lower('mostafa0falcon@gmail.com') THEN
+  IF lower(NEW.email) = lower('developer@example.invalid') THEN
     v_role := 'developer';
   END IF;
 
@@ -232,7 +232,7 @@ BEGIN
     global_role = EXCLUDED.global_role,
     updated_at = now();
 
-  IF lower(NEW.email) = lower('mostafa0falcon@gmail.com') THEN
+  IF lower(NEW.email) = lower('developer@example.invalid') THEN
     INSERT INTO public.developer_users (user_id, role, is_active, permissions)
     VALUES (NEW.id, 'super_admin', true, ARRAY['system:all']::TEXT[])
     ON CONFLICT (user_id) DO UPDATE SET
@@ -452,7 +452,7 @@ SELECT
   u.email,
   COALESCE(u.raw_user_meta_data->>'full_name', u.raw_user_meta_data->>'display_name'),
   COALESCE(u.raw_user_meta_data->>'phone', u.raw_user_meta_data->>'mobile'),
-  CASE WHEN lower(u.email) = lower('mostafa0falcon@gmail.com') THEN 'developer' ELSE COALESCE(u.raw_user_meta_data->>'role', 'no-access') END,
+  CASE WHEN lower(u.email) = lower('developer@example.invalid') THEN 'developer' ELSE COALESCE(u.raw_user_meta_data->>'role', 'no-access') END,
   true
 FROM auth.users u
 ON CONFLICT (user_id) DO UPDATE SET

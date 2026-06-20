@@ -1,0 +1,23 @@
+{
+  "date": "2026-06-20",
+  "status": "code-verified",
+  "sourceFiles": 482,
+  "sqlFiles": 60,
+  "apiRoutes": 91,
+  "apiReferences": 97,
+  "referencedTables": 69,
+  "createdTables": 116,
+  "referencedRpcFunctions": 30,
+  "createdFunctions": 90,
+  "missingTables": [],
+  "missingFunctions": [],
+  "missingApiRoutes": [],
+  "tests": { "passed": 35, "total": 35, "suites": 8 },
+  "typescript": "passed",
+  "eslint": "passed",
+  "productionBuild": "passed",
+  "npmProductionAudit": { "critical": 0, "high": 1, "moderate": 0, "low": 0, "remaining": "xlsx@0.18.5" },
+  "liveDatabaseExecuted": false,
+  "existingDatabaseRepairFile": "supabase/final-repair.sql",
+  "freshDatabaseBundle": "supabase/deploy.sql"
+}

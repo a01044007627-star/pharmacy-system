@@ -61,7 +61,7 @@ CREATE INDEX IF NOT EXISTS idx_developer_users_user_id ON public.developer_users
 INSERT INTO public.developer_users (user_id, role, is_active, permissions)
 SELECT u.id, 'super_admin', true, ARRAY['system:all']::TEXT[]
 FROM auth.users u
-WHERE lower(u.email) = lower('mostafa0falcon@gmail.com')
+WHERE lower(u.email) = lower('developer@example.invalid')
 ON CONFLICT (user_id) DO UPDATE SET
   role = 'super_admin',
   is_active = true,
@@ -161,7 +161,7 @@ AS $$
         SELECT 1
         FROM auth.users u
         WHERE u.id = p_user_id
-          AND lower(u.email) = lower('mostafa0falcon@gmail.com')
+          AND lower(u.email) = lower('developer@example.invalid')
       )
     ),
     false
@@ -619,7 +619,7 @@ BEGIN
   -- Never trust public signup metadata for developer access.
   -- Safe pharmacy roles may still be supplied by trusted admin invitations.
   v_role := CASE
-    WHEN lower(NEW.email) = lower('mostafa0falcon@gmail.com') THEN 'developer'
+    WHEN lower(NEW.email) = lower('developer@example.invalid') THEN 'developer'
     WHEN COALESCE(NEW.raw_user_meta_data->>'role', '') IN (
       'owner','admin','manager','accountant','pharmacist','cashier','technician','worker','viewer','no-access'
     ) THEN NEW.raw_user_meta_data->>'role'

@@ -3,11 +3,11 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { Session, User } from "@supabase/supabase-js"
 import { createClient } from "@/lib/supabase/client"
-import { isSuperAdmin, SUPER_ADMIN_ROLE, resolveRole } from "@/config/super-admin"
 import { hasPermission, normalizeRole, type Permission } from "@/lib/auth/permissions"
 import type { AuthScope, BranchSummary, MedicalRole, PharmacyMembership, PharmacySummary, UserProfile } from "@/types"
 import { apiRequest } from "@/lib/api-client"
 import { network } from "@/lib/network"
+import { localDB } from "@/lib/sync/local-db"
 
 interface ClientAuthScope extends Omit<AuthScope, "user" | "session"> {
   user: User | null
@@ -131,11 +131,9 @@ function readCachedAuth(expectedUserId?: string | null): ClientAuthScope | null 
 }
 
 function buildLocalFallback(user: User | null, session: Session | null): ClientAuthScope {
-  const rawRole = (user?.user_metadata?.role as string) ?? null
-  const email = user?.email ?? null
-  const role = normalizeRole(resolveRole(email, rawRole))
-  const isDeveloper = role === SUPER_ADMIN_ROLE || isSuperAdmin(email)
-  return { ...emptyScope, user, session, role: isDeveloper ? "developer" : role, isDeveloper, isOwner: role === "owner" }
+  // Never infer authority from mutable user metadata or email. Offline access is
+  // allowed only through a previously server-verified, user-bound cached scope.
+  return { ...emptyScope, user, session }
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -309,11 +307,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     applyScope(emptyScope)
     setLoading(false)
     navigator.serviceWorker?.controller?.postMessage({ type: "CLEAR_PRIVATE_CACHES" })
-    window.location.href = "/api/auth/logout"
+    void localDB.clearPrivateData().finally(() => {
+      window.location.href = "/api/auth/logout"
+    })
   }, [applyScope])
 
   const value = useMemo<AuthState>(() => {
-    const activeMembership = scope.memberships.find((membership) => membership.pharmacy_id === scope.activePharmacyId)
+    const memberships = scope.memberships.filter((membership) => membership.pharmacy_id === scope.activePharmacyId)
+    const activeMembership = memberships.find((membership) => membership.branch_id === scope.activeBranchId)
+      ?? memberships.find((membership) => membership.branch_id === null)
+      ?? memberships[0]
     const extraPermissions = activeMembership?.permissions ?? []
     const deniedPermissions = activeMembership?.denied_permissions ?? []
     return {

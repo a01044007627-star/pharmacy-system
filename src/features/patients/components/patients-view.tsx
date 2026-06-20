@@ -412,11 +412,6 @@ function PatientDetailContent({
     }
   }
 
-  function ageFromDate(birth: string) {
-    if (!birth) return 0
-    const diff = Date.now() - new Date(birth).getTime()
-    return Math.floor(diff / 31557600000)
-  }
 
   async function recordVisit() {
     if (!auth.activePharmacyId) return
@@ -502,7 +497,7 @@ function PatientDetailContent({
               <DetailField label="الكود" value={detail.code} mono />
               <DetailField label="الاسم" value={detail.name} />
               <DetailField label="الجنس" value={genderLabel(detail.gender)} />
-              <DetailField label="العمر" value={`${ageFromDate(detail.birth_date)} سنة`} />
+              <DetailField label="العمر" value={detail.birth_date ? `${detail.age} سنة` : "—"} />
               <DetailField label="تاريخ الميلاد" value={detail.birth_date ? new Date(detail.birth_date).toLocaleDateString("ar-EG") : "—"} />
               <DetailField label="الهاتف" value={detail.phone ?? "—"} ltr />
               <DetailField label="البريد" value={detail.email ?? "—"} ltr />

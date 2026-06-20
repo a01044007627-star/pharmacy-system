@@ -4,20 +4,19 @@ import type { SupabaseClient, User } from "@supabase/supabase-js"
 import { cookies } from "next/headers"
 import { createClient } from "@/lib/supabase/server"
 import { createAdminClient } from "@/lib/supabase/admin"
-import { isSuperAdmin, SUPER_ADMIN_ROLE } from "@/config/super-admin"
+import { TenantScopeResolver } from "@/lib/auth/tenant-scope-resolver"
 import { normalizeRole } from "@/lib/auth/permissions"
 import type { AuthScope, BranchSummary, MedicalRole, PharmacyMembership, PharmacySummary, UserProfile } from "@/types"
 
 type DbClient = SupabaseClient
-
 
 const SCOPE_CACHE_TTL_MS = 4_000
 const SCOPE_CACHE_MAX = 200
 type ScopeCacheEntry = { expiresAt: number; scope: AuthScope }
 const scopeCache = new Map<string, ScopeCacheEntry>()
 
-function scopeCacheKey(userId: string, pharmacyId?: string | null, branchId?: string | null) {
-  return `${userId}:${pharmacyId ?? "default"}:${branchId ?? "default"}`
+function scopeCacheKey(userId: string, pharmacyId?: string | null, branchId?: string | null, strictRequested = false) {
+  return `${userId}:${pharmacyId ?? "default"}:${branchId ?? "default"}:${strictRequested ? "strict" : "fallback"}`
 }
 
 function readScopeCache(key: string) {
@@ -91,28 +90,14 @@ async function ensureUserProfile(client: DbClient, user: User, role: MedicalRole
   const phone = (meta.phone ?? meta.mobile ?? null) as string | null
   const avatarUrl = (meta.avatar_url ?? null) as string | null
 
-  const { data: existing } = await client
-    .from("user_profiles")
-    .select("*")
-    .eq("user_id", user.id)
-    .maybeSingle()
-
+  const { data: existing } = await client.from("user_profiles").select("*").eq("user_id", user.id).maybeSingle()
   if (existing) return existing as UserProfile
 
   const { data } = await client
     .from("user_profiles")
-    .insert({
-      user_id: user.id,
-      email,
-      full_name: fullName,
-      phone,
-      avatar_url: avatarUrl,
-      global_role: role,
-      is_active: true,
-    })
+    .insert({ user_id: user.id, email, full_name: fullName, phone, avatar_url: avatarUrl, global_role: role, is_active: true })
     .select("*")
     .maybeSingle()
-
   return (data ?? null) as UserProfile | null
 }
 
@@ -120,14 +105,7 @@ async function readMemberships(client: DbClient, userId: string): Promise<Pharma
   const { data } = await client
     .from("pharmacy_profiles")
     .select(`
-      id,
-      pharmacy_id,
-      branch_id,
-      user_id,
-      role,
-      is_active,
-      permissions,
-      denied_permissions,
+      id, pharmacy_id, branch_id, user_id, role, is_active, permissions, denied_permissions,
       pharmacy:pharmacies(id, owner_id, name, legal_name, status, plan, currency, timezone),
       branch:pharmacy_branches(id, pharmacy_id, code, name, is_default, status)
     `)
@@ -137,7 +115,6 @@ async function readMemberships(client: DbClient, userId: string): Promise<Pharma
   return ((data ?? []) as unknown as MembershipRow[]).map((row) => {
     const pharmacy = Array.isArray(row.pharmacy) ? (row.pharmacy[0] ?? null) : (row.pharmacy ?? null)
     const branch = Array.isArray(row.branch) ? (row.branch[0] ?? null) : (row.branch ?? null)
-
     return {
       id: row.id,
       pharmacy_id: row.pharmacy_id,
@@ -159,7 +136,6 @@ async function readOwnedPharmacies(client: DbClient, userId: string): Promise<Ph
     .select("id, owner_id, name, legal_name, status, plan, currency, timezone")
     .eq("owner_id", userId)
     .neq("status", "closed")
-
   return (data ?? []) as PharmacySummary[]
 }
 
@@ -168,7 +144,6 @@ async function readDeveloperPharmacies(client: DbClient): Promise<PharmacySummar
     .from("pharmacies")
     .select("id, owner_id, name, legal_name, status, plan, currency, timezone")
     .order("created_at", { ascending: false })
-
   return (data ?? []) as PharmacySummary[]
 }
 
@@ -181,42 +156,13 @@ async function readBranches(client: DbClient, pharmacyId: string | null): Promis
     .neq("status", "closed")
     .order("is_default", { ascending: false })
     .order("created_at", { ascending: true })
-
   return (data ?? []) as BranchSummary[]
-}
-
-function pickActivePharmacy(
-  requestedPharmacyId: string | null | undefined,
-  memberships: PharmacyMembership[],
-  owned: PharmacySummary[],
-  developerPharmacies: PharmacySummary[],
-): PharmacySummary | null {
-  const all = [
-    ...owned,
-    ...memberships.map((m) => m.pharmacy).filter(Boolean) as PharmacySummary[],
-    ...developerPharmacies,
-  ]
-  const unique = new Map(all.map((pharmacy) => [pharmacy.id, pharmacy]))
-  if (requestedPharmacyId && unique.has(requestedPharmacyId)) return unique.get(requestedPharmacyId) ?? null
-  return owned[0] ?? memberships[0]?.pharmacy ?? developerPharmacies[0] ?? null
-}
-
-function resolveActiveRole(
-  isDeveloper: boolean,
-  activePharmacyId: string | null,
-  memberships: PharmacyMembership[],
-  ownedPharmacies: PharmacySummary[],
-): MedicalRole {
-  if (isDeveloper) return SUPER_ADMIN_ROLE
-  if (!activePharmacyId) return "no-access"
-  if (ownedPharmacies.some((pharmacy) => pharmacy.id === activePharmacyId)) return "owner"
-  const activeMembership = memberships.find((membership) => membership.pharmacy_id === activePharmacyId)
-  return activeMembership?.role ?? "no-access"
 }
 
 export async function getServerAuthScope(params?: {
   requestedPharmacyId?: string | null
   requestedBranchId?: string | null
+  strictRequested?: boolean
 }): Promise<AuthScope> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -225,58 +171,42 @@ export async function getServerAuthScope(params?: {
   const cookieStore = await cookies()
   const requestedPharmacyId = params?.requestedPharmacyId || cookieStore.get("active-pharmacy-id")?.value || null
   const requestedBranchId = params?.requestedBranchId || cookieStore.get("active-branch-id")?.value || null
-  const cacheKey = scopeCacheKey(user.id, requestedPharmacyId, requestedBranchId)
+  const strictRequested = params?.strictRequested ?? Boolean(params?.requestedPharmacyId || params?.requestedBranchId)
+  const cacheKey = scopeCacheKey(user.id, requestedPharmacyId, requestedBranchId, strictRequested)
   const cached = readScopeCache(cacheKey)
   if (cached) return cached
 
   const adminClient = getServiceClient()
   const db = adminClient ?? (supabase as DbClient)
-  const email = user.email ?? null
-  const developerByEmail = isSuperAdmin(email)
-
   const [developerResult, memberships, ownedPharmacies] = await Promise.all([
-    db
-      .from("developer_users")
-      .select("id, role, is_active")
-      .eq("user_id", user.id)
-      .eq("is_active", true)
-      .maybeSingle(),
+    db.from("developer_users").select("id, role, is_active").eq("user_id", user.id).eq("is_active", true).maybeSingle(),
     readMemberships(db, user.id),
     readOwnedPharmacies(db, user.id),
   ])
 
-  const isDeveloper = developerByEmail || Boolean(developerResult.data)
-  const baseRole: MedicalRole = isDeveloper ? "developer" : normalizeRole(user.user_metadata?.role as string | undefined)
+  const isDeveloper = Boolean(developerResult.data)
+  const baseRole: MedicalRole = isDeveloper ? "developer" : "no-access"
   const [profile, developerPharmacies] = await Promise.all([
     ensureUserProfile(db, user, baseRole),
     isDeveloper ? readDeveloperPharmacies(db) : Promise.resolve([]),
   ])
 
   if (profile && profile.is_active === false && !isDeveloper) {
-    const inactiveScope = {
-      ...emptyScope(user),
-      profile,
-      role: "no-access" as const,
-    }
+    const inactiveScope = { ...emptyScope(user), profile, role: "no-access" as const }
     writeScopeCache(cacheKey, inactiveScope)
     return inactiveScope
   }
 
-  const activePharmacy = pickActivePharmacy(
-    requestedPharmacyId,
-    memberships,
-    ownedPharmacies,
-    developerPharmacies,
-  )
-  const branches = await readBranches(db, activePharmacy?.id ?? null)
-  const membershipForActive = memberships.find((membership) => membership.pharmacy_id === activePharmacy?.id)
-  const activeBranch = branches.find((branch) => branch.id === requestedBranchId)
-    ?? branches.find((branch) => branch.id === membershipForActive?.branch_id)
-    ?? branches.find((branch) => branch.is_default)
-    ?? branches[0]
-    ?? null
+  const resolver = new TenantScopeResolver(memberships, ownedPharmacies, developerPharmacies, isDeveloper)
+  const activePharmacy = resolver.pickPharmacy(requestedPharmacyId, strictRequested)
+  const allBranches = await readBranches(db, activePharmacy?.id ?? null)
+  const branches = resolver.visibleBranches(activePharmacy?.id ?? null, allBranches)
+  const activeBranch = resolver.pickBranch(activePharmacy?.id ?? null, allBranches, requestedBranchId, strictRequested)
 
-  const resolvedRole = resolveActiveRole(isDeveloper, activePharmacy?.id ?? null, memberships, ownedPharmacies)
+  const invalidRequestedBranch = Boolean(strictRequested && requestedBranchId && !activeBranch)
+  const resolvedRole = invalidRequestedBranch
+    ? "no-access"
+    : resolver.roleFor(activePharmacy?.id ?? null, activeBranch?.id ?? null)
   const role = !isDeveloper && activePharmacy && activePharmacy.status !== "active" ? "no-access" : resolvedRole
   const scope: AuthScope = {
     user,

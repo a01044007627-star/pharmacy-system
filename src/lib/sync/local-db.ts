@@ -184,6 +184,18 @@ export const localDB = {
   },
   async getDeadLetters() { return (await getDB()).getAll("deadLetters") },
   async clearDeadLetters() { return (await getDB()).clear("deadLetters") },
+  async clearPrivateData() {
+    const db = await getDB()
+    const tx = db.transaction(["documents", "mutations", "deadLetters", "cache", "syncLogs"], "readwrite")
+    await Promise.all([
+      tx.objectStore("documents").clear(),
+      tx.objectStore("mutations").clear(),
+      tx.objectStore("deadLetters").clear(),
+      tx.objectStore("cache").clear(),
+      tx.objectStore("syncLogs").clear(),
+    ])
+    await tx.done
+  },
   async updateMutationRetry(id: string, retryCount: number) {
     const db = await getDB()
     const mutation = await db.get("mutations", id)

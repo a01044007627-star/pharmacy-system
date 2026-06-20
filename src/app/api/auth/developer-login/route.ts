@@ -21,14 +21,11 @@ export async function POST() {
 
     if (error) return NextResponse.json({ error: error.message }, { status: 401 })
 
-    const meta = data.user.user_metadata ?? {}
-    if (meta.role !== "developer") {
-      await supabase.auth.updateUser({
-        data: { ...meta, role: "developer" },
-      })
-    }
-
     const scope = await getServerAuthScope()
+    if (!scope.isDeveloper) {
+      await supabase.auth.signOut()
+      return NextResponse.json({ error: "الحساب غير مسجل كمطور فعال في المنصة" }, { status: 403 })
+    }
 
     return NextResponse.json({
       user: {

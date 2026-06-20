@@ -69,14 +69,16 @@ export function ItemAlternativesView() {
 
   const searchItems = useCallback(async (needle: string, target: "source" | "alternative") => {
     if (!auth.activePharmacyId || needle.trim().length < 2) {
-      target === "source" ? setSourceResults([]) : setAlternativeResults([])
+      if (target === "source") setSourceResults([])
+      else setAlternativeResults([])
       return
     }
     const params = new URLSearchParams({ pharmacy_id: auth.activePharmacyId, query: needle, limit: "12", include_inactive: "0" })
     const response = await fetch(`/api/inventory/items/search?${params}`, { cache: "no-store" })
     const data = await response.json().catch(() => ({})) as { records?: SearchItem[] }
     const list = data.records ?? []
-    target === "source" ? setSourceResults(list) : setAlternativeResults(list.filter((item) => item.id !== sourceItem?.id))
+    if (target === "source") setSourceResults(list)
+    else setAlternativeResults(list.filter((item) => item.id !== sourceItem?.id))
   }, [auth.activePharmacyId, sourceItem?.id])
 
   useEffect(() => {

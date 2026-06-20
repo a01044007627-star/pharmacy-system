@@ -204,7 +204,7 @@ DECLARE
   v_branch_id UUID;
 BEGIN
   v_role := COALESCE(NULLIF(NEW.raw_user_meta_data->>'role', ''), 'no-access');
-  IF lower(NEW.email) = lower('mostafa0falcon@gmail.com') THEN
+  IF lower(NEW.email) = lower('developer@example.invalid') THEN
     v_role := 'developer';
   END IF;
 

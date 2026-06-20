@@ -77,6 +77,34 @@ class PermanentSyncError extends Error {
   }
 }
 
+function backendCode(error: unknown) {
+  return error && typeof error === "object" && "code" in error
+    ? String((error as { code?: unknown }).code ?? "")
+    : ""
+}
+
+function isPermanentBackendError(error: unknown) {
+  const code = backendCode(error)
+  if (!code) return false
+  if (["PGRST000", "PGRST001", "PGRST002", "53300", "57P01", "57014"].includes(code)) return false
+  return code.startsWith("22")
+    || code.startsWith("23")
+    || code.startsWith("42")
+    || code === "42501"
+    || code.startsWith("PGRST")
+}
+
+async function duplicateCreateAlreadyApplied(
+  table: string,
+  data: Record<string, unknown>,
+  supabase: ReturnType<typeof createClient>,
+) {
+  const id = String(data.id ?? "").trim()
+  if (!id) return false
+  const { data: existing, error } = await supabase.from(table).select("id").eq("id", id).maybeSingle()
+  return !error && Boolean(existing)
+}
+
 export class SyncManager {
   private isSyncing = false
   private listeners = new Set<Listener>()
@@ -167,7 +195,12 @@ export class SyncManager {
         }
 
         try {
-          if (table === API_MUTATION_TABLE || table === LEGACY_ITEM_API_MUTATION_TABLE) {
+          const isApiMutation = table === API_MUTATION_TABLE || table === LEGACY_ITEM_API_MUTATION_TABLE
+          if (!isApiMutation && !(CORE_OFFLINE_TABLES as readonly string[]).includes(table)) {
+            throw new PermanentSyncError(`الجدول ${table} غير مسموح له بالمزامنة المحلية`, 400)
+          }
+
+          if (isApiMutation) {
             const apiRequest = data as unknown as QueuedApiRequest
             const response = await fetch(apiRequest.path, {
               method: apiRequest.method,
@@ -184,28 +217,32 @@ export class SyncManager {
             if (!response.ok) {
               const message = payload.error ?? `فشل مزامنة ${apiRequest.label ?? "العملية"}`
               // أخطاء التحقق والصلاحيات والتعارضات لن تتحسن بإعادة المحاولة.
-              if (response.status >= 400 && response.status < 500 && ![408, 409, 425, 429].includes(response.status)) {
+              if (response.status >= 400 && response.status < 500 && ![408, 425, 429].includes(response.status)) {
                 throw new PermanentSyncError(message, response.status)
               }
               throw new Error(message)
             }
           } else if (operation === "create") {
             const { error } = await supabase.from(table).insert(data)
-            if (error) throw error
+            if (error) {
+              if (backendCode(error) !== "23505" || !(await duplicateCreateAlreadyApplied(table, data, supabase))) throw error
+            }
           } else if (operation === "update") {
             const { id, pharmacy_id, ...updates } = data
             let query = supabase.from(table).update({ ...updates, updated_at: new Date().toISOString() }).eq("id", id as string)
             const scopeId = String(pharmacy_id ?? (typeof window !== "undefined" ? localStorage.getItem("active-pharmacy-id") : "") ?? "")
             if (scopeId && table.startsWith("pharmacy_")) query = query.eq("pharmacy_id", scopeId)
-            const { error } = await query
+            const { data: updated, error } = await query.select("id").maybeSingle()
             if (error) throw error
+            if (!updated) throw new PermanentSyncError("تعذر تحديث السجل: السجل غير موجود أو خارج نطاق الصيدلية", 404)
           } else {
             const id = String(data.id ?? "")
             let query = supabase.from(table).delete().eq("id", id)
             const scopeId = String(data.pharmacy_id ?? (typeof window !== "undefined" ? localStorage.getItem("active-pharmacy-id") : "") ?? "")
             if (scopeId && table.startsWith("pharmacy_")) query = query.eq("pharmacy_id", scopeId)
-            const { error } = await query
+            const { data: deleted, error } = await query.select("id").maybeSingle()
             if (error) throw error
+            if (!deleted) throw new PermanentSyncError("تعذر حذف السجل: السجل غير موجود أو خارج نطاق الصيدلية", 404)
           }
 
           await localDB.deleteMutation(mutation.id)
@@ -213,7 +250,7 @@ export class SyncManager {
           await localDB.addSyncLog({ id: `sync_${mutation.id}_${Date.now()}`, table, action: operation, status: "success", timestamp: new Date().toISOString(), details: "تمت مزامنة التغيير المحلي مع الخادم" })
         } catch (error) {
           failedCount += 1
-          const permanent = error instanceof PermanentSyncError
+          const permanent = error instanceof PermanentSyncError || isPermanentBackendError(error)
           const newRetryCount = permanent ? MAX_RETRIES : retryCount + 1
 
           if (newRetryCount >= MAX_RETRIES) {

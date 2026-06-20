@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/client"
 import { localDB } from "./local-db"
 import { network } from "@/lib/network"
+import { OfflineFallbackPolicy } from "./offline-fallback-policy"
 
 type TableName = string
 
@@ -46,6 +47,7 @@ function withScopePayload(table: TableName, record: Record<string, unknown>) {
   const branchId = getBranchId()
   if (pharmacyId && shouldScopeByPharmacy(table) && !("pharmacy_id" in payload)) payload.pharmacy_id = pharmacyId
   if (branchId && shouldInjectBranchId(table, payload)) payload.branch_id = branchId
+  OfflineFallbackPolicy.assertTenantPayload(table, payload)
   return payload
 }
 
@@ -175,31 +177,41 @@ async function offlineDelete(table: TableName, id: string) {
 export const dataLayer = {
   async query<T>(table: TableName, filter?: WhereFilter, opts?: QueryOptions): Promise<T[]> {
     if (await network.check()) {
-      try { return await onlineQuery<T>(table, filter, opts) } catch { /* use local */ }
+      try { return await onlineQuery<T>(table, filter, opts) } catch (error) {
+        if (!OfflineFallbackPolicy.canFallback(error)) throw error
+      }
     }
     return offlineQuery<T>(table, filter, opts)
   },
   async getById<T>(table: TableName, id: string): Promise<T | null> {
     if (await network.check()) {
-      try { return await onlineGetById<T>(table, id) } catch { /* use local */ }
+      try { return await onlineGetById<T>(table, id) } catch (error) {
+        if (!OfflineFallbackPolicy.canFallback(error)) throw error
+      }
     }
     return offlineGetById<T>(table, id)
   },
   async insert<T>(table: TableName, record: Partial<T>): Promise<T> {
     if (await network.check()) {
-      try { return await onlineInsert<T>(table, record) } catch { /* queue local */ }
+      try { return await onlineInsert<T>(table, record) } catch (error) {
+        if (!OfflineFallbackPolicy.canFallback(error)) throw error
+      }
     }
     return offlineInsert<T>(table, record)
   },
   async update<T>(table: TableName, id: string, updates: Partial<T>): Promise<T> {
     if (await network.check()) {
-      try { return await onlineUpdate<T>(table, id, updates) } catch { /* queue local */ }
+      try { return await onlineUpdate<T>(table, id, updates) } catch (error) {
+        if (!OfflineFallbackPolicy.canFallback(error)) throw error
+      }
     }
     return offlineUpdate<T>(table, id, updates)
   },
   async delete(table: TableName, id: string): Promise<void> {
     if (await network.check()) {
-      try { await onlineDelete(table, id); return } catch { /* queue local */ }
+      try { await onlineDelete(table, id); return } catch (error) {
+        if (!OfflineFallbackPolicy.canFallback(error)) throw error
+      }
     }
     await offlineDelete(table, id)
   },
@@ -219,7 +231,9 @@ export const dataLayer = {
         const { count, error } = await query
         if (error) throw error
         return count ?? 0
-      } catch { /* local */ }
+      } catch (error) {
+        if (!OfflineFallbackPolicy.canFallback(error)) throw error
+      }
     }
     return (await offlineQuery<Record<string, unknown>>(table, filter)).length
   },

@@ -31,6 +31,8 @@ const ACTION_COLORS: Record<string, string> = {
   adjustment: "bg-purple-100 text-purple-700 border-purple-200",
 }
 
+const PAGE_LIMIT = 50
+
 export function ControlledDrugsView() {
   const auth = useAuth()
   const pharmacyId = auth.activePharmacyId
@@ -48,15 +50,13 @@ export function ControlledDrugsView() {
 
   const [offset, setOffset] = useState(0)
   const [hasMore, setHasMore] = useState(false)
-  const LIMIT = 50
 
-  const fetchEntries = useCallback(async (resetOffset = true) => {
+  const fetchEntries = useCallback(async (requestedOffset: number, append: boolean) => {
     if (!pharmacyId) return
-    const currentOffset = resetOffset ? 0 : offset
     setLoading(true)
     setError(null)
     try {
-      const params = new URLSearchParams({ pharmacy_id: pharmacyId, limit: String(LIMIT), offset: String(currentOffset) })
+      const params = new URLSearchParams({ pharmacy_id: pharmacyId, limit: String(PAGE_LIMIT), offset: String(requestedOffset) })
       if (branchId) params.set("branch_id", branchId)
       if (actionFilter) params.set("action", actionFilter)
       if (fromDate) params.set("from", fromDate)
@@ -66,12 +66,8 @@ export function ControlledDrugsView() {
       const response = await fetch(`/api/controlled-drugs?${params.toString()}`, { cache: "no-store" })
       if (!response.ok) throw new Error("فشل تحميل السجل")
       const data = await response.json()
-      if (resetOffset) {
-        setEntries(data.entries ?? [])
-        setOffset(0)
-      } else {
-        setEntries((prev) => [...prev, ...(data.entries ?? [])])
-      }
+      if (append) setEntries((prev) => [...prev, ...(data.entries ?? [])])
+      else setEntries(data.entries ?? [])
       setTotal(data.total ?? 0)
       setHasMore(Boolean(data.hasMore))
     } catch (err) {
@@ -79,20 +75,20 @@ export function ControlledDrugsView() {
     } finally {
       setLoading(false)
     }
-  }, [pharmacyId, branchId, actionFilter, fromDate, toDate, searchText, offset])
+  }, [pharmacyId, branchId, actionFilter, fromDate, toDate, searchText])
 
   useEffect(() => {
     setOffset(0)
-    fetchEntries(true)
-  }, [pharmacyId, branchId, actionFilter, fromDate, toDate, searchText])
+    void fetchEntries(0, false)
+  }, [fetchEntries])
 
   function loadMore() {
-    setOffset((prev) => prev + LIMIT)
+    setOffset((prev) => prev + PAGE_LIMIT)
   }
 
   useEffect(() => {
-    if (offset > 0) fetchEntries(false)
-  }, [offset])
+    if (offset > 0) void fetchEntries(offset, true)
+  }, [fetchEntries, offset])
 
   if (!pharmacyId) {
     return (

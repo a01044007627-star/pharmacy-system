@@ -18,19 +18,9 @@ SET search_path = public, auth
 AS $$
   SELECT COALESCE(
     p_user_id IS NOT NULL
-    AND (
-      EXISTS(
-        SELECT 1
-        FROM public.developer_users du
-        WHERE du.user_id = p_user_id
-          AND du.is_active = true
-      )
-      OR EXISTS(
-        SELECT 1
-        FROM auth.users u
-        WHERE u.id = p_user_id
-          AND lower(u.email) = lower('mostafa0falcon@gmail.com')
-      )
+    AND EXISTS (
+      SELECT 1 FROM public.developer_users AS du
+      WHERE du.user_id = p_user_id AND du.is_active = true
     ),
     false
   );
@@ -493,7 +483,6 @@ BEGIN
   -- Never trust public signup metadata for developer access.
   -- Safe pharmacy roles may still be supplied by trusted admin invitations.
   v_role := CASE
-    WHEN lower(NEW.email) = lower('mostafa0falcon@gmail.com') THEN 'developer'
     WHEN COALESCE(NEW.raw_user_meta_data->>'role', '') IN (
       'owner','admin','manager','accountant','pharmacist','cashier','technician','worker','viewer','no-access'
     ) THEN NEW.raw_user_meta_data->>'role'
@@ -527,18 +516,6 @@ BEGIN
     is_active = true,
     updated_at = now();
 
-  IF v_role = 'developer' THEN
-    INSERT INTO public.developer_users (user_id, role, is_active, permissions)
-    VALUES (NEW.id, 'super_admin', true, ARRAY['system:all']::TEXT[])
-    ON CONFLICT (user_id) DO UPDATE SET
-      role = 'super_admin',
-      is_active = true,
-      permissions = ARRAY['system:all']::TEXT[],
-      updated_at = now();
-
-    DELETE FROM public.pharmacy_profiles WHERE user_id = NEW.id;
-    RETURN NEW;
-  END IF;
 
   IF v_role = 'owner' THEN
     INSERT INTO public.pharmacies (owner_id, name, legal_name, currency, country, timezone, phone, email, address, status, plan)
