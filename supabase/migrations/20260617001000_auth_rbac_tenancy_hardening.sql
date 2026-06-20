@@ -347,10 +347,12 @@ BEGIN
   FOR tbl IN
     SELECT c.table_name
     FROM information_schema.columns c
+    JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name
     WHERE c.table_schema = 'public'
       AND c.column_name = 'pharmacy_id'
       AND c.table_name NOT IN ('pharmacies', 'pharmacy_branches', 'pharmacy_profiles')
       AND c.table_name NOT LIKE 'developer_%'
+      AND t.table_type = 'BASE TABLE'
     GROUP BY c.table_name
   LOOP
     SELECT EXISTS(

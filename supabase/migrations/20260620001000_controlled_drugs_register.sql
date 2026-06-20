@@ -1,5 +1,24 @@
 BEGIN;
 
+-- Define helper function for active pharmacy lookup
+CREATE OR REPLACE FUNCTION public.get_user_active_pharmacy_id()
+RETURNS UUID
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+  SELECT pharmacy_id
+  FROM public.pharmacy_profiles
+  WHERE user_id = auth.uid()
+    AND is_active = true
+  ORDER BY last_login_at DESC NULLS LAST, created_at DESC
+  LIMIT 1;
+$$;
+
+REVOKE ALL ON FUNCTION public.get_user_active_pharmacy_id() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_user_active_pharmacy_id() TO authenticated;
+
 -- a) Add patient/doctor/prescription columns to pharmacy_sales for cashier integration
 ALTER TABLE public.pharmacy_sales
   ADD COLUMN IF NOT EXISTS patient_name TEXT,

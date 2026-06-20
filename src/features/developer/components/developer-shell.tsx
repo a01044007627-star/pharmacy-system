@@ -8,6 +8,13 @@ import { Button } from "@/components/ui/button"
 import { useAuth } from "@/contexts/auth-context"
 import { ROUTES } from "@/config/routes"
 import { cn } from "@/lib/utils"
+import {
+  NavigationMenu,
+  NavigationMenuItem,
+  NavigationMenuLink,
+  NavigationMenuList,
+} from "@/components/ui/navigation-menu"
+import { Separator } from "@/components/ui/separator"
 
 const links = [
   { href: "/developer", label: "مركز التحكم", icon: Activity },
@@ -41,16 +48,26 @@ export function DeveloperShell({ children }: { children: React.ReactNode }) {
             </span>
           </Link>
 
-          <nav className="mr-4 hidden items-center gap-1 lg:flex">
-            {links.map(({ href, label, icon: Icon }) => (
-              <Link key={href} href={href} className={cn(
-                "flex h-9 items-center gap-2 rounded-xl px-3 text-xs font-black transition",
-                pathname === "/developer" ? "bg-white/10 text-white" : "text-slate-400 hover:bg-white/5 hover:text-white",
-              )}>
-                <Icon className="size-4" /> {label}
-              </Link>
-            ))}
-          </nav>
+          <NavigationMenu className="mr-4 hidden lg:flex">
+            <NavigationMenuList className="gap-1">
+              {links.map(({ href, label, icon: Icon }) => (
+                <NavigationMenuItem key={href}>
+                  <Link href={href} legacyBehavior passHref>
+                    <NavigationMenuLink
+                      className={cn(
+                        "flex h-9 items-center gap-2 rounded-xl px-3 text-xs font-black transition",
+                        pathname === "/developer"
+                          ? "bg-white/10 text-white"
+                          : "text-slate-400 hover:bg-white/5 hover:text-white",
+                      )}
+                    >
+                      <Icon className="size-4" /> {label}
+                    </NavigationMenuLink>
+                  </Link>
+                </NavigationMenuItem>
+              ))}
+            </NavigationMenuList>
+          </NavigationMenu>
 
           <div className="mr-auto flex items-center gap-2">
             <Button variant="outline" size="sm" className="border-white/15 bg-white/5 text-white hover:bg-white/10" onClick={() => window.location.reload()}>
@@ -62,6 +79,7 @@ export function DeveloperShell({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       </header>
+      <Separator className="bg-white/5" />
       <main>{children}</main>
     </div>
   )

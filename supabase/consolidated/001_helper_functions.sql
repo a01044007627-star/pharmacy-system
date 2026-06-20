@@ -993,3 +993,25 @@ $$;
 
 REVOKE ALL ON FUNCTION public.get_tax_summary(UUID, DATE, DATE, UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.get_tax_summary(UUID, DATE, DATE, UUID) TO authenticated;
+
+-- ===================================================================
+-- get_user_active_pharmacy_id
+-- Returns the user's active pharmacy_id based on pharmacy_profiles
+-- ===================================================================
+CREATE OR REPLACE FUNCTION public.get_user_active_pharmacy_id()
+RETURNS UUID
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, auth
+AS $$
+  SELECT pharmacy_id
+  FROM public.pharmacy_profiles
+  WHERE user_id = auth.uid()
+    AND is_active = true
+  ORDER BY last_login_at DESC NULLS LAST, created_at DESC
+  LIMIT 1;
+$$;
+
+REVOKE ALL ON FUNCTION public.get_user_active_pharmacy_id() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_user_active_pharmacy_id() TO authenticated;

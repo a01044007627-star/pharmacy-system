@@ -28,6 +28,10 @@ CREATE INDEX IF NOT EXISTS idx_tasks_pharmacy ON public.pharmacy_tasks(pharmacy_
 CREATE INDEX IF NOT EXISTS idx_tasks_completed ON public.pharmacy_tasks(pharmacy_id, completed);
 
 -- Use the same tenant-isolation pattern as other tables: has_pharmacy_access
+DROP POLICY IF EXISTS task_tenant_select ON public.pharmacy_tasks;
+DROP POLICY IF EXISTS task_tenant_insert ON public.pharmacy_tasks;
+DROP POLICY IF EXISTS task_tenant_update ON public.pharmacy_tasks;
+DROP POLICY IF EXISTS task_tenant_delete ON public.pharmacy_tasks;
 CREATE POLICY task_tenant_select ON public.pharmacy_tasks
   FOR SELECT USING (public.has_pharmacy_access(pharmacy_id));
 CREATE POLICY task_tenant_insert ON public.pharmacy_tasks

@@ -30,7 +30,7 @@ CREATE OR REPLACE FUNCTION public.create_cashier_sale_v2(
   p_patient_name TEXT DEFAULT NULL,
   p_doctor_name TEXT DEFAULT NULL,
   p_prescription_number TEXT DEFAULT NULL,
-  p_lines JSONB
+  p_lines JSONB DEFAULT NULL
 )
 RETURNS JSONB
 LANGUAGE plpgsql

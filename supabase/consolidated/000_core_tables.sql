@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS pharmacies (
   UNIQUE(owner_id)
 );
 
+ALTER TABLE pharmacies ADD COLUMN IF NOT EXISTS max_branches INTEGER NOT NULL DEFAULT 3;
+ALTER TABLE pharmacies ADD COLUMN IF NOT EXISTS max_users INTEGER NOT NULL DEFAULT 10;
 ALTER TABLE pharmacies DROP CONSTRAINT IF EXISTS pharmacies_status_check;
 ALTER TABLE pharmacies ADD CONSTRAINT pharmacies_status_check CHECK(status IN ('active','suspended','closed'));
 ALTER TABLE pharmacies DROP CONSTRAINT IF EXISTS pharmacies_plan_check;
